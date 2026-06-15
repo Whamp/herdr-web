@@ -98,6 +98,15 @@ Run the bridge:
 scripts/run-bridge.sh
 ```
 
+The launcher uses the installed/stable Herdr socket by default:
+
+```text
+~/.config/herdr/herdr.sock
+```
+
+This avoids the vendored debug bridge falling back to Herdr's `herdr-dev` app directory. To target
+a named or development Herdr session, set `HERDR_SOCKET_PATH` explicitly before running the script.
+
 Open:
 
 ```text

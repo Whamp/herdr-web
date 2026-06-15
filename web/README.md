@@ -26,6 +26,10 @@ scripts/run-bridge.sh
 npm run dev:web
 ```
 
+`scripts/run-bridge.sh` points the vendored debug bridge at the stable Herdr socket by default
+instead of the debug `herdr-dev` socket. Override `HERDR_SOCKET_PATH` when targeting a named or
+development session.
+
 The app expects these bridge routes:
 
 - `/api/snapshot`
