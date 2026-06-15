@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createdPaneId, probePaneMoveSupported, probeSplitSupported } from "./commands";
+import {
+  commands,
+  createdPaneId,
+  probePaneMoveSupported,
+  probeSplitSupported,
+  probeSupportedCommands,
+} from "./commands";
 
 describe("command helpers", () => {
   afterEach(() => {
@@ -37,5 +43,36 @@ describe("command helpers", () => {
     );
 
     await expect(probePaneMoveSupported()).resolves.toBe(true);
+  });
+
+  it("returns supported command names from bridge capabilities", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ commands: ["pane.split", "pane.move", 42] }), {
+        status: 200,
+      }),
+    );
+
+    await expect(probeSupportedCommands()).resolves.toEqual(new Set(["pane.split", "pane.move"]));
+  });
+
+  it("creates launch tabs without a tab label and renames the root pane", async () => {
+    const requests: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      if (body.method === "tab.create") {
+        return new Response(JSON.stringify({ root_pane: { pane_id: "pane-1" } }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ type: "ok" }), { status: 200 });
+    });
+
+    await commands.createLaunchTab("space-1", { kind: "shell", title: "Review" });
+
+    expect(requests).toEqual([
+      { method: "tab.create", params: { workspace_id: "space-1", focus: true } },
+      { method: "pane.rename", params: { pane_id: "pane-1", label: "Review" } },
+    ]);
   });
 });

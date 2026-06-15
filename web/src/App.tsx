@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { commands, createdPaneId, probePaneMoveSupported, probeSplitSupported } from "./commands";
+import { commands, createdPaneId, probeSupportedCommands } from "./commands";
 import type { LaunchSpec } from "./commands";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
@@ -22,6 +22,7 @@ import {
   choosePaneForWorkspace,
   chooseSelectedPane,
   countAttention,
+  displayTabLabel,
   isAttention,
   isLoud,
   paneMeta,
@@ -31,7 +32,7 @@ import {
   spaceSubtitle,
   statusLabel,
 } from "./state";
-import type { AgentStatus, PaneInfo, Snapshot, TabInfo, WorkspaceInfo } from "./types";
+import type { AgentStatus, PaneInfo, Snapshot, WorkspaceInfo } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
 type Scope = "space" | "all";
@@ -319,25 +320,13 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [error]);
 
-  // Feature-detect whether the bridge permits `pane.split` so the split
-  // controls only appear when they will actually work.
+  // Feature-detect bridge-gated commands so controls only appear when they work.
   useEffect(() => {
     let cancelled = false;
-    void probeSplitSupported().then((ok) => {
+    void probeSupportedCommands().then((supportedCommands) => {
       if (!cancelled) {
-        setSplitSupported(ok);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void probePaneMoveSupported().then((ok) => {
-      if (!cancelled) {
-        setPaneMoveSupported(ok);
+        setSplitSupported(supportedCommands.has("pane.split"));
+        setPaneMoveSupported(supportedCommands.has("pane.move"));
       }
     });
     return () => {
@@ -910,24 +899,27 @@ function TabBar({
       : activeSpace.active_tab_id;
   return (
     <div className="tabbar" role="tablist" aria-label="Tabs">
-      {tabs.map((tab) => (
-        <button
-          key={tab.tab_id}
-          type="button"
-          className="tabbar-tab"
-          role="tab"
-          aria-selected={tab.tab_id === activeTabId}
-          data-active={tab.tab_id === activeTabId}
-          onClick={() => onSelectTab(tab.tab_id)}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            onMenu("tab", tab.tab_id, tab.label, event.clientX, event.clientY);
-          }}
-        >
-          <span className="dot" data-status={tab.agent_status} />
-          <span className="tabbar-name">{tab.label}</span>
-        </button>
-      ))}
+      {tabs.map((tab) => {
+        const label = displayTabLabel(tab, snapshot.panes);
+        return (
+          <button
+            key={tab.tab_id}
+            type="button"
+            className="tabbar-tab"
+            role="tab"
+            aria-selected={tab.tab_id === activeTabId}
+            data-active={tab.tab_id === activeTabId}
+            onClick={() => onSelectTab(tab.tab_id)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              onMenu("tab", tab.tab_id, label, event.clientX, event.clientY);
+            }}
+          >
+            <span className="dot" data-status={tab.agent_status} />
+            <span className="tabbar-name">{label}</span>
+          </button>
+        );
+      })}
       <button
         className="tabbar-add"
         type="button"
@@ -1214,35 +1206,41 @@ function Switcher({
                         <span className="grp-space-name">{group.workspace.label}</span>
                         <span className="grp-space-line" />
                       </div>
-                      {group.panes.map((pane) => (
-                        <AgentRow
-                          key={pane.pane_id}
-                          index={agentPaneIndex++}
-                          pane={pane}
-                          workspace={group.workspace}
-                          tab={snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id)}
-                          active={pane.pane_id === selectedPane?.pane_id}
-                          onSelect={() => onSelectPane(pane)}
-                          onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
-                        />
-                      ))}
+                      {group.panes.map((pane) => {
+                        const tab = snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
+                        return (
+                          <AgentRow
+                            key={pane.pane_id}
+                            index={agentPaneIndex++}
+                            pane={pane}
+                            workspace={group.workspace}
+                            tabLabel={tab ? displayTabLabel(tab, snapshot.panes) : undefined}
+                            active={pane.pane_id === selectedPane?.pane_id}
+                            onSelect={() => onSelectPane(pane)}
+                            onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                          />
+                        );
+                      })}
                     </Fragment>
                   ))
                 ) : (
-                  agentPanes.map((pane, index) => (
-                    <AgentRow
-                      key={pane.pane_id}
-                      index={index}
-                      pane={pane}
-                      workspace={snapshot.workspaces.find(
-                        (workspace) => workspace.workspace_id === pane.workspace_id,
-                      )}
-                      tab={snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id)}
-                      active={pane.pane_id === selectedPane?.pane_id}
-                      onSelect={() => onSelectPane(pane)}
-                      onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
-                    />
-                  ))
+                  agentPanes.map((pane, index) => {
+                    const tab = snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
+                    return (
+                      <AgentRow
+                        key={pane.pane_id}
+                        index={index}
+                        pane={pane}
+                        workspace={snapshot.workspaces.find(
+                          (workspace) => workspace.workspace_id === pane.workspace_id,
+                        )}
+                        tabLabel={tab ? displayTabLabel(tab, snapshot.panes) : undefined}
+                        active={pane.pane_id === selectedPane?.pane_id}
+                        onSelect={() => onSelectPane(pane)}
+                        onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                      />
+                    );
+                  })
                 )
               ) : spaceGroups.every((group) => group.tabs.length === 0) ? (
                 <div className="empty">
@@ -1259,28 +1257,31 @@ function Switcher({
                         <span className="grp-space-line" />
                       </div>
                     ) : null}
-                    {group.tabs.map(({ tab, panes: tabPanes }) => (
-                      <div className="tabgrp" key={tab.tab_id}>
-                        {group.workspace.tab_count > 1 || tabPanes.length > 1 ? (
-                          <TabDivider
-                            tab={tab}
-                            count={tabPanes.length}
-                            onSelect={() => onSelectTab(tab.tab_id)}
-                            onMenu={(x, y) => onMenu("tab", tab.tab_id, tab.label, x, y)}
-                          />
-                        ) : null}
-                        {tabPanes.map((pane) => (
-                          <PaneRow
-                            key={pane.pane_id}
-                            index={paneIndex++}
-                            pane={pane}
-                            active={pane.pane_id === selectedPane?.pane_id}
-                            onSelect={() => onSelectPane(pane)}
-                            onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
-                          />
-                        ))}
-                      </div>
-                    ))}
+                    {group.tabs.map(({ tab, panes: tabPanes }) => {
+                      const label = displayTabLabel(tab, snapshot.panes);
+                      return (
+                        <div className="tabgrp" key={tab.tab_id}>
+                          {group.workspace.tab_count > 1 || tabPanes.length > 1 ? (
+                            <TabDivider
+                              label={label}
+                              count={tabPanes.length}
+                              onSelect={() => onSelectTab(tab.tab_id)}
+                              onMenu={(x, y) => onMenu("tab", tab.tab_id, label, x, y)}
+                            />
+                          ) : null}
+                          {tabPanes.map((pane) => (
+                            <PaneRow
+                              key={pane.pane_id}
+                              index={paneIndex++}
+                              pane={pane}
+                              active={pane.pane_id === selectedPane?.pane_id}
+                              onSelect={() => onSelectPane(pane)}
+                              onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                            />
+                          ))}
+                        </div>
+                      );
+                    })}
                   </Fragment>
                 ))
               )}
@@ -1328,12 +1329,12 @@ function SpaceRow({
 }
 
 function TabDivider({
-  tab,
+  label,
   count,
   onSelect,
   onMenu,
 }: {
-  tab: TabInfo;
+  label: string;
   count: number;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
@@ -1342,7 +1343,7 @@ function TabDivider({
   return (
     <div className="tab-div">
       <button type="button" className="tab-head" {...press}>
-        <span className="tab-name">{tab.label}</span>
+        <span className="tab-name">{label}</span>
         {count > 1 ? (
           <span className="tab-split mono">
             <SplitGlyph />
@@ -1396,7 +1397,7 @@ function PaneRow({
 function AgentRow({
   pane,
   workspace,
-  tab,
+  tabLabel,
   active,
   index,
   onSelect,
@@ -1404,7 +1405,7 @@ function AgentRow({
 }: {
   pane: PaneInfo;
   workspace?: WorkspaceInfo;
-  tab?: TabInfo;
+  tabLabel?: string;
   active: boolean;
   index: number;
   onSelect: () => void;
@@ -1427,7 +1428,7 @@ function AgentRow({
           {iconKind ? <AgentIcon kind={iconKind} /> : null}
           <span className="agent-title-text">{agentTitle(pane)}</span>
         </span>
-        <span className="pane-meta mono">{agentSubtitle(pane, workspace, tab)}</span>
+        <span className="pane-meta mono">{agentSubtitle(pane, workspace, tabLabel)}</span>
       </span>
       {isLoud(pane.agent_status) ? (
         <span className="pane-word" data-status={pane.agent_status}>
@@ -1441,6 +1442,7 @@ function AgentRow({
 type AgentIconKind = "claude" | "codex" | "pi";
 
 function agentIconKind(pane: PaneInfo): AgentIconKind | null {
+  // Best-effort cosmetic match: prefer structured agent fields before user labels.
   const values = [pane.agent, pane.display_agent, pane.label, pane.title];
   for (const value of values) {
     const label = value?.toLowerCase().trim();
@@ -1562,13 +1564,13 @@ function agentTitle(pane: PaneInfo) {
   return pane.display_agent || pane.label || pane.agent || pane.title || paneTitle(pane);
 }
 
-function agentSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tab?: TabInfo) {
+function agentSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tabLabel?: string) {
   const stateText =
     pane.custom_status ||
     pane.state_labels?.[statusLabel(pane.agent_status)] ||
     statusLabel(pane.agent_status);
   const dir = basename(pane.foreground_cwd || pane.cwd);
-  return [stateText, workspace?.label, tab?.label, dir].filter(Boolean).join(" · ");
+  return [stateText, workspace?.label, tabLabel, dir].filter(Boolean).join(" · ");
 }
 
 function basename(path?: string) {
@@ -1702,7 +1704,8 @@ function stageBreadcrumb(snapshot: Snapshot | null, pane: PaneInfo | null, loadS
   }
   const workspace = snapshot?.workspaces.find((item) => item.workspace_id === pane.workspace_id);
   const tab = snapshot?.tabs.find((item) => item.tab_id === pane.tab_id);
-  return [workspace?.label, tab?.label].filter(Boolean).join(" · ") || pane.pane_id;
+  const tabLabel = tab && snapshot ? displayTabLabel(tab, snapshot.panes) : undefined;
+  return [workspace?.label, tabLabel].filter(Boolean).join(" · ") || pane.pane_id;
 }
 
 async function fetchSnapshot() {

@@ -52,6 +52,17 @@ export function paneTitle(pane: PaneInfo) {
   );
 }
 
+export function displayTabLabel(tab: TabInfo, panes: readonly PaneInfo[]) {
+  if (!/^\d+$/u.test(tab.label.trim())) {
+    return tab.label;
+  }
+  const tabPanes = panes.filter((pane) => pane.tab_id === tab.tab_id);
+  if (tabPanes.length !== 1) {
+    return tab.label;
+  }
+  return paneTitle(tabPanes[0]);
+}
+
 export function paneSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tab?: TabInfo) {
   const parts = [
     workspace?.label,

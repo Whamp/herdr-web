@@ -86,12 +86,16 @@ export const commands = {
     }),
 
   createLaunchTab: async (workspaceId: string, spec: LaunchSpec) => {
-    const result = await commands.createTab(workspaceId, spec.title);
+    const result = await commands.createTab(workspaceId);
+    const paneId = createdPaneId(result);
+    if (!paneId) {
+      throw new Error("new tab did not return a root pane");
+    }
+    const title = spec.title.trim();
+    if (title) {
+      await commands.renamePane(paneId, title);
+    }
     if (spec.kind !== "shell") {
-      const paneId = createdPaneId(result);
-      if (!paneId) {
-        throw new Error("new tab did not return a root pane");
-      }
       await commands.runPaneCommand(paneId, shellCommand(agentArgv(spec.kind)));
     }
     return result;
@@ -115,25 +119,28 @@ export const commands = {
   },
 };
 
-async function probeCommandSupported(method: string): Promise<boolean> {
+export async function probeSupportedCommands(): Promise<Set<string>> {
   try {
     const response = await fetch("/api/capabilities");
     if (!response.ok) {
-      return false;
+      return new Set();
     }
     const body = (await response.json()) as { commands?: unknown };
-    return Array.isArray(body.commands) && body.commands.includes(method);
+    if (!Array.isArray(body.commands)) {
+      return new Set();
+    }
+    return new Set(body.commands.filter((command): command is string => typeof command === "string"));
   } catch {
-    return false;
+    return new Set();
   }
 }
 
 /** Best-effort probe: is `pane.split` permitted by the bridge allow-list? */
-export function probeSplitSupported(): Promise<boolean> {
-  return probeCommandSupported("pane.split");
+export async function probeSplitSupported(): Promise<boolean> {
+  return (await probeSupportedCommands()).has("pane.split");
 }
 
 /** Best-effort probe: is `pane.move` permitted by the bridge allow-list? */
-export function probePaneMoveSupported(): Promise<boolean> {
-  return probeCommandSupported("pane.move");
+export async function probePaneMoveSupported(): Promise<boolean> {
+  return (await probeSupportedCommands()).has("pane.move");
 }
