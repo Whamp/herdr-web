@@ -1,6 +1,7 @@
-import { Bot, Terminal } from "lucide-react";
+import { Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { AgentIcon } from "./AgentIcon";
 import { LAUNCH_OPTIONS, launchLabel } from "./launch";
 import type { LaunchKind, LaunchSpec, LaunchTarget } from "./launch";
 
@@ -111,7 +112,7 @@ export function LaunchDialog({
                 chooseAndFocusKind(LAUNCH_OPTIONS[nextIndex].kind);
               }}
             >
-              {option.kind === "shell" ? <Terminal size={15} /> : <Bot size={15} />}
+              {option.kind === "shell" ? <Terminal size={15} /> : <AgentIcon kind={option.kind} />}
               <span>{option.label}</span>
             </button>
           ))}
