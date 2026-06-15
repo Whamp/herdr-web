@@ -1,0 +1,1498 @@
+import {
+  ChevronLeft,
+  PanelLeft,
+  Plus,
+  RefreshCw,
+  SplitSquareHorizontal,
+  SplitSquareVertical,
+} from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import { commands, createdPaneId, probeSplitSupported } from "./commands";
+import { ActionMenu, ConfirmDialog, RenameDialog, useLongPress } from "./overlays";
+import type { MenuItem } from "./overlays";
+import { TerminalView } from "./TerminalView";
+import {
+  aggregateStatus,
+  choosePaneForTab,
+  choosePaneForWorkspace,
+  chooseSelectedPane,
+  countAttention,
+  isAttention,
+  isLoud,
+  paneMeta,
+  paneTitle,
+  sortPanesForTab,
+  sortTabsForWorkspace,
+  spaceSubtitle,
+  statusLabel,
+} from "./state";
+import type { AgentStatus, PaneInfo, Snapshot, TabInfo, WorkspaceInfo } from "./types";
+
+type LoadState = "loading" | "ready" | "error";
+type Scope = "space" | "all";
+type SidebarView = "agents" | "tabs";
+type AgentSort = "attention" | "status" | "workspace";
+type MenuKind = "space" | "tab" | "pane";
+type MenuState = { kind: MenuKind; id: string; label: string; x: number; y: number };
+type DialogState = { mode: "rename" | "close"; kind: MenuKind; id: string; label: string };
+type DisplayPrefs = {
+  scope: Scope;
+  sidebarView: SidebarView;
+  agentSort: AgentSort;
+  sidebarOpen: boolean;
+  activeSpaceId: string | null;
+  selectedPaneId: string | null;
+};
+
+const NARROW_QUERY = "(max-width: 1024px), (hover: none) and (pointer: coarse)";
+const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
+const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
+const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
+
+function readDisplayPrefs(): DisplayPrefs {
+  const fallback: DisplayPrefs = {
+    scope: "space",
+    sidebarView: "agents",
+    agentSort: "attention",
+    sidebarOpen: true,
+    activeSpaceId: null,
+    selectedPaneId: null,
+  };
+  try {
+    const raw = window.localStorage.getItem(DISPLAY_PREFS_KEY);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw) as Partial<DisplayPrefs>;
+    return {
+      scope: parsed.scope === "all" || parsed.scope === "space" ? parsed.scope : fallback.scope,
+      sidebarView:
+        parsed.sidebarView === "agents" || parsed.sidebarView === "tabs"
+          ? parsed.sidebarView
+          : fallback.sidebarView,
+      agentSort:
+        parsed.agentSort === "attention" ||
+        parsed.agentSort === "status" ||
+        parsed.agentSort === "workspace"
+          ? parsed.agentSort
+          : fallback.agentSort,
+      sidebarOpen:
+        typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen,
+      activeSpaceId:
+        typeof parsed.activeSpaceId === "string" ? parsed.activeSpaceId : fallback.activeSpaceId,
+      selectedPaneId:
+        typeof parsed.selectedPaneId === "string" ? parsed.selectedPaneId : fallback.selectedPaneId,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeDisplayPrefs(prefs: DisplayPrefs) {
+  try {
+    window.localStorage.setItem(DISPLAY_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage can be unavailable in private or locked-down browser contexts.
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isMobileDetailHistoryState(value: unknown) {
+  return isRecord(value) && value[MOBILE_DETAIL_HISTORY_KEY] === true;
+}
+
+function isMobileSidebarHistoryState(value: unknown) {
+  return isRecord(value) && value[MOBILE_SIDEBAR_HISTORY_KEY] === true;
+}
+
+function withMobileSidebarHistoryState(value: unknown) {
+  const next = { ...(isRecord(value) ? value : {}) };
+  delete next[MOBILE_DETAIL_HISTORY_KEY];
+  return {
+    ...next,
+    [MOBILE_SIDEBAR_HISTORY_KEY]: true,
+  };
+}
+
+function withMobileDetailHistoryState(value: unknown) {
+  return {
+    ...(isRecord(value) ? value : {}),
+    [MOBILE_SIDEBAR_HISTORY_KEY]: true,
+    [MOBILE_DETAIL_HISTORY_KEY]: true,
+  };
+}
+
+function stripMobileHistoryState(value: unknown) {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const next = { ...value };
+  delete next[MOBILE_SIDEBAR_HISTORY_KEY];
+  delete next[MOBILE_DETAIL_HISTORY_KEY];
+  return next;
+}
+
+export function App() {
+  const initialPrefs = useMemo(readDisplayPrefs, []);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(initialPrefs.selectedPaneId);
+  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(initialPrefs.activeSpaceId);
+  const [scope, setScope] = useState<Scope>(initialPrefs.scope);
+  const [sidebarView, setSidebarView] = useState<SidebarView>(initialPrefs.sidebarView);
+  const [agentSort, setAgentSort] = useState<AgentSort>(initialPrefs.agentSort);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [sidebarOpen, setSidebarOpen] = useState(initialPrefs.sidebarOpen);
+  const [showDetail, setShowDetail] = useState(false);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [splitSupported, setSplitSupported] = useState(false);
+  const [refitToken, setRefitToken] = useState(0);
+  const isNarrow = useIsNarrow();
+  const snapshotRef = useRef<Snapshot | null>(null);
+  const isNarrowRef = useRef(isNarrow);
+  const showDetailRef = useRef(showDetail);
+  const mobileSidebarHistoryRef = useRef(false);
+  const mobileDetailHistoryRef = useRef(false);
+
+  const resolvedPaneId = chooseSelectedPane(snapshot, selectedPaneId);
+
+  const ensureMobileSidebarHistory = () => {
+    if (!isNarrowRef.current || isMobileDetailHistoryState(window.history.state)) {
+      return;
+    }
+    if (isMobileSidebarHistoryState(window.history.state)) {
+      mobileSidebarHistoryRef.current = true;
+      return;
+    }
+    window.history.pushState(
+      withMobileSidebarHistoryState(window.history.state),
+      "",
+      window.location.href,
+    );
+    mobileSidebarHistoryRef.current = true;
+  };
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
+
+  useEffect(() => {
+    isNarrowRef.current = isNarrow;
+    if (isNarrow) {
+      ensureMobileSidebarHistory();
+      return;
+    }
+    mobileSidebarHistoryRef.current = false;
+    mobileDetailHistoryRef.current = false;
+    if (
+      isMobileSidebarHistoryState(window.history.state) ||
+      isMobileDetailHistoryState(window.history.state)
+    ) {
+      window.history.replaceState(stripMobileHistoryState(window.history.state), "", window.location.href);
+    }
+  }, [isNarrow]);
+
+  useEffect(() => {
+    showDetailRef.current = showDetail;
+  }, [showDetail]);
+
+  useEffect(() => {
+    setSelectedPaneId((current) => chooseSelectedPane(snapshot, current));
+  }, [snapshot]);
+
+  useEffect(() => {
+    writeDisplayPrefs({
+      scope,
+      sidebarView,
+      agentSort,
+      sidebarOpen,
+      activeSpaceId,
+      selectedPaneId,
+    });
+  }, [scope, sidebarView, agentSort, sidebarOpen, activeSpaceId, selectedPaneId]);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => refreshSnapshot(setSnapshot, setLoadState, () => disposed);
+    void refresh();
+    const interval = window.setInterval(refresh, 10000);
+    const events = openEventsSocket("/ws/events", () => void refresh());
+    const uiEvents = openEventsSocket("/ws/ui-events", (event) => {
+      const paneId = selectionPaneId(event);
+      if (paneId) {
+        setSelectedPaneId(paneId);
+        const pane = snapshotRef.current?.panes.find((item) => item.pane_id === paneId);
+        if (pane) {
+          setActiveSpaceId(pane.workspace_id);
+        }
+      }
+      void refresh();
+    });
+    return () => {
+      disposed = true;
+      events?.close();
+      uiEvents?.close();
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const timer = window.setTimeout(() => setError(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  // Feature-detect whether the bridge permits `pane.split` so the split
+  // controls only appear when they will actually work.
+  useEffect(() => {
+    let cancelled = false;
+    void probeSplitSupported().then((ok) => {
+      if (!cancelled) {
+        setSplitSupported(ok);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onPopState = (event: PopStateEvent) => {
+      if (!isNarrowRef.current) {
+        return;
+      }
+      if (isMobileDetailHistoryState(event.state)) {
+        mobileSidebarHistoryRef.current = true;
+        mobileDetailHistoryRef.current = true;
+        if (!showDetailRef.current) {
+          showDetailRef.current = true;
+          setShowDetail(true);
+        }
+        return;
+      }
+      if (mobileDetailHistoryRef.current || showDetailRef.current) {
+        mobileDetailHistoryRef.current = false;
+        mobileSidebarHistoryRef.current = isMobileSidebarHistoryState(event.state);
+        showDetailRef.current = false;
+        setShowDetail(false);
+        return;
+      }
+      if (isMobileSidebarHistoryState(event.state)) {
+        mobileSidebarHistoryRef.current = true;
+        return;
+      }
+      mobileSidebarHistoryRef.current = false;
+      window.setTimeout(ensureMobileSidebarHistory, 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const selectedPane = useMemo(
+    () => snapshot?.panes.find((pane) => pane.pane_id === resolvedPaneId) ?? null,
+    [snapshot, resolvedPaneId],
+  );
+
+  useEffect(() => {
+    if (isNarrow) {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollLeft = 0;
+      document.body.scrollLeft = 0;
+    }
+  }, [isNarrow, showDetail]);
+
+  const activeSpace = useMemo(() => {
+    if (!snapshot || snapshot.workspaces.length === 0) {
+      return null;
+    }
+    return (
+      (selectedPane &&
+        snapshot.workspaces.find(
+          (workspace) => workspace.workspace_id === selectedPane.workspace_id,
+        )) ||
+      (activeSpaceId &&
+        snapshot.workspaces.find((workspace) => workspace.workspace_id === activeSpaceId)) ||
+      snapshot.workspaces.find((workspace) => workspace.focused) ||
+      snapshot.workspaces[0] ||
+      null
+    );
+  }, [snapshot, activeSpaceId, selectedPane]);
+
+  // The active tab's split layout, normalized to fractions of the tab area so we
+  // can reproduce the herdr split geometry in the browser. Null when the tab has
+  // a single pane (or is zoomed) — then we render one terminal full-screen.
+  const splitCells = useMemo<{ pane: PaneInfo; style: CSSProperties }[] | null>(() => {
+    if (!snapshot || !selectedPane) {
+      return null;
+    }
+    const layout = snapshot.layouts.find((item) =>
+      item.panes.some((pane) => pane.pane_id === selectedPane.pane_id),
+    );
+    if (!layout || layout.zoomed || layout.panes.length < 2) {
+      return null;
+    }
+    const { area } = layout;
+    if (area.width <= 0 || area.height <= 0) {
+      return null;
+    }
+    const cells: { pane: PaneInfo; style: CSSProperties }[] = [];
+    for (const lp of layout.panes) {
+      const pane = snapshot.panes.find((item) => item.pane_id === lp.pane_id);
+      if (!pane) {
+        continue;
+      }
+      cells.push({
+        pane,
+        style: {
+          left: `${((lp.rect.x - area.x) / area.width) * 100}%`,
+          top: `${((lp.rect.y - area.y) / area.height) * 100}%`,
+          width: `${(lp.rect.width / area.width) * 100}%`,
+          height: `${(lp.rect.height / area.height) * 100}%`,
+        },
+      });
+    }
+    return cells.length > 1 ? cells : null;
+  }, [snapshot, selectedPane]);
+
+  const showSplit = !isNarrow && splitCells !== null;
+
+  // Mirror browser navigation to the herdr session so `active_tab_id` tracks
+  // what we're viewing here. `tab.focus` also activates the tab's workspace, so
+  // a workspace-only focus is just the fallback for a space with no panes yet.
+  const pushFocus = (tabId?: string, workspaceId?: string) => {
+    if (tabId) {
+      void commands.focusTab(tabId).catch(() => {});
+    } else if (workspaceId) {
+      void commands.focusWorkspace(workspaceId).catch(() => {});
+    }
+  };
+
+  const openMobileDetail = () => {
+    ensureMobileSidebarHistory();
+    showDetailRef.current = true;
+    setShowDetail(true);
+    if (!mobileDetailHistoryRef.current) {
+      window.history.pushState(
+        withMobileDetailHistoryState(window.history.state),
+        "",
+        window.location.href,
+      );
+      mobileDetailHistoryRef.current = true;
+    }
+  };
+
+  const closeMobileDetail = () => {
+    if (mobileDetailHistoryRef.current && isMobileDetailHistoryState(window.history.state)) {
+      window.history.back();
+      return;
+    }
+    mobileDetailHistoryRef.current = false;
+    showDetailRef.current = false;
+    setShowDetail(false);
+  };
+
+  const openPane = (pane: PaneInfo) => {
+    setSelectedPaneId(pane.pane_id);
+    setActiveSpaceId(pane.workspace_id);
+    void syncSelectedPane(pane.pane_id).catch(() => {});
+    pushFocus(pane.tab_id, pane.workspace_id);
+    if (isNarrow) {
+      openMobileDetail();
+    }
+  };
+
+  const selectSpace = (workspaceId: string) => {
+    setActiveSpaceId(workspaceId);
+    if (!isNarrow && snapshot) {
+      const paneId = choosePaneForWorkspace(snapshot, workspaceId);
+      if (paneId) {
+        setSelectedPaneId(paneId);
+        const pane = snapshot.panes.find((item) => item.pane_id === paneId);
+        void syncSelectedPane(paneId).catch(() => {});
+        pushFocus(pane?.tab_id, workspaceId);
+        return;
+      }
+    }
+    pushFocus(undefined, workspaceId);
+  };
+
+  const selectTab = (tabId: string) => {
+    if (!snapshot) {
+      return;
+    }
+    const paneId = choosePaneForTab(snapshot, tabId);
+    if (paneId) {
+      const pane = snapshot.panes.find((item) => item.pane_id === paneId);
+      if (pane) {
+        openPane(pane);
+      }
+    }
+  };
+
+  const refreshNow = () => {
+    setLoadState("loading");
+    void fetchSnapshot()
+      .then((next) => {
+        setSnapshot(next);
+        setLoadState("ready");
+      })
+      .catch(() => setLoadState("error"));
+  };
+
+  async function exec(action: () => Promise<{ [key: string]: unknown }>, selectCreated = false) {
+    setBusy(true);
+    try {
+      const result = await action();
+      const next = await fetchSnapshot();
+      setSnapshot(next);
+      setLoadState("ready");
+      if (selectCreated) {
+        const paneId = createdPaneId(result);
+        const created = paneId ? next.panes.find((pane) => pane.pane_id === paneId) : undefined;
+        if (created) {
+          setSelectedPaneId(created.pane_id);
+          setActiveSpaceId(created.workspace_id);
+          void syncSelectedPane(created.pane_id).catch(() => {});
+          if (isNarrow) {
+            openMobileDetail();
+          }
+        }
+      }
+      setError(null);
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Command failed");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const onMenuPick = (key: string) => {
+    if (!menu) {
+      return;
+    }
+    const { kind, id, label } = menu;
+    setMenu(null);
+    if (key === "rename") {
+      setDialog({ mode: "rename", kind, id, label });
+    } else if (key === "close") {
+      setDialog({ mode: "close", kind, id, label });
+    } else if (key === "newtab") {
+      void exec(() => commands.createTab(id), true);
+    }
+  };
+
+  const submitRename = (value: string) => {
+    if (!dialog) {
+      return;
+    }
+    const { kind, id } = dialog;
+    const action =
+      kind === "space"
+        ? () => commands.renameWorkspace(id, value)
+        : kind === "tab"
+          ? () => commands.renameTab(id, value)
+          : () => commands.renamePane(id, value);
+    void exec(action).then((ok) => ok && setDialog(null));
+  };
+
+  const confirmClose = () => {
+    if (!dialog) {
+      return;
+    }
+    const { kind, id } = dialog;
+    const action =
+      kind === "space"
+        ? () => commands.closeWorkspace(id)
+        : kind === "tab"
+          ? () => commands.closeTab(id)
+          : () => commands.closePane(id);
+    void exec(action).then((ok) => ok && setDialog(null));
+  };
+
+  const renderTerminal = !isNarrow || showDetail;
+
+  return (
+    <div
+      className="app"
+      data-sidebar={sidebarOpen ? "open" : "closed"}
+      data-mobile={isNarrow ? "true" : "false"}
+      data-detail={isNarrow && showDetail ? "true" : "false"}
+    >
+      <aside className="sidebar" aria-label="Switcher">
+        <Switcher
+          snapshot={snapshot}
+          loadState={loadState}
+          scope={scope}
+          sidebarView={sidebarView}
+          agentSort={agentSort}
+          activeSpace={activeSpace}
+          selectedPane={selectedPane}
+          onScope={setScope}
+          onSidebarView={setSidebarView}
+          onAgentSort={setAgentSort}
+          onSelectSpace={selectSpace}
+          onSelectTab={selectTab}
+          onSelectPane={openPane}
+          onRefresh={refreshNow}
+          onCreateSpace={() => void exec(() => commands.createWorkspace(), true)}
+          onCreateTab={(workspaceId) => void exec(() => commands.createTab(workspaceId), true)}
+          onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
+        />
+      </aside>
+
+      <section className="stage" aria-label="Terminal">
+        <TabBar
+          snapshot={snapshot}
+          activeSpace={activeSpace}
+          selectedPane={selectedPane}
+          onSelectTab={selectTab}
+          onCreateTab={(workspaceId) => void exec(() => commands.createTab(workspaceId), true)}
+          onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
+        />
+        <header className="stage-bar">
+          <button
+            className="icon-btn"
+            type="button"
+            aria-label={isNarrow ? "Back to switcher" : "Toggle sidebar"}
+            title={isNarrow ? "Back" : "Toggle sidebar"}
+            onClick={() => (isNarrow ? closeMobileDetail() : setSidebarOpen((open) => !open))}
+          >
+            {isNarrow ? <ChevronLeft size={20} /> : <PanelLeft size={18} />}
+          </button>
+          <div className="stage-id">
+            <span className="stage-title">{selectedPane ? paneTitle(selectedPane) : "herdr-web"}</span>
+            <span className="stage-sub mono">
+              {stageBreadcrumb(snapshot, selectedPane, loadState)}
+            </span>
+          </div>
+          {splitSupported && selectedPane && !isNarrow ? (
+            <>
+              <button
+                className="icon-btn"
+                type="button"
+                aria-label="Split right"
+                title="Split right"
+                disabled={busy}
+                onClick={() => void exec(() => commands.splitPane(selectedPane.pane_id, "right"))}
+              >
+                <SplitSquareHorizontal size={18} />
+              </button>
+              <button
+                className="icon-btn"
+                type="button"
+                aria-label="Split down"
+                title="Split down"
+                disabled={busy}
+                onClick={() => void exec(() => commands.splitPane(selectedPane.pane_id, "down"))}
+              >
+                <SplitSquareVertical size={18} />
+              </button>
+            </>
+          ) : null}
+          {selectedPane ? (
+            <button
+              className="icon-btn"
+              type="button"
+              aria-label="Refit terminal"
+              title="Refit terminal"
+              onClick={() => setRefitToken((token) => token + 1)}
+            >
+              <RefreshCw size={18} />
+            </button>
+          ) : null}
+          {selectedPane ? <StatusBadge status={selectedPane.agent_status} /> : null}
+        </header>
+        {showSplit && splitCells ? (
+          <SplitGrid
+            cells={splitCells}
+            selectedPaneId={selectedPane?.pane_id ?? null}
+            onSelectPane={openPane}
+            refitToken={refitToken}
+          />
+        ) : renderTerminal ? (
+          <TerminalView
+            pane={selectedPane}
+            autoFocus={!isNarrow}
+            scrollSensitivity={isNarrow ? 2 : 0.4}
+            mobileControls={isNarrow}
+            refitToken={refitToken}
+          />
+        ) : (
+          <div className="terminal-stage" aria-hidden="true" />
+        )}
+      </section>
+
+      {menu ? (
+        <ActionMenu
+          x={menu.x}
+          y={menu.y}
+          title={menu.label}
+          items={menuItems(menu.kind)}
+          onPick={onMenuPick}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {dialog?.mode === "rename" ? (
+        <RenameDialog
+          title={`Rename ${dialog.kind}`}
+          initial={dialog.label}
+          placeholder={dialog.label}
+          busy={busy}
+          onCancel={() => setDialog(null)}
+          onSubmit={submitRename}
+        />
+      ) : null}
+
+      {dialog?.mode === "close" ? (
+        <ConfirmDialog
+          title={closeCopy(dialog.kind).title}
+          message={closeCopy(dialog.kind).message}
+          confirmLabel={closeCopy(dialog.kind).confirm}
+          busy={busy}
+          onCancel={() => setDialog(null)}
+          onConfirm={confirmClose}
+        />
+      ) : null}
+
+      {error ? (
+        <div className="toast" role="alert">
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SplitGrid({
+  cells,
+  selectedPaneId,
+  onSelectPane,
+  refitToken,
+}: {
+  cells: { pane: PaneInfo; style: CSSProperties }[];
+  selectedPaneId: string | null;
+  onSelectPane: (pane: PaneInfo) => void;
+  refitToken: number;
+}) {
+  return (
+    <div className="pane-grid" aria-label="Split panes">
+      {cells.map(({ pane, style }) => (
+        <div
+          key={pane.pane_id}
+          className="pane-cell"
+          data-selected={pane.pane_id === selectedPaneId}
+          style={style}
+          onPointerDown={() => onSelectPane(pane)}
+        >
+          <TerminalView
+            pane={pane}
+            autoFocus={pane.pane_id === selectedPaneId}
+            scrollSensitivity={0.4}
+            refitToken={pane.pane_id === selectedPaneId ? refitToken : 0}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TabBar({
+  snapshot,
+  activeSpace,
+  selectedPane,
+  onSelectTab,
+  onCreateTab,
+  onMenu,
+}: {
+  snapshot: Snapshot | null;
+  activeSpace: WorkspaceInfo | null;
+  selectedPane: PaneInfo | null;
+  onSelectTab: (tabId: string) => void;
+  onCreateTab: (workspaceId: string) => void;
+  onMenu: (kind: MenuKind, id: string, label: string, x: number, y: number) => void;
+}) {
+  if (!snapshot || !activeSpace) {
+    return null;
+  }
+  const tabs = sortTabsForWorkspace(snapshot.tabs, activeSpace.workspace_id);
+  if (tabs.length === 0) {
+    return null;
+  }
+  const activeTabId =
+    selectedPane && selectedPane.workspace_id === activeSpace.workspace_id
+      ? selectedPane.tab_id
+      : activeSpace.active_tab_id;
+  return (
+    <div className="tabbar" role="tablist" aria-label="Tabs">
+      {tabs.map((tab) => (
+        <button
+          key={tab.tab_id}
+          type="button"
+          className="tabbar-tab"
+          role="tab"
+          aria-selected={tab.tab_id === activeTabId}
+          data-active={tab.tab_id === activeTabId}
+          onClick={() => onSelectTab(tab.tab_id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onMenu("tab", tab.tab_id, tab.label, event.clientX, event.clientY);
+          }}
+        >
+          <span className="dot" data-status={tab.agent_status} />
+          <span className="tabbar-name">{tab.label}</span>
+        </button>
+      ))}
+      <button
+        className="tabbar-add"
+        type="button"
+        aria-label="New tab"
+        title="New tab"
+        onClick={() => onCreateTab(activeSpace.workspace_id)}
+      >
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
+function Switcher({
+  snapshot,
+  loadState,
+  scope,
+  sidebarView,
+  agentSort,
+  activeSpace,
+  selectedPane,
+  onScope,
+  onSidebarView,
+  onAgentSort,
+  onSelectSpace,
+  onSelectTab,
+  onSelectPane,
+  onRefresh,
+  onCreateSpace,
+  onCreateTab,
+  onMenu,
+}: {
+  snapshot: Snapshot | null;
+  loadState: LoadState;
+  scope: Scope;
+  sidebarView: SidebarView;
+  agentSort: AgentSort;
+  activeSpace: WorkspaceInfo | null;
+  selectedPane: PaneInfo | null;
+  onScope: (scope: Scope) => void;
+  onSidebarView: (view: SidebarView) => void;
+  onAgentSort: (sort: AgentSort) => void;
+  onSelectSpace: (workspaceId: string) => void;
+  onSelectTab: (tabId: string) => void;
+  onSelectPane: (pane: PaneInfo) => void;
+  onRefresh: () => void;
+  onCreateSpace: () => void;
+  onCreateTab: (workspaceId: string) => void;
+  onMenu: (kind: MenuKind, id: string, label: string, x: number, y: number) => void;
+}) {
+  const panes = snapshot?.panes ?? [];
+  const roll = aggregateStatus(panes);
+  const headerSummary = summary(panes);
+
+  const agentPanes = useMemo(() => {
+    if (!snapshot) {
+      return [];
+    }
+    const scoped =
+      scope === "all"
+        ? snapshot.panes
+        : snapshot.panes.filter((pane) => pane.workspace_id === activeSpace?.workspace_id);
+    return sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
+  }, [snapshot, scope, activeSpace?.workspace_id, agentSort]);
+
+  const spaceGroups = useMemo(() => {
+    if (!snapshot) {
+      return [];
+    }
+    const spaces =
+      scope === "all"
+        ? snapshot.workspaces
+        : snapshot.workspaces.filter(
+            (workspace) => workspace.workspace_id === activeSpace?.workspace_id,
+          );
+    return spaces.map((workspace) => ({
+      workspace,
+      tabs: sortTabsForWorkspace(snapshot.tabs, workspace.workspace_id)
+        .map((tab) => ({ tab, panes: sortPanesForTab(snapshot.panes, tab.tab_id) }))
+        .filter((group) => group.panes.length > 0),
+    }));
+  }, [snapshot, scope, activeSpace?.workspace_id]);
+
+  let paneIndex = 0;
+
+  return (
+    <>
+      <header className="sb-head">
+        <div className="brand">
+            <span className="brand-mark">
+              <span className="brand-dot dot" data-status={roll} />
+              herdr-web
+            </span>
+          {headerSummary ? (
+            <span className="brand-sub">
+              <b>{headerSummary}</b>
+            </span>
+          ) : null}
+        </div>
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label="Refresh"
+          title="Refresh"
+          data-spin={loadState === "loading" ? "" : undefined}
+          onClick={onRefresh}
+        >
+          <RefreshCw size={16} />
+        </button>
+      </header>
+
+      <div className="sidebar-mode" role="tablist" aria-label="Sidebar view">
+        <button
+          type="button"
+          data-on={sidebarView === "agents"}
+          onClick={() => onSidebarView("agents")}
+        >
+          Agents
+        </button>
+        <button
+          type="button"
+          data-on={sidebarView === "tabs"}
+          onClick={() => onSidebarView("tabs")}
+        >
+          Tabs
+        </button>
+      </div>
+      <div className="sidebar-scope" role="tablist" aria-label="Sidebar scope">
+        <button type="button" data-on={scope === "space"} onClick={() => onScope("space")}>
+          space
+        </button>
+        <button type="button" data-on={scope === "all"} onClick={() => onScope("all")}>
+          all
+        </button>
+      </div>
+
+      <div className="list">
+        {!snapshot ? (
+          <div className="empty">
+            <strong>{loadState === "error" ? "Bridge unavailable" : "Connecting…"}</strong>
+            <span>{loadState === "error" ? "Could not reach the herdr bridge." : ""}</span>
+          </div>
+        ) : (
+          <>
+            {/* SPACES ---------------------------------------------------- */}
+            {scope === "space" ? (
+            <section className="sec">
+              <div className="sec-head">
+                <span className="sec-label">spaces</span>
+                <span className="sec-rule" />
+                <span className="sec-count mono">{snapshot.workspaces.length}</span>
+                <button
+                  className="sec-add"
+                  type="button"
+                  aria-label="New space"
+                  title="New space"
+                  onClick={onCreateSpace}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              {snapshot.workspaces.length === 0 ? (
+                <div className="empty">
+                  <strong>No spaces yet</strong>
+                  <span>Tap + to create one.</span>
+                </div>
+              ) : (
+                snapshot.workspaces.map((workspace, index) => (
+                  <SpaceRow
+                    key={workspace.workspace_id}
+                    index={index}
+                    workspace={workspace}
+                    active={workspace.workspace_id === activeSpace?.workspace_id}
+                    attention={countAttention(
+                      snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id),
+                    )}
+                    onSelect={() => onSelectSpace(workspace.workspace_id)}
+                    onMenu={(x, y) =>
+                      onMenu("space", workspace.workspace_id, workspace.label, x, y)
+                    }
+                  />
+                ))
+              )}
+            </section>
+            ) : null}
+
+            {/* PANES ----------------------------------------------------- */}
+            {snapshot.workspaces.length > 0 ? (
+            <section className="sec">
+              <div className="sec-head">
+                <span className="sec-label">
+                  {sidebarView === "agents"
+                    ? scope === "all"
+                      ? "all agents"
+                      : "space agents"
+                    : scope === "all"
+                      ? "all tabs"
+                      : (activeSpace?.label ?? "tabs")}
+                </span>
+                <span className="sec-rule" />
+                {sidebarView === "agents" ? (
+                  <label className="sort-control">
+                    <span>sort</span>
+                    <select
+                      value={agentSort}
+                      onChange={(event) => onAgentSort(event.currentTarget.value as AgentSort)}
+                    >
+                      <option value="attention">attention</option>
+                      <option value="status">status</option>
+                      <option value="workspace">workspace</option>
+                    </select>
+                  </label>
+                ) : scope === "space" && activeSpace ? (
+                  <button
+                    className="sec-add"
+                    type="button"
+                    aria-label="New tab"
+                    title="New tab"
+                    onClick={() => onCreateTab(activeSpace.workspace_id)}
+                  >
+                    <Plus size={14} />
+                  </button>
+                ) : null}
+              </div>
+
+              {sidebarView === "agents" ? (
+                agentPanes.length === 0 ? (
+                  <div className="empty">
+                    <strong>No detected agents</strong>
+                    <span>Open the Tabs view for plain panes.</span>
+                  </div>
+                ) : (
+                  agentPanes.map((pane, index) => (
+                    <AgentRow
+                      key={pane.pane_id}
+                      index={index}
+                      pane={pane}
+                      workspace={snapshot.workspaces.find(
+                        (workspace) => workspace.workspace_id === pane.workspace_id,
+                      )}
+                      tab={snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id)}
+                      active={pane.pane_id === selectedPane?.pane_id}
+                      onSelect={() => onSelectPane(pane)}
+                      onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                    />
+                  ))
+                )
+              ) : spaceGroups.every((group) => group.tabs.length === 0) ? (
+                <div className="empty">
+                  <strong>No panes</strong>
+                  <span>This space has no panes yet.</span>
+                </div>
+              ) : (
+                spaceGroups.map((group) => (
+                  <Fragment key={group.workspace.workspace_id}>
+                    {scope === "all" ? (
+                      <div className="grp-space">
+                        <span className="dot" data-status={group.workspace.agent_status} />
+                        <span className="grp-space-name">{group.workspace.label}</span>
+                        <span className="grp-space-line" />
+                      </div>
+                    ) : null}
+                    {group.tabs.map(({ tab, panes: tabPanes }) => (
+                      <div className="tabgrp" key={tab.tab_id}>
+                        {group.workspace.tab_count > 1 || tabPanes.length > 1 ? (
+                          <TabDivider
+                            tab={tab}
+                            count={tabPanes.length}
+                            onSelect={() => onSelectTab(tab.tab_id)}
+                            onMenu={(x, y) => onMenu("tab", tab.tab_id, tab.label, x, y)}
+                          />
+                        ) : null}
+                        {tabPanes.map((pane) => (
+                          <PaneRow
+                            key={pane.pane_id}
+                            index={paneIndex++}
+                            pane={pane}
+                            active={pane.pane_id === selectedPane?.pane_id}
+                            onSelect={() => onSelectPane(pane)}
+                            onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                          />
+                        ))}
+                      </div>
+                    ))}
+                  </Fragment>
+                ))
+              )}
+            </section>
+            ) : null}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function SpaceRow({
+  workspace,
+  active,
+  attention,
+  index,
+  onSelect,
+  onMenu,
+}: {
+  workspace: WorkspaceInfo;
+  active: boolean;
+  attention: number;
+  index: number;
+  onSelect: () => void;
+  onMenu: (x: number, y: number) => void;
+}) {
+  const press = useLongPress(onMenu, onSelect);
+  return (
+    <button
+      className="space-row"
+      type="button"
+      data-active={active}
+      style={{ animationDelay: `${Math.min(index, 14) * 22}ms` }}
+      {...press}
+    >
+      <span className="dot" data-status={workspace.agent_status} />
+      <span className="space-body">
+        <span className="space-name">{workspace.label}</span>
+        <span className="space-sub mono">{spaceSubtitle(workspace)}</span>
+      </span>
+      {attention > 0 ? <span className="attn">{attention}</span> : null}
+    </button>
+  );
+}
+
+function TabDivider({
+  tab,
+  count,
+  onSelect,
+  onMenu,
+}: {
+  tab: TabInfo;
+  count: number;
+  onSelect: () => void;
+  onMenu: (x: number, y: number) => void;
+}) {
+  const press = useLongPress(onMenu, onSelect);
+  return (
+    <div className="tab-div">
+      <button type="button" className="tab-head" {...press}>
+        <span className="tab-name">{tab.label}</span>
+        {count > 1 ? (
+          <span className="tab-split mono">
+            <SplitGlyph />
+            {count}
+          </span>
+        ) : null}
+      </button>
+      <span className="tab-line" />
+    </div>
+  );
+}
+
+function PaneRow({
+  pane,
+  active,
+  index,
+  onSelect,
+  onMenu,
+}: {
+  pane: PaneInfo;
+  active: boolean;
+  index: number;
+  onSelect: () => void;
+  onMenu: (x: number, y: number) => void;
+}) {
+  const press = useLongPress(onMenu, onSelect);
+  const meta = paneMeta(pane);
+  return (
+    <button
+      className="pane-row"
+      type="button"
+      data-active={active}
+      data-status={pane.agent_status}
+      style={{ animationDelay: `${Math.min(index, 14) * 22}ms` }}
+      {...press}
+    >
+      <span className="dot" data-status={pane.agent_status} />
+      <span className="pane-body">
+        <span className="pane-name">{paneTitle(pane)}</span>
+        {meta ? <span className="pane-meta mono">{meta}</span> : null}
+      </span>
+      {isLoud(pane.agent_status) ? (
+        <span className="pane-word" data-status={pane.agent_status}>
+          {statusLabel(pane.agent_status)}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function AgentRow({
+  pane,
+  workspace,
+  tab,
+  active,
+  index,
+  onSelect,
+  onMenu,
+}: {
+  pane: PaneInfo;
+  workspace?: WorkspaceInfo;
+  tab?: TabInfo;
+  active: boolean;
+  index: number;
+  onSelect: () => void;
+  onMenu: (x: number, y: number) => void;
+}) {
+  const press = useLongPress(onMenu, onSelect);
+  return (
+    <button
+      className="pane-row agent-row"
+      type="button"
+      data-active={active}
+      data-status={pane.agent_status}
+      style={{ animationDelay: `${Math.min(index, 14) * 22}ms` }}
+      {...press}
+    >
+      <span className="dot" data-status={pane.agent_status} />
+      <span className="pane-body">
+        <span className="pane-name">{agentTitle(pane)}</span>
+        <span className="pane-meta mono">{agentSubtitle(pane, workspace, tab)}</span>
+      </span>
+      {isLoud(pane.agent_status) ? (
+        <span className="pane-word" data-status={pane.agent_status}>
+          {statusLabel(pane.agent_status)}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function StatusBadge({ status }: { status: AgentStatus }) {
+  return (
+    <span className="badge" data-status={status}>
+      <span className="dot" data-status={status} />
+      {statusLabel(status)}
+    </span>
+  );
+}
+
+function isAgentPane(pane: PaneInfo) {
+  return Boolean(
+    pane.agent ||
+      pane.display_agent ||
+      pane.custom_status ||
+      pane.title ||
+      pane.agent_status !== "unknown",
+  );
+}
+
+function sortAgentPanes(panes: PaneInfo[], sort: AgentSort, snapshot: Snapshot) {
+  const workspaceNumber = new Map(
+    snapshot.workspaces.map((workspace) => [workspace.workspace_id, workspace.number]),
+  );
+  const tabNumber = new Map(snapshot.tabs.map((tab) => [tab.tab_id, tab.number]));
+  const statusOrder: Record<AgentStatus, number> = {
+    blocked: 0,
+    working: 1,
+    done: 2,
+    idle: 3,
+    unknown: 4,
+  };
+  const attentionOrder: Record<AgentStatus, number> = {
+    blocked: 0,
+    done: 1,
+    working: 2,
+    idle: 3,
+    unknown: 4,
+  };
+
+  return [...panes].sort((a, b) => {
+    if (sort === "attention") {
+      const attention = Number(isAttention(b.agent_status)) - Number(isAttention(a.agent_status));
+      if (attention !== 0) {
+        return attention;
+      }
+      const status = attentionOrder[a.agent_status] - attentionOrder[b.agent_status];
+      if (status !== 0) {
+        return status;
+      }
+    } else if (sort === "status") {
+      const status = statusOrder[a.agent_status] - statusOrder[b.agent_status];
+      if (status !== 0) {
+        return status;
+      }
+    }
+
+    const workspace =
+      (workspaceNumber.get(a.workspace_id) ?? Number.MAX_SAFE_INTEGER) -
+      (workspaceNumber.get(b.workspace_id) ?? Number.MAX_SAFE_INTEGER);
+    if (workspace !== 0) {
+      return workspace;
+    }
+    const tab =
+      (tabNumber.get(a.tab_id) ?? Number.MAX_SAFE_INTEGER) -
+      (tabNumber.get(b.tab_id) ?? Number.MAX_SAFE_INTEGER);
+    if (tab !== 0) {
+      return tab;
+    }
+    return a.pane_id.localeCompare(b.pane_id, undefined, { numeric: true });
+  });
+}
+
+function agentTitle(pane: PaneInfo) {
+  return pane.display_agent || pane.label || pane.agent || pane.title || paneTitle(pane);
+}
+
+function agentSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tab?: TabInfo) {
+  const stateText =
+    pane.custom_status ||
+    pane.state_labels?.[statusLabel(pane.agent_status)] ||
+    statusLabel(pane.agent_status);
+  const dir = basename(pane.foreground_cwd || pane.cwd);
+  return [stateText, workspace?.label, tab?.label, dir].filter(Boolean).join(" · ");
+}
+
+function basename(path?: string) {
+  if (!path) {
+    return "";
+  }
+  const trimmed = path.replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.split("/").pop() ?? "";
+}
+
+function SplitGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <rect
+        x="0.75"
+        y="0.75"
+        width="10.5"
+        height="10.5"
+        rx="1.75"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+      <line x1="6" y1="1" x2="6" y2="11" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function menuItems(kind: MenuKind): MenuItem[] {
+  if (kind === "space") {
+    return [
+      { key: "rename", label: "Rename" },
+      { key: "newtab", label: "New tab" },
+      { key: "close", label: "Close space", danger: true },
+    ];
+  }
+  if (kind === "tab") {
+    return [
+      { key: "rename", label: "Rename" },
+      { key: "close", label: "Close tab", danger: true },
+    ];
+  }
+  return [
+    { key: "rename", label: "Rename" },
+    { key: "close", label: "Close pane", danger: true },
+  ];
+}
+
+function closeCopy(kind: MenuKind) {
+  switch (kind) {
+    case "space":
+      return {
+        title: "Close space?",
+        message: "This closes the space and every tab and pane inside it.",
+        confirm: "Close space",
+      };
+    case "tab":
+      return {
+        title: "Close tab?",
+        message: "This closes the tab and all of its panes.",
+        confirm: "Close tab",
+      };
+    case "pane":
+      return {
+        title: "Close pane?",
+        message: "This ends the pane's terminal session.",
+        confirm: "Close pane",
+      };
+  }
+}
+
+function useIsNarrow() {
+  const [narrow, setNarrow] = useState(() => isMobileLayout());
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const update = () => setNarrow(isMobileLayout());
+    update();
+    mq.addEventListener("change", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    window.visualViewport?.addEventListener("resize", update);
+    return () => {
+      mq.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+      window.visualViewport?.removeEventListener("resize", update);
+    };
+  }, []);
+  return narrow;
+}
+
+function isMobileLayout() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return (
+    window.matchMedia(NARROW_QUERY).matches ||
+    navigator.maxTouchPoints > 0 ||
+    window.innerWidth <= 1024
+  );
+}
+
+function summary(panes: PaneInfo[]) {
+  const blocked = panes.filter((pane) => pane.agent_status === "blocked").length;
+  const done = panes.filter((pane) => pane.agent_status === "done").length;
+  const working = panes.filter((pane) => pane.agent_status === "working").length;
+  return blocked
+    ? `${blocked} blocked`
+    : done
+      ? `${done} done`
+      : working
+        ? `${working} working`
+        : null;
+}
+
+function stageBreadcrumb(snapshot: Snapshot | null, pane: PaneInfo | null, loadState: LoadState) {
+  if (!pane) {
+    if (loadState === "error") {
+      return "bridge unavailable";
+    }
+    return snapshot ? "no pane selected" : "connecting…";
+  }
+  const workspace = snapshot?.workspaces.find((item) => item.workspace_id === pane.workspace_id);
+  const tab = snapshot?.tabs.find((item) => item.tab_id === pane.tab_id);
+  return [workspace?.label, tab?.label].filter(Boolean).join(" · ") || pane.pane_id;
+}
+
+async function fetchSnapshot() {
+  const response = await fetch("/api/snapshot");
+  if (!response.ok) {
+    throw new Error(`snapshot failed: ${response.status}`);
+  }
+  return (await response.json()) as Snapshot;
+}
+
+async function syncSelectedPane(paneId: string) {
+  const response = await fetch("/api/selection", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pane_id: paneId }),
+  });
+  if (!response.ok) {
+    throw new Error(`selection failed: ${response.status}`);
+  }
+}
+
+async function refreshSnapshot(
+  setSnapshot: (snapshot: Snapshot) => void,
+  setLoadState: (state: LoadState) => void,
+  isDisposed: () => boolean,
+) {
+  try {
+    const next = await fetchSnapshot();
+    if (!isDisposed()) {
+      setSnapshot(next);
+      setLoadState("ready");
+    }
+  } catch {
+    if (!isDisposed()) {
+      setLoadState("error");
+    }
+  }
+}
+
+function selectionPaneId(event: MessageEvent) {
+  if (typeof event.data !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(event.data) as { type?: unknown; pane_id?: unknown };
+    return parsed.type === "herdr_web.selection_changed" && typeof parsed.pane_id === "string"
+      ? parsed.pane_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function openEventsSocket(path: string, onEvent: (event: MessageEvent) => void) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${protocol}//${window.location.host}${path}`;
+  let socket: WebSocket | null = null;
+  let closed = false;
+  let reconnectTimer: number | null = null;
+  let attempts = 0;
+
+  const connect = () => {
+    if (closed) {
+      return;
+    }
+    const next = new WebSocket(url);
+    socket = next;
+    next.addEventListener("open", () => {
+      attempts = 0;
+    });
+    next.addEventListener("message", onEvent);
+    next.addEventListener("close", () => {
+      if (closed || socket !== next || reconnectTimer !== null) {
+        return;
+      }
+      const delay = Math.min(500 * 2 ** attempts, 5000);
+      attempts += 1;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    });
+  };
+
+  connect();
+  return {
+    close() {
+      closed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      socket?.close();
+    },
+  };
+}

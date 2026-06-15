@@ -1,0 +1,18 @@
+{
+  "name": "herdr-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:web": "npm run dev --prefix web",
+    "build:web": "npm run build --prefix web",
+    "test:web": "npm run test --prefix web",
+    "lint:web": "npm run lint --prefix web",
+    "bridge:build": "cargo build --manifest-path vendor/herdr/Cargo.toml --bin herdr",
+    "bridge:test": "cargo test --manifest-path vendor/herdr/Cargo.toml --bin herdr web_bridge",
+    "build": "npm run build:web && npm run bridge:build",
+    "test": "npm run test:web && npm run bridge:test",
+    "lint": "npm run lint:web",
+    "check": "npm run lint && npm run test && npm run build"
+  }
+}

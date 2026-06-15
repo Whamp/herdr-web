@@ -1,0 +1,10 @@
+/web/node_modules/
+/web/dist/
+/web/.vite/
+/web/.next/
+/web/tsconfig.tsbuildinfo
+/vendor/herdr/target/
+/vendor/herdr/vendor/libghostty-vt/.zig-cache/
+/vendor/herdr/vendor/libghostty-vt/zig-out/
+*.log
+.DS_Store

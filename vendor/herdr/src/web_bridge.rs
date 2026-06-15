@@ -1,0 +1,1008 @@
+use std::collections::HashMap;
+use std::fmt;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
+use interprocess::TryClone as _;
+use serde::{Deserialize, Serialize};
+use tower_http::services::ServeDir;
+
+use crate::api::client::{ApiClient, ApiClientError};
+use crate::api::schema::{
+    EmptyParams, EventsSubscribeParams, Method, PaneInfo, PaneLayoutParams, PaneLayoutSnapshot,
+    PaneListParams, Request, ResponseResult, Subscription, TabInfo, TabListParams, WorkspaceInfo,
+};
+use crate::protocol::{
+    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
+    ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
+    PROTOCOL_VERSION,
+};
+
+const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_PORT: u16 = 8787;
+const DEFAULT_COLS: u16 = 80;
+const DEFAULT_ROWS: u16 = 24;
+const DEFAULT_STATIC_DIR: &str = "web/dist";
+const MIN_TERMINAL_ATTACH_PROTOCOL: u32 = 13;
+
+#[derive(Debug, Clone)]
+struct BridgeOptions {
+    host: String,
+    port: u16,
+    static_dir: PathBuf,
+}
+
+#[derive(Clone)]
+struct BridgeState {
+    api: ApiClient,
+    client_socket_path: PathBuf,
+    terminal_sessions: Arc<Mutex<HashMap<String, SharedTerminalSession>>>,
+    selected_pane_id: Arc<Mutex<Option<String>>>,
+    ui_event_tx: tokio::sync::broadcast::Sender<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Snapshot {
+    workspaces: Vec<WorkspaceInfo>,
+    tabs: Vec<TabInfo>,
+    panes: Vec<PaneInfo>,
+    layouts: Vec<PaneLayoutSnapshot>,
+    selected_pane_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TerminalQuery {
+    terminal_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    #[serde(default)]
+    takeover: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TerminalClientFrame {
+    Input {
+        data: String,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+        #[serde(default)]
+        cell_width_px: u32,
+        #[serde(default)]
+        cell_height_px: u32,
+    },
+    Scroll {
+        direction: ScrollDirection,
+        #[serde(default = "default_scroll_lines")]
+        lines: u16,
+    },
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+fn default_scroll_lines() -> u16 {
+    3
+}
+
+#[derive(Debug, Clone)]
+enum TerminalOutput {
+    Bytes(Vec<u8>),
+    Close(String),
+}
+
+#[derive(Clone)]
+struct SharedTerminalSession {
+    write_tx: mpsc::Sender<ClientMessage>,
+    output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+    client_count: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+enum BridgeError {
+    Api(ApiClientError),
+    Io(io::Error),
+    Protocol(String),
+}
+
+impl fmt::Display for BridgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Api(err) => write!(f, "{err}"),
+            Self::Io(err) => write!(f, "{err}"),
+            Self::Protocol(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl IntoResponse for BridgeError {
+    fn into_response(self) -> Response {
+        let status = match self {
+            Self::Api(_) | Self::Io(_) | Self::Protocol(_) => StatusCode::BAD_GATEWAY,
+        };
+        let body = Json(serde_json::json!({
+            "error": self.to_string(),
+        }));
+        (status, body).into_response()
+    }
+}
+
+impl From<ApiClientError> for BridgeError {
+    fn from(err: ApiClientError) -> Self {
+        Self::Api(err)
+    }
+}
+
+impl From<io::Error> for BridgeError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
+    let options = match parse_options(args) {
+        Ok(Some(options)) => options,
+        Ok(None) => return Ok(0),
+        Err(message) => {
+            eprintln!("{message}");
+            eprintln!("usage: herdr web-bridge [--host HOST] [--port PORT] [--static-dir DIR]");
+            return Ok(2);
+        }
+    };
+
+    crate::logging::init_file_logging("herdr-web.log");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to create tokio runtime");
+
+    runtime.block_on(run_server(options))?;
+    Ok(0)
+}
+
+fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
+    let mut host = DEFAULT_HOST.to_string();
+    let mut port = DEFAULT_PORT;
+    let mut static_dir = PathBuf::from(DEFAULT_STATIC_DIR);
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "help" | "--help" | "-h" => {
+                print_help();
+                return Ok(None);
+            }
+            "--host" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --host".into());
+                };
+                host = value.clone();
+                index += 2;
+            }
+            "--port" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --port".into());
+                };
+                port = value
+                    .parse::<u16>()
+                    .map_err(|_| "port must be between 0 and 65535".to_string())?;
+                index += 2;
+            }
+            "--static-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --static-dir".into());
+                };
+                static_dir = PathBuf::from(value);
+                index += 2;
+            }
+            arg => return Err(format!("unknown herdr-web option: {arg}")),
+        }
+    }
+
+    Ok(Some(BridgeOptions {
+        host,
+        port,
+        static_dir,
+    }))
+}
+
+fn print_help() {
+    println!("herdr web-bridge");
+    println!();
+    println!("Usage: herdr web-bridge [--host HOST] [--port PORT] [--static-dir DIR]");
+    println!();
+    println!("Runs the local HTTP/WebSocket bridge for herdr-web.");
+    println!("Defaults to the active Herdr daemon sockets and 127.0.0.1:8787.");
+    println!("Use --host 0.0.0.0 to listen on non-loopback interfaces.");
+}
+
+async fn run_server(options: BridgeOptions) -> io::Result<()> {
+    if !is_loopback_bind_host(&options.host) {
+        eprintln!(
+            "warning: herdr web-bridge has no browser authentication yet; bind only on trusted networks"
+        );
+    }
+    let state = BridgeState {
+        api: ApiClient::local(),
+        client_socket_path: crate::server::socket_paths::client_socket_path(),
+        terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
+        selected_pane_id: Arc::new(Mutex::new(None)),
+        ui_event_tx: tokio::sync::broadcast::channel(256).0,
+    };
+    let app = Router::new()
+        .route("/api/snapshot", get(snapshot_handler))
+        .route("/api/command", post(command_handler))
+        .route("/api/selection", post(selection_handler))
+        .route("/ws/events", get(events_ws_handler))
+        .route("/ws/ui-events", get(ui_events_ws_handler))
+        .route("/ws/terminal", get(terminal_ws_handler))
+        .fallback_service(ServeDir::new(options.static_dir))
+        .with_state(state);
+    let bind = format!("{}:{}", options.host, options.port);
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    eprintln!("herdr web-bridge listening on http://{bind}");
+    axum::serve(listener, app).await
+}
+
+fn is_loopback_bind_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Mutating methods the browser client is allowed to invoke. Anything outside
+/// this list (e.g. `server.stop`, `pane.send_keys`) is rejected so the bridge
+/// only exposes the workspace/tab/pane lifecycle the UI needs.
+const ALLOWED_COMMANDS: &[&str] = &[
+    "workspace.create",
+    "workspace.rename",
+    "workspace.close",
+    "workspace.focus",
+    "tab.create",
+    "tab.rename",
+    "tab.close",
+    "tab.focus",
+    "pane.rename",
+    "pane.close",
+    // Layout-mutating: the web client builds splits directly.
+    "pane.split",
+];
+
+#[derive(Debug, Deserialize)]
+struct CommandRequest {
+    method: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectionRequest {
+    pane_id: String,
+}
+
+async fn command_handler(
+    State(state): State<BridgeState>,
+    Json(body): Json<CommandRequest>,
+) -> Result<Json<serde_json::Value>, BridgeError> {
+    if !ALLOWED_COMMANDS.contains(&body.method.as_str()) {
+        return Err(BridgeError::Protocol(format!(
+            "command not allowed: {}",
+            body.method
+        )));
+    }
+
+    let params = if body.params.is_null() {
+        serde_json::json!({})
+    } else {
+        body.params
+    };
+    let request_value = serde_json::json!({
+        "id": format!("herdr-web:cmd:{}", body.method),
+        "method": body.method,
+        "params": params,
+    });
+    let request: Request = serde_json::from_value(request_value)
+        .map_err(|err| BridgeError::Protocol(format!("invalid command: {err}")))?;
+
+    let api = state.api.clone();
+    let response = tokio::task::spawn_blocking(move || api.request(request))
+        .await
+        .map_err(|err| BridgeError::Protocol(err.to_string()))??;
+    let value = serde_json::to_value(response.result)
+        .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    Ok(Json(value))
+}
+
+async fn selection_handler(
+    State(state): State<BridgeState>,
+    Json(body): Json<SelectionRequest>,
+) -> Result<Json<serde_json::Value>, BridgeError> {
+    let pane_id = body.pane_id.trim();
+    if pane_id.is_empty() {
+        return Err(BridgeError::Protocol("missing pane_id".to_string()));
+    }
+    let panes = current_panes(&state.api)?;
+    if !panes.iter().any(|pane| pane.pane_id == pane_id) {
+        return Err(BridgeError::Protocol(format!("pane not found: {pane_id}")));
+    }
+    {
+        let mut selected = state
+            .selected_pane_id
+            .lock()
+            .map_err(|_| BridgeError::Protocol("selection lock poisoned".to_string()))?;
+        *selected = Some(pane_id.to_string());
+    }
+    let _ = state.ui_event_tx.send(
+        serde_json::json!({
+            "type": "herdr_web.selection_changed",
+            "pane_id": pane_id,
+        })
+        .to_string(),
+    );
+    Ok(Json(serde_json::json!({ "selected_pane_id": pane_id })))
+}
+
+async fn snapshot_handler(State(state): State<BridgeState>) -> Result<Json<Snapshot>, BridgeError> {
+    let workspaces = match api_request(
+        &state.api,
+        "herdr-web:workspace-list",
+        Method::WorkspaceList(EmptyParams::default()),
+    )? {
+        ResponseResult::WorkspaceList { workspaces } => workspaces,
+        other => {
+            return Err(BridgeError::Protocol(format!(
+                "unexpected response: {other:?}"
+            )))
+        }
+    };
+    let tabs = match api_request(
+        &state.api,
+        "herdr-web:tab-list",
+        Method::TabList(TabListParams::default()),
+    )? {
+        ResponseResult::TabList { tabs } => tabs,
+        other => {
+            return Err(BridgeError::Protocol(format!(
+                "unexpected response: {other:?}"
+            )))
+        }
+    };
+    let panes = current_panes(&state.api)?;
+    let layouts = collect_tab_layouts(&state.api, &tabs, &panes);
+    let selected_pane_id = shared_selected_pane(&state, &panes)?;
+
+    Ok(Json(Snapshot {
+        workspaces,
+        tabs,
+        panes,
+        layouts,
+        selected_pane_id,
+    }))
+}
+
+fn current_panes(api: &ApiClient) -> Result<Vec<PaneInfo>, BridgeError> {
+    match api_request(
+        api,
+        "herdr-web:pane-list",
+        Method::PaneList(PaneListParams::default()),
+    )? {
+        ResponseResult::PaneList { panes } => Ok(panes),
+        other => Err(BridgeError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+fn shared_selected_pane(
+    state: &BridgeState,
+    panes: &[PaneInfo],
+) -> Result<Option<String>, BridgeError> {
+    let mut selected = state
+        .selected_pane_id
+        .lock()
+        .map_err(|_| BridgeError::Protocol("selection lock poisoned".to_string()))?;
+    if selected
+        .as_ref()
+        .is_some_and(|pane_id| panes.iter().any(|pane| pane.pane_id == pane_id.as_str()))
+    {
+        return Ok(selected.clone());
+    }
+    *selected = None;
+    Ok(None)
+}
+
+fn api_request(api: &ApiClient, id: &str, method: Method) -> Result<ResponseResult, BridgeError> {
+    Ok(api
+        .request(Request {
+            id: id.to_string(),
+            method,
+        })?
+        .result)
+}
+
+fn collect_tab_layouts(
+    api: &ApiClient,
+    tabs: &[TabInfo],
+    panes: &[PaneInfo],
+) -> Vec<PaneLayoutSnapshot> {
+    tabs.iter()
+        .filter_map(|tab| {
+            let pane = panes.iter().find(|pane| pane.tab_id == tab.tab_id)?;
+            match api_request(
+                api,
+                &format!("herdr-web:layout:{}", tab.tab_id),
+                Method::PaneLayout(PaneLayoutParams {
+                    pane_id: Some(pane.pane_id.clone()),
+                }),
+            ) {
+                Ok(ResponseResult::PaneLayout { layout }) => Some(layout),
+                Ok(_) | Err(_) => None,
+            }
+        })
+        .collect()
+}
+
+async fn terminal_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<BridgeState>,
+    Query(query): Query<TerminalQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, query))
+}
+
+async fn events_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<BridgeState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_events_socket(socket, state))
+}
+
+async fn ui_events_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<BridgeState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ui_events_socket(socket, state))
+}
+
+async fn handle_events_socket(socket: WebSocket, state: BridgeState) {
+    let api = state.api.clone();
+    let mut ui_event_rx = state.ui_event_tx.subscribe();
+    let subscribed = tokio::task::spawn_blocking(move || open_event_subscription(api)).await;
+    let Ok(Ok(mut event_rx)) = subscribed else {
+        return;
+    };
+
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    loop {
+        tokio::select! {
+            Some(event) = event_rx.recv() => {
+                if ws_sender.send(Message::Text(event.into())).await.is_err() {
+                    break;
+                }
+            }
+            event = ui_event_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        if ws_sender.send(Message::Text(event.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Some(message) = ws_receiver.next() => {
+                match message {
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(Message::Text(_))
+                    | Ok(Message::Binary(_))
+                    | Ok(Message::Ping(_))
+                    | Ok(Message::Pong(_)) => {}
+                }
+            }
+            else => break,
+        }
+    }
+}
+
+async fn handle_ui_events_socket(socket: WebSocket, state: BridgeState) {
+    let mut ui_event_rx = state.ui_event_tx.subscribe();
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    loop {
+        tokio::select! {
+            event = ui_event_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        if ws_sender.send(Message::Text(event.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Some(message) = ws_receiver.next() => {
+                match message {
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(Message::Text(_))
+                    | Ok(Message::Binary(_))
+                    | Ok(Message::Ping(_))
+                    | Ok(Message::Pong(_)) => {}
+                }
+            }
+            else => break,
+        }
+    }
+}
+
+async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: TerminalQuery) {
+    if query.terminal_id.trim().is_empty() {
+        return;
+    }
+
+    let terminal_id = query.terminal_id.clone();
+    let cols = query.cols.unwrap_or(DEFAULT_COLS);
+    let rows = query.rows.unwrap_or(DEFAULT_ROWS);
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let session = match acquire_terminal_session(
+        state.clone(),
+        terminal_id.clone(),
+        cols,
+        rows,
+        query.takeover,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = ws_sender
+                .send(Message::Text(close_message(&err.to_string()).into()))
+                .await;
+            return;
+        }
+    };
+    session.client_count.fetch_add(1, Ordering::AcqRel);
+
+    let write_tx = session.write_tx.clone();
+    let mut terminal_rx = session.output_tx.subscribe();
+    let _ = write_tx.send(ClientMessage::Resize {
+        cols,
+        rows,
+        cell_width_px: 0,
+        cell_height_px: 0,
+    });
+
+    loop {
+        tokio::select! {
+            output = terminal_rx.recv() => {
+                match output {
+                    Ok(output) => match output {
+                    TerminalOutput::Bytes(bytes) => {
+                        if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    TerminalOutput::Close(reason) => {
+                        let _ = ws_sender.send(Message::Text(close_message(&reason).into())).await;
+                        break;
+                    }
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Some(message) = ws_receiver.next() => {
+                match message {
+                    Ok(Message::Text(text)) => {
+                        if handle_terminal_text_frame(&write_tx, text.as_str()).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::Binary(bytes)) => {
+                        let _ = write_tx.send(ClientMessage::Input { data: bytes.to_vec() });
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            else => break,
+        }
+    }
+
+    release_terminal_session(&state, &terminal_id, &session);
+}
+
+async fn acquire_terminal_session(
+    state: BridgeState,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+    takeover: bool,
+) -> Result<SharedTerminalSession, BridgeError> {
+    tokio::task::spawn_blocking(move || {
+        let mut sessions = state
+            .terminal_sessions
+            .lock()
+            .map_err(|_| BridgeError::Protocol("terminal session lock poisoned".to_string()))?;
+        if let Some(session) = sessions.get(&terminal_id) {
+            return Ok(session.clone());
+        }
+
+        let protocol_version = terminal_attach_protocol(&state.api)?;
+        let (output_tx, _) = tokio::sync::broadcast::channel(256);
+        let attach = open_terminal_attach(
+            state.client_socket_path.clone(),
+            terminal_id.clone(),
+            cols,
+            rows,
+            takeover,
+            protocol_version,
+            output_tx.clone(),
+        )?;
+        let session = SharedTerminalSession {
+            write_tx: attach.write_tx,
+            output_tx,
+            client_count: Arc::new(AtomicUsize::new(0)),
+        };
+        sessions.insert(terminal_id, session.clone());
+        Ok(session)
+    })
+    .await
+    .map_err(|err| BridgeError::Protocol(err.to_string()))?
+}
+
+fn release_terminal_session(
+    state: &BridgeState,
+    terminal_id: &str,
+    session: &SharedTerminalSession,
+) {
+    if session.client_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    let _ = session.write_tx.send(ClientMessage::Detach);
+    let Ok(mut sessions) = state.terminal_sessions.lock() else {
+        return;
+    };
+    if sessions
+        .get(terminal_id)
+        .is_some_and(|current| Arc::ptr_eq(&current.client_count, &session.client_count))
+    {
+        sessions.remove(terminal_id);
+    }
+}
+
+fn close_message(reason: &str) -> String {
+    format!(
+        r#"{{"type":"closed","reason":{}}}"#,
+        serde_json::to_string(reason).unwrap_or_else(|_| "\"closed\"".into())
+    )
+}
+
+fn open_event_subscription(
+    api: ApiClient,
+) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>, BridgeError> {
+    let request = Request {
+        id: "herdr-web:events".to_string(),
+        method: Method::EventsSubscribe(EventsSubscribeParams {
+            subscriptions: vec![
+                Subscription::WorkspaceCreated {},
+                Subscription::WorkspaceUpdated {},
+                Subscription::WorkspaceRenamed {},
+                Subscription::WorkspaceClosed {},
+                Subscription::WorkspaceFocused {},
+                Subscription::TabCreated {},
+                Subscription::TabClosed {},
+                Subscription::TabFocused {},
+                Subscription::TabRenamed {},
+                Subscription::PaneCreated {},
+                Subscription::PaneClosed {},
+                Subscription::PaneFocused {},
+                Subscription::PaneMoved {},
+                Subscription::PaneExited {},
+                Subscription::PaneAgentDetected {},
+            ],
+        }),
+    };
+    let (ack, mut stream) = api.subscribe_value(&request, None)?;
+    let response = crate::api::client::parse_response_value(ack)?;
+    if !matches!(response.result, ResponseResult::SubscriptionStarted {}) {
+        return Err(BridgeError::Protocol(format!(
+            "unexpected subscription response: {:?}",
+            response.result
+        )));
+    }
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    thread::spawn(move || loop {
+        match stream.next_value() {
+            Ok(Some(event)) => {
+                if event_tx.send(event.to_string()).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                let _ = event_tx.send(
+                    serde_json::json!({
+                        "type": "error",
+                        "error": err.to_string(),
+                    })
+                    .to_string(),
+                );
+                break;
+            }
+        }
+    });
+
+    Ok(event_rx)
+}
+
+fn handle_terminal_text_frame(
+    write_tx: &mpsc::Sender<ClientMessage>,
+    text: &str,
+) -> Result<(), String> {
+    match parse_terminal_client_frame(text)? {
+        TerminalClientFrame::Input { data } => write_tx
+            .send(ClientMessage::Input {
+                data: data.into_bytes(),
+            })
+            .map_err(|_| "terminal writer closed".to_string()),
+        TerminalClientFrame::Resize {
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+        } => write_tx
+            .send(ClientMessage::Resize {
+                cols,
+                rows,
+                cell_width_px,
+                cell_height_px,
+            })
+            .map_err(|_| "terminal writer closed".to_string()),
+        TerminalClientFrame::Scroll { direction, lines } => write_tx
+            .send(ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction: match direction {
+                    ScrollDirection::Up => AttachScrollDirection::Up,
+                    ScrollDirection::Down => AttachScrollDirection::Down,
+                },
+                lines: lines.max(1),
+                column: None,
+                row: None,
+                modifiers: 0,
+            })
+            .map_err(|_| "terminal writer closed".to_string()),
+    }
+}
+
+fn parse_terminal_client_frame(text: &str) -> Result<TerminalClientFrame, String> {
+    serde_json::from_str(text).map_err(|err| format!("invalid terminal frame: {err}"))
+}
+
+struct TerminalAttach {
+    write_tx: mpsc::Sender<ClientMessage>,
+}
+
+fn open_terminal_attach(
+    client_socket_path: PathBuf,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+    takeover: bool,
+    protocol_version: u32,
+    output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+) -> Result<TerminalAttach, BridgeError> {
+    let mut stream = crate::ipc::connect_local_stream(&client_socket_path)?;
+    protocol::write_message(
+        &mut stream,
+        &ClientMessage::Hello {
+            version: protocol_version,
+            cols,
+            rows,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            requested_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: ClientKeybindings::Server,
+            launch_mode: ClientLaunchMode::TerminalAttach,
+        },
+    )
+    .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+
+    let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
+        .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    match welcome {
+        ServerMessage::Welcome { error: None, .. } => {}
+        ServerMessage::Welcome {
+            error: Some(error), ..
+        } => return Err(BridgeError::Protocol(error)),
+        other => {
+            return Err(BridgeError::Protocol(format!(
+                "expected welcome, got {other:?}"
+            )))
+        }
+    }
+
+    protocol::write_message(
+        &mut stream,
+        &ClientMessage::AttachTerminal {
+            terminal_id,
+            takeover,
+        },
+    )
+    .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+
+    let mut read_stream = stream.try_clone()?;
+    let (write_tx, write_rx) = mpsc::channel::<ClientMessage>();
+
+    thread::spawn(move || {
+        let mut write_stream = stream;
+        for message in write_rx {
+            if protocol::write_message(&mut write_stream, &message).is_err() {
+                break;
+            }
+            let _ = write_stream.flush();
+        }
+    });
+
+    thread::spawn(move || loop {
+        let message: ServerMessage =
+            match protocol::read_message(&mut read_stream, MAX_GRAPHICS_FRAME_SIZE) {
+                Ok(message) => message,
+                Err(err) => {
+                    let _ = output_tx.send(TerminalOutput::Close(err.to_string()));
+                    break;
+                }
+            };
+        match message {
+            ServerMessage::Terminal(frame) => {
+                let _ = output_tx.send(TerminalOutput::Bytes(frame.bytes));
+            }
+            ServerMessage::ServerShutdown { reason } => {
+                let _ = output_tx.send(TerminalOutput::Close(
+                    reason.unwrap_or_else(|| "server shutdown".to_string()),
+                ));
+                break;
+            }
+            ServerMessage::Welcome { .. } => {}
+            ServerMessage::Notify { .. }
+            | ServerMessage::Clipboard { .. }
+            | ServerMessage::WindowTitle { .. }
+            | ServerMessage::ReloadSoundConfig
+            | ServerMessage::MouseCapture { .. }
+            | ServerMessage::Frame(_)
+            | ServerMessage::Graphics { .. } => {}
+        }
+    });
+
+    Ok(TerminalAttach { write_tx })
+}
+
+fn terminal_attach_protocol(api: &ApiClient) -> Result<u32, BridgeError> {
+    let status = api.status()?;
+    let protocol = status.protocol.unwrap_or(PROTOCOL_VERSION);
+    if supported_terminal_attach_protocol(protocol) {
+        Ok(protocol)
+    } else {
+        Err(BridgeError::Protocol(format!(
+            "herdr server protocol {protocol} is too old for herdr-web terminal attach; need protocol {MIN_TERMINAL_ATTACH_PROTOCOL} or newer"
+        )))
+    }
+}
+
+fn supported_terminal_attach_protocol(protocol: u32) -> bool {
+    (MIN_TERMINAL_ATTACH_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_input_frame() {
+        assert_eq!(
+            parse_terminal_client_frame(r#"{"type":"input","data":"ls\n"}"#).unwrap(),
+            TerminalClientFrame::Input {
+                data: "ls\n".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_resize_frame_with_default_cell_size() {
+        assert_eq!(
+            parse_terminal_client_frame(r#"{"type":"resize","cols":100,"rows":40}"#).unwrap(),
+            TerminalClientFrame::Resize {
+                cols: 100,
+                rows: 40,
+                cell_width_px: 0,
+                cell_height_px: 0
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_frame_type() {
+        assert!(parse_terminal_client_frame(r#"{"type":"zoom"}"#).is_err());
+    }
+
+    #[test]
+    fn parses_scroll_frame() {
+        assert_eq!(
+            parse_terminal_client_frame(r#"{"type":"scroll","direction":"up","lines":5}"#).unwrap(),
+            TerminalClientFrame::Scroll {
+                direction: ScrollDirection::Up,
+                lines: 5
+            }
+        );
+    }
+
+    #[test]
+    fn scroll_frame_defaults_lines() {
+        assert_eq!(
+            parse_terminal_client_frame(r#"{"type":"scroll","direction":"down"}"#).unwrap(),
+            TerminalClientFrame::Scroll {
+                direction: ScrollDirection::Down,
+                lines: 3
+            }
+        );
+    }
+
+    #[test]
+    fn command_allow_list_excludes_dangerous_methods() {
+        assert!(ALLOWED_COMMANDS.contains(&"workspace.create"));
+        assert!(ALLOWED_COMMANDS.contains(&"tab.close"));
+        assert!(ALLOWED_COMMANDS.contains(&"pane.rename"));
+        assert!(!ALLOWED_COMMANDS.contains(&"server.stop"));
+        assert!(!ALLOWED_COMMANDS.contains(&"pane.send_keys"));
+        // pane.split is intentionally allowed so the web client can create splits.
+        assert!(ALLOWED_COMMANDS.contains(&"pane.split"));
+    }
+
+    #[test]
+    fn command_request_parses_into_wire_request() {
+        let body: CommandRequest = serde_json::from_str(
+            r#"{"method":"workspace.rename","params":{"workspace_id":"w1","label":"api"}}"#,
+        )
+        .unwrap();
+        let request_value = serde_json::json!({
+            "id": "test",
+            "method": body.method,
+            "params": body.params,
+        });
+        let request: Request = serde_json::from_value(request_value).unwrap();
+        assert!(matches!(request.method, Method::WorkspaceRename(_)));
+    }
+
+    #[test]
+    fn loopback_host_detection_warns_for_network_binds() {
+        assert!(is_loopback_bind_host("127.0.0.1"));
+        assert!(is_loopback_bind_host("localhost"));
+        assert!(!is_loopback_bind_host("0.0.0.0"));
+        assert!(!is_loopback_bind_host("192.168.1.10"));
+    }
+
+    #[test]
+    fn terminal_attach_protocol_supports_current_and_latest_release_protocols() {
+        assert!(supported_terminal_attach_protocol(PROTOCOL_VERSION));
+        assert!(supported_terminal_attach_protocol(13));
+        assert!(!supported_terminal_attach_protocol(12));
+        assert!(!supported_terminal_attach_protocol(PROTOCOL_VERSION + 1));
+    }
+}
