@@ -555,73 +555,85 @@ function MobileTerminalControls({
   return (
     <div className="terminal-mobile-controls" data-expanded={expanded ? "true" : "false"}>
       <div className="term-key-strip" aria-label="Common terminal keys">
-        <button
-          className="term-key term-key-icon"
-          type="button"
-          aria-label={expanded ? "Hide special keys" : "Show special keys"}
-          title={expanded ? "Hide keys" : "Keys"}
-          data-active={expanded ? "true" : "false"}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <Keyboard size={15} />
-        </button>
-        <button
-          className="term-key term-key-icon"
-          type="button"
-          aria-label="Upload file"
-          title="Upload"
-          disabled={uploadDisabled}
-          onClick={onUpload}
-        >
-          <Paperclip size={15} />
-        </button>
-        <button
-          className="term-key term-key-icon"
-          type="button"
-          aria-label="Focus terminal keyboard"
-          title="Terminal keyboard"
-          disabled={disabled}
-          onPointerDown={(event) => {
-            if (event.pointerType === "touch" || event.pointerType === "pen") {
-              event.preventDefault();
-              onTerminalFocus();
-            }
-          }}
-          onClick={onTerminalFocus}
-        >
-          <SquareTerminal size={15} />
-        </button>
-        <button
-          className="term-key"
-          type="button"
-          data-active={ctrlLatch ? "true" : "false"}
-          disabled={disabled}
-          onClick={() => setCtrlLatch((active) => !active)}
-        >
-          Ctrl
-        </button>
-        {COMMON_KEYS.map((key) => (
+        <div className="term-key-group" aria-label="Terminal quick keys">
           <button
-            key={key.label}
             className="term-key"
             type="button"
             disabled={disabled}
-            onClick={() => sendKey(key)}
+            onClick={() => sendKey(ESC_KEY)}
           >
-            {key.label}
+            {ESC_KEY.label}
           </button>
-        ))}
-        {QUICK_NUMBER_KEYS.map((key) => (
           <button
-            key={key.label}
             className="term-key"
             type="button"
+            data-active={ctrlLatch ? "true" : "false"}
             disabled={disabled}
-            onClick={() => sendKey(key)}
+            onClick={() => setCtrlLatch((active) => !active)}
           >
-            {key.label}
+            Ctrl
           </button>
-        ))}
+          {COMMON_KEYS.map((key) => (
+            <button
+              key={key.label}
+              className="term-key"
+              type="button"
+              disabled={disabled}
+              onClick={() => sendKey(key)}
+            >
+              {key.label}
+            </button>
+          ))}
+          {QUICK_NUMBER_KEYS.map((key) => (
+            <button
+              key={key.label}
+              className="term-key"
+              type="button"
+              disabled={disabled}
+              onClick={() => sendKey(key)}
+            >
+              {key.label}
+            </button>
+          ))}
+        </div>
+        <div className="term-key-actions" aria-label="Terminal actions">
+          <button
+            className="term-key term-key-icon"
+            type="button"
+            aria-label={expanded ? "Hide special keys" : "Show special keys"}
+            title={expanded ? "Hide keys" : "Keys"}
+            data-active={expanded ? "true" : "false"}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            <Keyboard size={15} />
+          </button>
+          <button
+            className="term-key term-key-icon"
+            type="button"
+            aria-label="Upload file"
+            title="Upload"
+            disabled={uploadDisabled}
+            onClick={onUpload}
+          >
+            <Paperclip size={15} />
+          </button>
+          <button
+            className="term-key term-key-icon"
+            type="button"
+            aria-label="Focus terminal keyboard"
+            title="Terminal keyboard"
+            disabled={disabled}
+            onPointerDown={(event) => {
+              if (event.pointerType === "touch" || event.pointerType === "pen") {
+                event.preventDefault();
+                onTerminalFocus();
+              }
+            }}
+            onClick={onTerminalFocus}
+          >
+            <SquareTerminal size={15} />
+          </button>
+        </div>
       </div>
 
       {expanded ? (
@@ -683,11 +695,12 @@ type TerminalKey = {
 };
 
 const COMMON_KEYS: TerminalKey[] = [
-  { label: "Esc", data: "\x1B" },
   { label: "Tab", data: "\t" },
   { label: "C-c", data: "\x03" },
   { label: "C-d", data: "\x04" },
 ];
+
+const ESC_KEY: TerminalKey = { label: "Esc", data: "\x1B" };
 
 const QUICK_NUMBER_KEYS: TerminalKey[] = [
   { label: "1", data: "1" },

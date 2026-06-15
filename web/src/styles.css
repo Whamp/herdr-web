@@ -991,6 +991,8 @@ button {
 }
 
 .term-key-strip,
+.term-key-group,
+.term-key-actions,
 .term-key-panel,
 .term-input-row {
   display: flex;
@@ -999,13 +1001,26 @@ button {
 }
 
 .term-key-strip {
-  overflow-x: auto;
+  align-items: center;
   padding-bottom: 1px;
+}
+
+.term-key-group {
+  flex: 1 1 auto;
+  overflow-x: auto;
   scrollbar-width: none;
 }
 
-.term-key-strip::-webkit-scrollbar {
+.term-key-group::-webkit-scrollbar {
   display: none;
+}
+
+.term-key-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
+  padding-left: 7px;
+  border-left: 1px solid var(--line);
 }
 
 .term-key-panel {
