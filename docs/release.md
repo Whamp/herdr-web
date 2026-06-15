@@ -1,7 +1,7 @@
 # Release Process
 
-`herdr-web` is a private, vendored web app release. Releases create Git tags and GitHub releases;
-they do not publish either npm package.
+`herdr-web` is a private, vendored web app release. Releases create Git tags and GitHub releases.
+They do not publish npm packages, and the package versions are not release versions.
 
 ## Prerequisites
 
@@ -58,29 +58,28 @@ Open `http://127.0.0.1:8787` and verify:
 
 ## Cut
 
-Run one of:
+Choose the GitHub release version explicitly and run:
 
 ```bash
-npm run release -- patch
-npm run release -- minor
-npm run release -- major
-npm run release -- 0.1.0
+node scripts/release.mjs v0.1.0
 ```
 
 The script:
 
 - requires a clean `main` branch
-- bumps `package.json`, `web/package.json`, and `web/package-lock.json`
 - promotes `CHANGELOG.md` from `Unreleased` to the release version/date
 - runs `npm run check`
 - commits `Release vX.Y.Z`
 - tags `vX.Y.Z`
-- pushes `main` and the tag
-- creates a GitHub release with generated notes
+- pushes `main` and the tag atomically
+- creates a GitHub release with notes extracted from `CHANGELOG.md`
 - opens the next `## [Unreleased]` changelog section and pushes it
+
+Release artifact upload is intentionally not part of the process yet. Add that checklist later once
+the build and packaging output is settled.
 
 ## After
 
 - Confirm the GitHub release exists and points at the expected tag.
 - Confirm `CHANGELOG.md` on `main` has a fresh empty `## [Unreleased]` section.
-- Keep release artifacts out of the repo unless a later packaging process explicitly adds them.
+- Do not upload artifacts until the release build/packaging process is defined.

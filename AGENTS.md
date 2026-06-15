@@ -45,5 +45,6 @@ This is a lightweight internal onboarding note for agents working in this repo.
 - Ensure `CHANGELOG.md` has the release notes under `## [Unreleased]`.
 - Run `npm run check`.
 - Run the browser smoke checklist in `docs/release.md`.
-- Run `npm run release -- patch`, `minor`, `major`, or an explicit `x.y.z`.
-- The release script bumps root and web package versions, promotes the changelog, commits, tags, pushes, creates a GitHub release, and opens the next `## [Unreleased]` section.
+- Run `node scripts/release.mjs vX.Y.Z`.
+- The release script promotes the changelog, commits, tags, pushes, creates a GitHub release from changelog notes, and opens the next `## [Unreleased]` section.
+- Do not bump npm package versions or upload release artifacts until the packaging process is defined.

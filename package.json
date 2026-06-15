@@ -15,7 +15,6 @@
     "build": "npm run build:web && npm run bridge:build",
     "test": "npm run test:web && npm run bridge:test",
     "lint": "npm run lint:web && npm run bridge:fmt",
-    "check": "npm run vendor:check && npm run lint && npm run test && npm run build",
-    "release": "node scripts/release.mjs"
+    "check": "npm run vendor:check && npm run lint && npm run test && npm run build"
   }
 }

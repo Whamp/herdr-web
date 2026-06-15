@@ -8,7 +8,7 @@
 
 - Added a bridge capabilities endpoint so the web app can discover supported commands without
   sending probe commands to Herdr.
-- Added release-process documentation and a private-app release script.
+- Added release-process documentation and a GitHub Release script.
 - Added top-level agent onboarding guidance for web app, bridge overlay, vendoring, testing, and release work.
 
 ### Changed
