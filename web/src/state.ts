@@ -52,8 +52,16 @@ export function paneTitle(pane: PaneInfo) {
   );
 }
 
+export function canClearTabName(tab: TabInfo) {
+  return !isDefaultTabLabel(tab);
+}
+
+export function canClearWorkspaceName(workspace: WorkspaceInfo, panes: readonly PaneInfo[]) {
+  return workspace.label !== inferredWorkspaceDefaultLabel(workspace, panes);
+}
+
 export function displayTabLabel(tab: TabInfo, panes: readonly PaneInfo[]) {
-  if (!/^\d+$/u.test(tab.label.trim())) {
+  if (!isDefaultTabLabel(tab)) {
     return tab.label;
   }
   const tabPanes = panes.filter((pane) => pane.tab_id === tab.tab_id);
@@ -61,6 +69,19 @@ export function displayTabLabel(tab: TabInfo, panes: readonly PaneInfo[]) {
     return tab.label;
   }
   return paneTitle(tabPanes[0]);
+}
+
+function isDefaultTabLabel(tab: TabInfo) {
+  return /^\d+$/u.test(tab.label.trim());
+}
+
+function inferredWorkspaceDefaultLabel(workspace: WorkspaceInfo, panes: readonly PaneInfo[]) {
+  const cwd = panes
+    .filter((pane) => pane.workspace_id === workspace.workspace_id)
+    .map((pane) => pane.foreground_cwd || pane.cwd)
+    .filter((path): path is string => Boolean(path))
+    .sort()[0];
+  return basename(cwd) || "workspace";
 }
 
 export function paneSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tab?: TabInfo) {

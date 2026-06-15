@@ -18,6 +18,8 @@ import type { MenuItem } from "./overlays";
 import { TerminalView } from "./TerminalView";
 import {
   aggregateStatus,
+  canClearTabName,
+  canClearWorkspaceName,
   choosePaneForTab,
   choosePaneForWorkspace,
   chooseSelectedPane,
@@ -40,8 +42,21 @@ type SidebarView = "agents" | "tabs";
 type AgentSort = "attention" | "status" | "workspace";
 type AgentGroup = "none" | "workspace";
 type MenuKind = "space" | "tab" | "pane";
-type MenuState = { kind: MenuKind; id: string; label: string; x: number; y: number };
-type DialogState = { mode: "rename" | "close"; kind: MenuKind; id: string; label: string };
+type MenuState = {
+  kind: MenuKind;
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  clearable?: boolean;
+};
+type DialogState = {
+  mode: "rename" | "close";
+  kind: MenuKind;
+  id: string;
+  label: string;
+  clearable?: boolean;
+};
 type DisplayPrefs = {
   scope: Scope;
   sidebarView: SidebarView;
@@ -562,10 +577,10 @@ export function App() {
     if (!menu) {
       return;
     }
-    const { kind, id, label } = menu;
+    const { kind, id, label, clearable } = menu;
     setMenu(null);
     if (key === "rename") {
-      setDialog({ mode: "rename", kind, id, label });
+      setDialog({ mode: "rename", kind, id, label, clearable });
     } else if (key === "close") {
       setDialog({ mode: "close", kind, id, label });
     } else if (key === "newtab") {
@@ -674,7 +689,9 @@ export function App() {
           onRefresh={refreshNow}
           onCreateSpace={() => void exec(() => commands.createWorkspace(), true)}
           onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
-          onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
+          onMenu={(kind, id, label, x, y, clearable) =>
+            setMenu({ kind, id, label, x, y, clearable })
+          }
         />
         <div
           className="sidebar-resizer"
@@ -720,7 +737,9 @@ export function App() {
           selectedPane={selectedPane}
           onSelectTab={selectTab}
           onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
-          onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
+          onMenu={(kind, id, label, x, y, clearable) =>
+            setMenu({ kind, id, label, x, y, clearable })
+          }
         />
         <header className="stage-bar">
           <button
@@ -818,7 +837,7 @@ export function App() {
           busy={busy}
           onCancel={() => setDialog(null)}
           onSubmit={submitRename}
-          onClear={dialog.kind === "pane" ? undefined : clearRename}
+          onClear={dialog.clearable ? clearRename : undefined}
         />
       ) : null}
 
@@ -897,7 +916,14 @@ function TabBar({
   selectedPane: PaneInfo | null;
   onSelectTab: (tabId: string) => void;
   onCreateTab: (workspaceId: string) => void;
-  onMenu: (kind: MenuKind, id: string, label: string, x: number, y: number) => void;
+  onMenu: (
+    kind: MenuKind,
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    clearable?: boolean,
+  ) => void;
 }) {
   if (!snapshot || !activeSpace) {
     return null;
@@ -925,7 +951,7 @@ function TabBar({
             onClick={() => onSelectTab(tab.tab_id)}
             onContextMenu={(event) => {
               event.preventDefault();
-              onMenu("tab", tab.tab_id, label, event.clientX, event.clientY);
+              onMenu("tab", tab.tab_id, label, event.clientX, event.clientY, canClearTabName(tab));
             }}
           >
             <span className="dot" data-status={tab.agent_status} />
@@ -985,7 +1011,14 @@ function Switcher({
   onRefresh: () => void;
   onCreateSpace: () => void;
   onCreateTab: (workspaceId: string) => void;
-  onMenu: (kind: MenuKind, id: string, label: string, x: number, y: number) => void;
+  onMenu: (
+    kind: MenuKind,
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    clearable?: boolean,
+  ) => void;
 }) {
   const panes = snapshot?.panes ?? [];
   const roll = aggregateStatus(panes);
@@ -1146,7 +1179,14 @@ function Switcher({
                     )}
                     onSelect={() => onSelectSpace(workspace.workspace_id)}
                     onMenu={(x, y) =>
-                      onMenu("space", workspace.workspace_id, workspace.label, x, y)
+                      onMenu(
+                        "space",
+                        workspace.workspace_id,
+                        workspace.label,
+                        x,
+                        y,
+                        canClearWorkspaceName(workspace, snapshot.panes),
+                      )
                     }
                   />
                 ))
@@ -1279,7 +1319,9 @@ function Switcher({
                               label={label}
                               count={tabPanes.length}
                               onSelect={() => onSelectTab(tab.tab_id)}
-                              onMenu={(x, y) => onMenu("tab", tab.tab_id, label, x, y)}
+                              onMenu={(x, y) =>
+                                onMenu("tab", tab.tab_id, label, x, y, canClearTabName(tab))
+                              }
                             />
                           ) : null}
                           {tabPanes.map((pane) => (
