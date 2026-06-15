@@ -1,6 +1,19 @@
 // Mutating commands proxied through the bridge's allow-listed /api/command.
 
 export type CommandResult = { type?: string; [key: string]: unknown };
+export type SplitDirection = "right" | "down";
+export type LaunchKind = "shell" | "codex" | "claude" | "pi";
+
+export type LaunchSpec = {
+  kind: LaunchKind;
+  title: string;
+};
+
+const AGENT_ARGV: Record<Exclude<LaunchKind, "shell">, string[]> = {
+  codex: ["codex"],
+  claude: ["claude"],
+  pi: ["pi"],
+};
 
 async function runCommand(
   method: string,
@@ -29,7 +42,9 @@ async function runCommand(
 /** Pull a pane id out of a {workspace,tab}_created result so the UI can jump to it. */
 export function createdPaneId(result: CommandResult): string | null {
   const rootPane = result.root_pane as { pane_id?: string } | undefined;
-  return rootPane?.pane_id ?? null;
+  const pane = result.pane as { pane_id?: string } | undefined;
+  const agent = result.agent as { pane_id?: string } | undefined;
+  return rootPane?.pane_id ?? pane?.pane_id ?? agent?.pane_id ?? null;
 }
 
 export const commands = {
@@ -41,8 +56,8 @@ export const commands = {
   focusWorkspace: (workspaceId: string) =>
     runCommand("workspace.focus", { workspace_id: workspaceId }),
 
-  createTab: (workspaceId: string) =>
-    runCommand("tab.create", { workspace_id: workspaceId, focus: true }),
+  createTab: (workspaceId: string, label?: string) =>
+    runCommand("tab.create", { workspace_id: workspaceId, focus: true, label }),
   renameTab: (tabId: string, label: string) => runCommand("tab.rename", { tab_id: tabId, label }),
   closeTab: (tabId: string) => runCommand("tab.close", { tab_id: tabId }),
   focusTab: (tabId: string) => runCommand("tab.focus", { tab_id: tabId }),
@@ -50,10 +65,65 @@ export const commands = {
   renamePane: (paneId: string, label: string) =>
     runCommand("pane.rename", { pane_id: paneId, label }),
   closePane: (paneId: string) => runCommand("pane.close", { pane_id: paneId }),
+  runPaneCommand: (paneId: string, command: string) =>
+    runCommand("pane.send_input", { pane_id: paneId, text: command, keys: ["Enter"] }),
   // Layout-mutating: requires the bridge allow-list to include `pane.split`.
-  splitPane: (targetPaneId: string, direction: "right" | "down") =>
+  splitPane: (targetPaneId: string, direction: SplitDirection) =>
     runCommand("pane.split", { target_pane_id: targetPaneId, direction, focus: true }),
+
+  startAgentSplit: (tabId: string, direction: SplitDirection, spec: LaunchSpec) =>
+    runCommand("agent.start", {
+      name: spec.title,
+      tab_id: tabId,
+      split: direction,
+      focus: true,
+      argv: agentArgv(spec.kind),
+    }),
+
+  createLaunchTab: async (workspaceId: string, spec: LaunchSpec) => {
+    const result = await commands.createTab(workspaceId, spec.title);
+    if (spec.kind !== "shell") {
+      const paneId = createdPaneId(result);
+      if (!paneId) {
+        throw new Error("new tab did not return a root pane");
+      }
+      await commands.runPaneCommand(paneId, shellCommand(agentArgv(spec.kind)));
+    }
+    return result;
+  },
+
+  splitLaunchPane: async (
+    targetPaneId: string,
+    tabId: string,
+    direction: SplitDirection,
+    spec: LaunchSpec,
+  ) => {
+    if (spec.kind !== "shell") {
+      return commands.startAgentSplit(tabId, direction, spec);
+    }
+    const result = await commands.splitPane(targetPaneId, direction);
+    const paneId = createdPaneId(result);
+    if (paneId && spec.title.trim()) {
+      await commands.renamePane(paneId, spec.title.trim());
+    }
+    return result;
+  },
 };
+
+function agentArgv(kind: LaunchKind): string[] {
+  if (kind === "shell") {
+    throw new Error("shell does not have an agent argv");
+  }
+  return AGENT_ARGV[kind];
+}
+
+function shellCommand(argv: string[]) {
+  return argv.map(shellQuote).join(" ");
+}
+
+function shellQuote(value: string) {
+  return /^[A-Za-z0-9_/:=.,@%+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 /** Best-effort probe: is `pane.split` permitted by the bridge allow-list? */
 export async function probeSplitSupported(): Promise<boolean> {

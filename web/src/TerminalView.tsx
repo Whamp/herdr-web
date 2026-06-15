@@ -1,5 +1,6 @@
-import { Keyboard, Send } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Keyboard, Paperclip, Send } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { ChangeEvent, ClipboardEvent, DragEvent } from "react";
 import type { PaneInfo } from "./types";
 import { GhosttyRenderer } from "./terminalRenderer";
 import type { TerminalRenderer, TerminalSize } from "./terminalRenderer";
@@ -17,6 +18,16 @@ type Props = {
 };
 
 type ConnectionState = "idle" | "connecting" | "attached" | "closed" | "error";
+type UploadCandidate = {
+  blob: Blob;
+  name: string | null;
+};
+type UploadedFile = {
+  name: string;
+  path: string;
+  size: number;
+  mime?: string | null;
+};
 
 export function TerminalView({
   pane,
@@ -26,13 +37,17 @@ export function TerminalView({
   refitToken = 0,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const rendererRef = useRef<TerminalRenderer | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const uploadInputId = useId();
   const sendResizeRef = useRef<(size: TerminalSize) => void>(() => {});
   const inputQueueRef = useRef<string[]>([]);
   const inputFlushTimerRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [closeReason, setCloseReason] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   // Read at attach time without re-running the effect (which would re-attach the socket).
   const autoFocusRef = useRef(autoFocus);
   autoFocusRef.current = autoFocus;
@@ -254,19 +269,88 @@ export function TerminalView({
       socket.send(JSON.stringify({ type: "input", data }));
     }
   };
+  const uploadDisabled = !pane || uploading;
+
+  const uploadAndInsert = async (files: UploadCandidate[]) => {
+    if (files.length === 0 || !pane) {
+      if (files.length > 0) {
+        setUploadStatus("No pane selected");
+        window.setTimeout(() => setUploadStatus(null), 3000);
+      }
+      return;
+    }
+    setUploading(true);
+    setUploadStatus(`Uploading ${files.length} file${files.length === 1 ? "" : "s"}`);
+    try {
+      const uploaded: UploadedFile[] = [];
+      for (const file of files.slice(0, 8)) {
+        uploaded.push(await uploadWithOverwritePrompt(file));
+      }
+      if (uploaded.length > 0) {
+        enqueueTerminalInput([uploaded.map((file) => shellQuote(file.path)).join(" ")]);
+        setUploadStatus(`Uploaded ${uploaded.length} file${uploaded.length === 1 ? "" : "s"}`);
+        window.setTimeout(() => setUploadStatus(null), 2500);
+      } else {
+        setUploadStatus(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed";
+      setUploadStatus(message);
+      window.setTimeout(() => setUploadStatus(null), 4500);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
+    const files = uploadCandidatesFromClipboard(event.clipboardData);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void uploadAndInsert(files);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
+    const files = uploadCandidatesFromFileList(event.dataTransfer.files);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void uploadAndInsert(files);
+  };
+
+  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = uploadCandidatesFromFileList(event.target.files);
+    event.target.value = "";
+    if (files.length === 0) {
+      setUploadStatus("No file selected");
+      window.setTimeout(() => setUploadStatus(null), 2000);
+      return;
+    }
+    setUploadStatus(`Selected ${files.length} file${files.length === 1 ? "" : "s"}`);
+    void uploadAndInsert(files);
+  };
 
   const enqueueTerminalInput = (parts: string[]) => {
     inputQueueRef.current.push(...parts.filter((part) => part.length > 0));
     if (inputFlushTimerRef.current !== null) {
       return;
     }
+    let retryCount = 0;
     const flush = () => {
       inputFlushTimerRef.current = null;
       const socket = socketRef.current;
       if (socket?.readyState !== WebSocket.OPEN) {
-        inputQueueRef.current = [];
+        if (inputQueueRef.current.length > 0 && retryCount < 80) {
+          retryCount += 1;
+          inputFlushTimerRef.current = window.setTimeout(flush, 125);
+        }
         return;
       }
+      retryCount = 0;
       const next = inputQueueRef.current.shift();
       if (next !== undefined) {
         socket.send(JSON.stringify({ type: "input", data: next }));
@@ -279,15 +363,48 @@ export function TerminalView({
   };
 
   return (
-    <section className="terminal-stage" aria-label="Selected pane terminal">
+    <section
+      className="terminal-stage"
+      aria-label="Selected pane terminal"
+      onDragOverCapture={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+        }
+      }}
+      onDropCapture={handleDrop}
+      onPasteCapture={handlePaste}
+    >
       <div ref={hostRef} className="terminal-host" />
+      <input
+        ref={fileInputRef}
+        className="terminal-file-input"
+        id={uploadInputId}
+        type="file"
+        multiple
+        disabled={uploadDisabled}
+        onChange={handleFileInput}
+      />
       {!pane ? <div className="terminal-overlay">No panes available</div> : null}
       {pane && connectionState !== "attached" ? (
         <div className="terminal-overlay">{connectionCopy(connectionState, closeReason)}</div>
       ) : null}
+      {uploadStatus ? <div className="terminal-upload-status">{uploadStatus}</div> : null}
+      {!mobileControls ? (
+        <label
+          className="terminal-upload-fab"
+          aria-label="Upload file"
+          title="Upload file"
+          aria-disabled={uploadDisabled ? "true" : "false"}
+          htmlFor={uploadInputId}
+        >
+          <Paperclip size={16} />
+        </label>
+      ) : null}
       {mobileControls ? (
         <MobileTerminalControls
           disabled={!pane || connectionState !== "attached"}
+          uploadDisabled={uploadDisabled}
+          uploadInputId={uploadInputId}
           onInput={sendTerminalInput}
           onSubmitCommand={(command) => enqueueTerminalInput([command, "\r"])}
         />
@@ -298,10 +415,14 @@ export function TerminalView({
 
 function MobileTerminalControls({
   disabled,
+  uploadDisabled,
+  uploadInputId,
   onInput,
   onSubmitCommand,
 }: {
   disabled: boolean;
+  uploadDisabled: boolean;
+  uploadInputId: string;
   onInput: (data: string) => void;
   onSubmitCommand: (command: string) => void;
 }) {
@@ -331,6 +452,15 @@ function MobileTerminalControls({
         >
           <Keyboard size={15} />
         </button>
+        <label
+          className="term-key term-key-icon"
+          aria-label="Upload file"
+          title="Upload"
+          aria-disabled={uploadDisabled ? "true" : "false"}
+          htmlFor={uploadInputId}
+        >
+          <Paperclip size={15} />
+        </label>
         <button
           className="term-key"
           type="button"
@@ -491,4 +621,94 @@ function connectionCopy(state: ConnectionState, reason: string | null) {
     case "attached":
       return "";
   }
+}
+
+function uploadCandidatesFromFileList(files: FileList | null): UploadCandidate[] {
+  if (!files) {
+    return [];
+  }
+  return Array.from(files).map((file) => ({
+    blob: file,
+    name: file.name.trim() || null,
+  }));
+}
+
+function uploadCandidatesFromClipboard(data: DataTransfer): UploadCandidate[] {
+  const files: UploadCandidate[] = [];
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== "file") {
+      continue;
+    }
+    const file = item.getAsFile();
+    if (!file) {
+      continue;
+    }
+    files.push({
+      blob: file,
+      name: file.name.trim() || null,
+    });
+  }
+  return files;
+}
+
+async function uploadWithOverwritePrompt(file: UploadCandidate): Promise<UploadedFile> {
+  try {
+    return await uploadFile(file, false);
+  } catch (error) {
+    if (!(error instanceof UploadConflictError)) {
+      throw error;
+    }
+    const replace = window.confirm(`${error.name} already exists. Replace it?`);
+    if (!replace) {
+      throw new Error("Upload canceled");
+    }
+    return uploadFile(file, true);
+  }
+}
+
+async function uploadFile(file: UploadCandidate, overwrite: boolean): Promise<UploadedFile> {
+  const params = new URLSearchParams();
+  if (file.name) {
+    params.set("name", file.name);
+  }
+  if (overwrite) {
+    params.set("overwrite", "true");
+  }
+  const response = await fetch(`/api/uploads?${params.toString()}`, {
+    method: "POST",
+    headers: file.blob.type ? { "content-type": file.blob.type } : undefined,
+    body: file.blob,
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    file?: UploadedFile;
+    error?: string;
+    name?: string;
+    path?: string;
+  };
+  if (response.status === 409) {
+    throw new UploadConflictError(
+      typeof payload.name === "string" ? payload.name : file.name || "file",
+      typeof payload.path === "string" ? payload.path : "",
+    );
+  }
+  if (!response.ok || !payload.file) {
+    throw new Error(payload.error || `Upload failed (${response.status})`);
+  }
+  return payload.file;
+}
+
+class UploadConflictError extends Error {
+  constructor(
+    readonly name: string,
+    readonly path: string,
+  ) {
+    super(`file exists: ${path || name}`);
+  }
+}
+
+function shellQuote(path: string) {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) {
+    return path;
+  }
+  return `'${path.replaceAll("'", "'\\''")}'`;
 }

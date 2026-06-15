@@ -1,14 +1,16 @@
 use std::collections::HashMap;
+use std::env;
 use std::fmt;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -34,12 +36,15 @@ const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_STATIC_DIR: &str = "web/dist";
 const MIN_TERMINAL_ATTACH_PROTOCOL: u32 = 13;
+const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
+static UPLOAD_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
 struct BridgeOptions {
     host: String,
     port: u16,
     static_dir: PathBuf,
+    upload_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -49,6 +54,7 @@ struct BridgeState {
     terminal_sessions: Arc<Mutex<HashMap<String, SharedTerminalSession>>>,
     selected_pane_id: Arc<Mutex<Option<String>>>,
     ui_event_tx: tokio::sync::broadcast::Sender<String>,
+    upload_dir: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +127,14 @@ enum BridgeError {
     Protocol(String),
 }
 
+#[derive(Debug)]
+enum UploadError {
+    BadRequest(String),
+    Conflict { name: String, path: String },
+    TooLarge,
+    Io(io::Error),
+}
+
 impl fmt::Display for BridgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -155,6 +169,40 @@ impl From<io::Error> for BridgeError {
     }
 }
 
+impl IntoResponse for UploadError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            Self::BadRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": message }),
+            ),
+            Self::Conflict { name, path } => (
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": "file exists",
+                    "name": name,
+                    "path": path,
+                }),
+            ),
+            Self::TooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                serde_json::json!({ "error": "upload exceeds 25 MB limit" }),
+            ),
+            Self::Io(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": err.to_string() }),
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
+impl From<io::Error> for UploadError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
 pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
     let options = match parse_options(args) {
         Ok(Some(options)) => options,
@@ -180,6 +228,7 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
     let mut host = DEFAULT_HOST.to_string();
     let mut port = DEFAULT_PORT;
     let mut static_dir = PathBuf::from(DEFAULT_STATIC_DIR);
+    let mut upload_dir = default_upload_dir();
     let mut index = 0;
 
     while index < args.len() {
@@ -211,6 +260,13 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
                 static_dir = PathBuf::from(value);
                 index += 2;
             }
+            "--upload-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --upload-dir".into());
+                };
+                upload_dir = expand_home(value);
+                index += 2;
+            }
             arg => return Err(format!("unknown herdr-web option: {arg}")),
         }
     }
@@ -219,17 +275,21 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
         host,
         port,
         static_dir,
+        upload_dir,
     }))
 }
 
 fn print_help() {
     println!("herdr web-bridge");
     println!();
-    println!("Usage: herdr web-bridge [--host HOST] [--port PORT] [--static-dir DIR]");
+    println!(
+        "Usage: herdr web-bridge [--host HOST] [--port PORT] [--static-dir DIR] [--upload-dir DIR]"
+    );
     println!();
     println!("Runs the local HTTP/WebSocket bridge for herdr-web.");
     println!("Defaults to the active Herdr daemon sockets and 127.0.0.1:8787.");
     println!("Use --host 0.0.0.0 to listen on non-loopback interfaces.");
+    println!("Uploads default to HERDR_WEB_UPLOAD_DIR, XDG_DATA_HOME/herdr-web/uploads, or ~/.local/share/herdr-web/uploads.");
 }
 
 async fn run_server(options: BridgeOptions) -> io::Result<()> {
@@ -238,20 +298,24 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
             "warning: herdr web-bridge has no browser authentication yet; bind only on trusted networks"
         );
     }
+    ensure_upload_dir(&options.upload_dir)?;
     let state = BridgeState {
         api: ApiClient::local(),
         client_socket_path: crate::server::socket_paths::client_socket_path(),
         terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
         selected_pane_id: Arc::new(Mutex::new(None)),
         ui_event_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: options.upload_dir.clone(),
     };
     let app = Router::new()
         .route("/api/snapshot", get(snapshot_handler))
         .route("/api/command", post(command_handler))
         .route("/api/selection", post(selection_handler))
+        .route("/api/uploads", post(upload_handler))
         .route("/ws/events", get(events_ws_handler))
         .route("/ws/ui-events", get(ui_events_ws_handler))
         .route("/ws/terminal", get(terminal_ws_handler))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
         .fallback_service(ServeDir::new(options.static_dir))
         .with_state(state);
     let bind = format!("{}:{}", options.host, options.port);
@@ -262,6 +326,119 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
 
 fn is_loopback_bind_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn default_upload_dir() -> PathBuf {
+    if let Some(path) = non_empty_env_path("HERDR_WEB_UPLOAD_DIR") {
+        return path;
+    }
+    if let Some(data_home) = non_empty_env_path("XDG_DATA_HOME") {
+        return data_home.join("herdr-web").join("uploads");
+    }
+    if let Some(home) = non_empty_env_path("HOME") {
+        return home
+            .join(".local")
+            .join("share")
+            .join("herdr-web")
+            .join("uploads");
+    }
+    PathBuf::from("herdr-web-uploads")
+}
+
+fn non_empty_env_path(name: &str) -> Option<PathBuf> {
+    let value = env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(expand_home(trimmed))
+    }
+}
+
+fn expand_home(value: &str) -> PathBuf {
+    if value == "~" {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(value)
+}
+
+fn ensure_upload_dir(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn sanitize_upload_file_name(input: &str) -> Option<String> {
+    let normalized = input.replace('\\', "/");
+    let file_name = Path::new(&normalized).file_name()?.to_string_lossy();
+    let mut output = String::new();
+    for ch in file_name.trim().chars() {
+        if ch == '/' || ch == '\\' || ch.is_control() {
+            continue;
+        }
+        output.push(ch);
+    }
+    let output = output.trim_matches('.').trim().to_string();
+    if output.is_empty() || output == "." || output == ".." {
+        return None;
+    }
+    if output.len() > 180 {
+        let mut truncated = String::new();
+        for ch in output.chars() {
+            if truncated.len() + ch.len_utf8() > 180 {
+                break;
+            }
+            truncated.push(ch);
+        }
+        return Some(truncated);
+    }
+    Some(output)
+}
+
+fn generated_upload_name(mime: Option<&str>) -> String {
+    let extension = upload_extension_for_mime(mime).unwrap_or("bin");
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let suffix = UPLOAD_TEMP_COUNTER.fetch_add(1, Ordering::AcqRel);
+    format!("pasted-file-{millis}-{suffix}.{extension}")
+}
+
+fn upload_extension_for_mime(mime: Option<&str>) -> Option<&'static str> {
+    match mime?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/svg+xml" => Some("svg"),
+        "text/plain" => Some("txt"),
+        "application/pdf" => Some("pdf"),
+        _ => None,
+    }
+}
+
+fn is_direct_child(parent: &Path, child: &Path) -> bool {
+    child
+        .parent()
+        .is_some_and(|child_parent| child_parent == parent)
 }
 
 /// Mutating methods the browser client is allowed to invoke. Anything outside
@@ -278,8 +455,12 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "tab.focus",
     "pane.rename",
     "pane.close",
+    // Narrow input path used to run a selected launch command in a just-created tab.
+    "pane.send_input",
     // Layout-mutating: the web client builds splits directly.
     "pane.split",
+    // Agent creation: exposes Herdr's native agent.start placement and argv path.
+    "agent.start",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -292,6 +473,26 @@ struct CommandRequest {
 #[derive(Debug, Deserialize)]
 struct SelectionRequest {
     pane_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadQuery {
+    name: Option<String>,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UploadEntry {
+    name: String,
+    path: String,
+    size: usize,
+    mime: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct UploadResponse {
+    file: UploadEntry,
 }
 
 async fn command_handler(
@@ -354,6 +555,106 @@ async fn selection_handler(
         .to_string(),
     );
     Ok(Json(serde_json::json!({ "selected_pane_id": pane_id })))
+}
+
+async fn upload_handler(
+    State(state): State<BridgeState>,
+    Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<UploadResponse>, UploadError> {
+    if body.len() > MAX_UPLOAD_BYTES {
+        return Err(UploadError::TooLarge);
+    }
+
+    let mime = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+    eprintln!(
+        "herdr web-bridge upload request: name={:?} bytes={} mime={:?} overwrite={}",
+        query.name,
+        body.len(),
+        mime,
+        query.overwrite
+    );
+    let name = match query.name.as_deref().and_then(sanitize_upload_file_name) {
+        Some(name) => name,
+        None => generated_upload_name(mime.as_deref()),
+    };
+    let destination = state.upload_dir.join(&name);
+    if !is_direct_child(&state.upload_dir, &destination) {
+        return Err(UploadError::BadRequest("invalid file name".to_string()));
+    }
+
+    tokio::fs::create_dir_all(&state.upload_dir).await?;
+    let existing = tokio::fs::symlink_metadata(&destination).await.ok();
+    if let Some(existing) = existing {
+        if !query.overwrite {
+            eprintln!(
+                "herdr web-bridge upload conflict: {}",
+                destination.display()
+            );
+            return Err(UploadError::Conflict {
+                name,
+                path: destination.display().to_string(),
+            });
+        }
+        if existing.file_type().is_symlink() || existing.is_dir() {
+            return Err(UploadError::BadRequest(
+                "refusing to overwrite non-file path".to_string(),
+            ));
+        }
+    }
+
+    if !query.overwrite {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .await
+        {
+            Ok(mut file) => {
+                tokio::io::AsyncWriteExt::write_all(&mut file, &body).await?;
+                tokio::io::AsyncWriteExt::flush(&mut file).await?;
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                return Err(UploadError::Conflict {
+                    name,
+                    path: destination.display().to_string(),
+                });
+            }
+            Err(err) => return Err(UploadError::Io(err)),
+        }
+    } else {
+        let temp_path = state.upload_dir.join(format!(
+            ".herdr-web-upload-{}-{}.tmp",
+            std::process::id(),
+            UPLOAD_TEMP_COUNTER.fetch_add(1, Ordering::AcqRel)
+        ));
+        tokio::fs::write(&temp_path, &body).await?;
+        if destination.exists() {
+            tokio::fs::remove_file(&destination).await?;
+        }
+        match tokio::fs::rename(&temp_path, &destination).await {
+            Ok(()) => {}
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(UploadError::Io(err));
+            }
+        }
+    }
+
+    let response = UploadResponse {
+        file: UploadEntry {
+            name,
+            path: destination.display().to_string(),
+            size: body.len(),
+            mime,
+        },
+    };
+    eprintln!("herdr web-bridge upload saved: {}", response.file.path);
+    Ok(Json(response))
 }
 
 async fn snapshot_handler(State(state): State<BridgeState>) -> Result<Json<Snapshot>, BridgeError> {
@@ -971,8 +1272,10 @@ mod tests {
         assert!(ALLOWED_COMMANDS.contains(&"pane.rename"));
         assert!(!ALLOWED_COMMANDS.contains(&"server.stop"));
         assert!(!ALLOWED_COMMANDS.contains(&"pane.send_keys"));
+        assert!(ALLOWED_COMMANDS.contains(&"pane.send_input"));
         // pane.split is intentionally allowed so the web client can create splits.
         assert!(ALLOWED_COMMANDS.contains(&"pane.split"));
+        assert!(ALLOWED_COMMANDS.contains(&"agent.start"));
     }
 
     #[test]
@@ -1004,5 +1307,39 @@ mod tests {
         assert!(supported_terminal_attach_protocol(13));
         assert!(!supported_terminal_attach_protocol(12));
         assert!(!supported_terminal_attach_protocol(PROTOCOL_VERSION + 1));
+    }
+
+    #[test]
+    fn upload_file_name_sanitization_uses_basename() {
+        assert_eq!(
+            sanitize_upload_file_name("../../screen shot.png").as_deref(),
+            Some("screen shot.png")
+        );
+        assert_eq!(
+            sanitize_upload_file_name(r"..\notes.txt").as_deref(),
+            Some("notes.txt")
+        );
+        assert_eq!(sanitize_upload_file_name(".."), None);
+        assert_eq!(sanitize_upload_file_name(""), None);
+    }
+
+    #[test]
+    fn upload_extension_comes_from_mime() {
+        assert_eq!(upload_extension_for_mime(Some("image/png")), Some("png"));
+        assert_eq!(
+            upload_extension_for_mime(Some("image/jpeg; charset=binary")),
+            Some("jpg")
+        );
+        assert_eq!(
+            upload_extension_for_mime(Some("application/octet-stream")),
+            None
+        );
+    }
+
+    #[test]
+    fn upload_child_check_rejects_nested_paths() {
+        let parent = PathBuf::from("/tmp/herdr-web/uploads");
+        assert!(is_direct_child(&parent, &parent.join("file.png")));
+        assert!(!is_direct_child(&parent, &parent.join("nested/file.png")));
     }
 }

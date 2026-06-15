@@ -1,14 +1,17 @@
 import {
   ChevronLeft,
+  Bot,
   PanelLeft,
   Plus,
   RefreshCw,
   SplitSquareHorizontal,
   SplitSquareVertical,
+  Terminal,
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import { commands, createdPaneId, probeSplitSupported } from "./commands";
+import type { LaunchKind, LaunchSpec, SplitDirection } from "./commands";
 import { ActionMenu, ConfirmDialog, RenameDialog, useLongPress } from "./overlays";
 import type { MenuItem } from "./overlays";
 import { TerminalView } from "./TerminalView";
@@ -33,13 +36,19 @@ type LoadState = "loading" | "ready" | "error";
 type Scope = "space" | "all";
 type SidebarView = "agents" | "tabs";
 type AgentSort = "attention" | "status" | "workspace";
+type AgentGroup = "none" | "workspace";
 type MenuKind = "space" | "tab" | "pane";
 type MenuState = { kind: MenuKind; id: string; label: string; x: number; y: number };
 type DialogState = { mode: "rename" | "close"; kind: MenuKind; id: string; label: string };
+type LaunchTarget =
+  | { mode: "tab"; workspaceId: string }
+  | { mode: "split"; pane: PaneInfo; direction: SplitDirection };
 type DisplayPrefs = {
   scope: Scope;
   sidebarView: SidebarView;
   agentSort: AgentSort;
+  agentGroup: AgentGroup;
+  sidebarWidth: number;
   sidebarOpen: boolean;
   activeSpaceId: string | null;
   selectedPaneId: string | null;
@@ -49,12 +58,23 @@ const NARROW_QUERY = "(max-width: 1024px), (hover: none) and (pointer: coarse)";
 const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
 const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
 const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
+const DEFAULT_SIDEBAR_WIDTH = 320;
+const MIN_SIDEBAR_WIDTH = 260;
+const MAX_SIDEBAR_WIDTH = 560;
+const LAUNCH_OPTIONS: { kind: LaunchKind; label: string }[] = [
+  { kind: "shell", label: "Shell" },
+  { kind: "codex", label: "Codex" },
+  { kind: "claude", label: "Claude" },
+  { kind: "pi", label: "pi" },
+];
 
 function readDisplayPrefs(): DisplayPrefs {
   const fallback: DisplayPrefs = {
     scope: "space",
     sidebarView: "agents",
     agentSort: "attention",
+    agentGroup: "none",
+    sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     sidebarOpen: true,
     activeSpaceId: null,
     selectedPaneId: null,
@@ -77,6 +97,14 @@ function readDisplayPrefs(): DisplayPrefs {
         parsed.agentSort === "workspace"
           ? parsed.agentSort
           : fallback.agentSort,
+      agentGroup:
+        parsed.agentGroup === "none" || parsed.agentGroup === "workspace"
+          ? parsed.agentGroup
+          : fallback.agentGroup,
+      sidebarWidth:
+        typeof parsed.sidebarWidth === "number"
+          ? clampSidebarWidth(parsed.sidebarWidth)
+          : fallback.sidebarWidth,
       sidebarOpen:
         typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen,
       activeSpaceId:
@@ -87,6 +115,14 @@ function readDisplayPrefs(): DisplayPrefs {
   } catch {
     return fallback;
   }
+}
+
+function clampSidebarWidth(width: number) {
+  const viewportMax =
+    typeof window === "undefined"
+      ? MAX_SIDEBAR_WIDTH
+      : Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 360));
+  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR_WIDTH), viewportMax));
 }
 
 function writeDisplayPrefs(prefs: DisplayPrefs) {
@@ -144,11 +180,15 @@ export function App() {
   const [scope, setScope] = useState<Scope>(initialPrefs.scope);
   const [sidebarView, setSidebarView] = useState<SidebarView>(initialPrefs.sidebarView);
   const [agentSort, setAgentSort] = useState<AgentSort>(initialPrefs.agentSort);
+  const [agentGroup, setAgentGroup] = useState<AgentGroup>(initialPrefs.agentGroup);
+  const [sidebarWidth, setSidebarWidth] = useState(initialPrefs.sidebarWidth);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [sidebarOpen, setSidebarOpen] = useState(initialPrefs.sidebarOpen);
   const [showDetail, setShowDetail] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [launchTarget, setLaunchTarget] = useState<LaunchTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [splitSupported, setSplitSupported] = useState(false);
@@ -211,11 +251,48 @@ export function App() {
       scope,
       sidebarView,
       agentSort,
+      agentGroup,
+      sidebarWidth,
       sidebarOpen,
       activeSpaceId,
       selectedPaneId,
     });
-  }, [scope, sidebarView, agentSort, sidebarOpen, activeSpaceId, selectedPaneId]);
+  }, [
+    scope,
+    sidebarView,
+    agentSort,
+    agentGroup,
+    sidebarWidth,
+    sidebarOpen,
+    activeSpaceId,
+    selectedPaneId,
+  ]);
+
+  useEffect(() => {
+    setSidebarWidth((width) => clampSidebarWidth(width));
+  }, [isNarrow]);
+
+  useEffect(() => {
+    if (!resizingSidebar) {
+      return;
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      setSidebarWidth(clampSidebarWidth(event.clientX));
+    };
+    const onPointerUp = () => setResizingSidebar(false);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+    window.addEventListener("pointercancel", onPointerUp, { once: true });
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [resizingSidebar]);
 
   useEffect(() => {
     let disposed = false;
@@ -487,7 +564,7 @@ export function App() {
     } else if (key === "close") {
       setDialog({ mode: "close", kind, id, label });
     } else if (key === "newtab") {
-      void exec(() => commands.createTab(id), true);
+      setLaunchTarget({ mode: "tab", workspaceId: id });
     }
   };
 
@@ -519,12 +596,33 @@ export function App() {
     void exec(action).then((ok) => ok && setDialog(null));
   };
 
+  const submitLaunch = (spec: LaunchSpec) => {
+    if (!launchTarget) {
+      return;
+    }
+    const action =
+      launchTarget.mode === "tab"
+        ? () => commands.createLaunchTab(launchTarget.workspaceId, spec)
+        : () =>
+            commands.splitLaunchPane(
+              launchTarget.pane.pane_id,
+              launchTarget.pane.tab_id,
+              launchTarget.direction,
+              spec,
+            );
+    void exec(action, true).then((ok) => ok && setLaunchTarget(null));
+  };
+
   const renderTerminal = !isNarrow || showDetail;
+  const appStyle = { "--sidebar-w": `${sidebarWidth}px` } as CSSProperties &
+    Record<"--sidebar-w", string>;
 
   return (
     <div
       className="app"
+      style={appStyle}
       data-sidebar={sidebarOpen ? "open" : "closed"}
+      data-resizing-sidebar={resizingSidebar ? "true" : "false"}
       data-mobile={isNarrow ? "true" : "false"}
       data-detail={isNarrow && showDetail ? "true" : "false"}
     >
@@ -535,18 +633,55 @@ export function App() {
           scope={scope}
           sidebarView={sidebarView}
           agentSort={agentSort}
+          agentGroup={agentGroup}
           activeSpace={activeSpace}
           selectedPane={selectedPane}
           onScope={setScope}
           onSidebarView={setSidebarView}
           onAgentSort={setAgentSort}
+          onAgentGroup={setAgentGroup}
           onSelectSpace={selectSpace}
           onSelectTab={selectTab}
           onSelectPane={openPane}
           onRefresh={refreshNow}
           onCreateSpace={() => void exec(() => commands.createWorkspace(), true)}
-          onCreateTab={(workspaceId) => void exec(() => commands.createTab(workspaceId), true)}
+          onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
           onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
+        />
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={(event) => {
+            if (isNarrow || !sidebarOpen) {
+              return;
+            }
+            event.preventDefault();
+            setResizingSidebar(true);
+          }}
+          onKeyDown={(event) => {
+            if (isNarrow) {
+              return;
+            }
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              const step = event.shiftKey ? 32 : 12;
+              setSidebarWidth((width) =>
+                clampSidebarWidth(width + (event.key === "ArrowRight" ? step : -step)),
+              );
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              setSidebarWidth(MIN_SIDEBAR_WIDTH);
+            } else if (event.key === "End") {
+              event.preventDefault();
+              setSidebarWidth(MAX_SIDEBAR_WIDTH);
+            }
+          }}
         />
       </aside>
 
@@ -556,7 +691,7 @@ export function App() {
           activeSpace={activeSpace}
           selectedPane={selectedPane}
           onSelectTab={selectTab}
-          onCreateTab={(workspaceId) => void exec(() => commands.createTab(workspaceId), true)}
+          onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
           onMenu={(kind, id, label, x, y) => setMenu({ kind, id, label, x, y })}
         />
         <header className="stage-bar">
@@ -583,7 +718,9 @@ export function App() {
                 aria-label="Split right"
                 title="Split right"
                 disabled={busy}
-                onClick={() => void exec(() => commands.splitPane(selectedPane.pane_id, "right"))}
+                onClick={() =>
+                  setLaunchTarget({ mode: "split", pane: selectedPane, direction: "right" })
+                }
               >
                 <SplitSquareHorizontal size={18} />
               </button>
@@ -593,7 +730,9 @@ export function App() {
                 aria-label="Split down"
                 title="Split down"
                 disabled={busy}
-                onClick={() => void exec(() => commands.splitPane(selectedPane.pane_id, "down"))}
+                onClick={() =>
+                  setLaunchTarget({ mode: "split", pane: selectedPane, direction: "down" })
+                }
               >
                 <SplitSquareVertical size={18} />
               </button>
@@ -665,11 +804,106 @@ export function App() {
         />
       ) : null}
 
+      {launchTarget ? (
+        <LaunchDialog
+          target={launchTarget}
+          busy={busy}
+          onCancel={() => setLaunchTarget(null)}
+          onSubmit={submitLaunch}
+        />
+      ) : null}
+
       {error ? (
         <div className="toast" role="alert">
           {error}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function LaunchDialog({
+  target,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  target: LaunchTarget;
+  busy?: boolean;
+  onCancel: () => void;
+  onSubmit: (spec: LaunchSpec) => void;
+}) {
+  const [kind, setKind] = useState<LaunchKind>("shell");
+  const [title, setTitle] = useState(() => launchLabel("shell"));
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const chooseKind = (nextKind: LaunchKind) => {
+    setKind(nextKind);
+    setTitle(launchLabel(nextKind));
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = title.trim();
+    if (trimmed) {
+      onSubmit({ kind, title: trimmed });
+    }
+  };
+
+  return (
+    <div className="overlay-root">
+      <button className="overlay-scrim" type="button" aria-label="Cancel" onClick={onCancel} />
+      <form className="modal launch-modal" onSubmit={submit}>
+        <div className="modal-title">
+          {target.mode === "tab" ? "New tab" : target.direction === "right" ? "Split right" : "Split down"}
+        </div>
+        <div className="launch-grid" role="radiogroup" aria-label="Launch type">
+          {LAUNCH_OPTIONS.map((option) => (
+            <button
+              key={option.kind}
+              type="button"
+              className="launch-option"
+              role="radio"
+              aria-checked={kind === option.kind}
+              data-active={kind === option.kind}
+              onClick={() => chooseKind(option.kind)}
+            >
+              {option.kind === "shell" ? <Terminal size={15} /> : <Bot size={15} />}
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+        <label className="field-label">
+          <span>title</span>
+          <input
+            ref={inputRef}
+            className="field"
+            value={title}
+            placeholder={launchLabel(kind)}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event) => setTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                onCancel();
+              }
+            }}
+          />
+        </label>
+        <div className="modal-actions">
+          <button type="button" className="btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={busy || !title.trim()}>
+            Create
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -772,11 +1006,13 @@ function Switcher({
   scope,
   sidebarView,
   agentSort,
+  agentGroup,
   activeSpace,
   selectedPane,
   onScope,
   onSidebarView,
   onAgentSort,
+  onAgentGroup,
   onSelectSpace,
   onSelectTab,
   onSelectPane,
@@ -790,11 +1026,13 @@ function Switcher({
   scope: Scope;
   sidebarView: SidebarView;
   agentSort: AgentSort;
+  agentGroup: AgentGroup;
   activeSpace: WorkspaceInfo | null;
   selectedPane: PaneInfo | null;
   onScope: (scope: Scope) => void;
   onSidebarView: (view: SidebarView) => void;
   onAgentSort: (sort: AgentSort) => void;
+  onAgentGroup: (group: AgentGroup) => void;
   onSelectSpace: (workspaceId: string) => void;
   onSelectTab: (tabId: string) => void;
   onSelectPane: (pane: PaneInfo) => void;
@@ -818,6 +1056,24 @@ function Switcher({
     return sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
   }, [snapshot, scope, activeSpace?.workspace_id, agentSort]);
 
+  const agentGroups = useMemo(() => {
+    if (!snapshot || agentGroup !== "workspace") {
+      return [];
+    }
+    const paneBuckets = new Map<string, PaneInfo[]>();
+    for (const pane of agentPanes) {
+      const panesForWorkspace = paneBuckets.get(pane.workspace_id) ?? [];
+      panesForWorkspace.push(pane);
+      paneBuckets.set(pane.workspace_id, panesForWorkspace);
+    }
+    return snapshot.workspaces
+      .filter((workspace) => paneBuckets.has(workspace.workspace_id))
+      .map((workspace) => ({
+        workspace,
+        panes: paneBuckets.get(workspace.workspace_id) ?? [],
+      }));
+  }, [snapshot, agentGroup, agentPanes]);
+
   const spaceGroups = useMemo(() => {
     if (!snapshot) {
       return [];
@@ -836,6 +1092,7 @@ function Switcher({
     }));
   }, [snapshot, scope, activeSpace?.workspace_id]);
 
+  let agentPaneIndex = 0;
   let paneIndex = 0;
 
   return (
@@ -954,17 +1211,29 @@ function Switcher({
                 </span>
                 <span className="sec-rule" />
                 {sidebarView === "agents" ? (
-                  <label className="sort-control">
-                    <span>sort</span>
-                    <select
-                      value={agentSort}
-                      onChange={(event) => onAgentSort(event.currentTarget.value as AgentSort)}
-                    >
-                      <option value="attention">attention</option>
-                      <option value="status">status</option>
-                      <option value="workspace">workspace</option>
-                    </select>
-                  </label>
+                  <div className="agent-list-controls">
+                    <label className="sort-control">
+                      <span>sort</span>
+                      <select
+                        value={agentSort}
+                        onChange={(event) => onAgentSort(event.currentTarget.value as AgentSort)}
+                      >
+                        <option value="attention">attention</option>
+                        <option value="status">status</option>
+                        <option value="workspace">workspace</option>
+                      </select>
+                    </label>
+                    <label className="sort-control">
+                      <span>group</span>
+                      <select
+                        value={agentGroup}
+                        onChange={(event) => onAgentGroup(event.currentTarget.value as AgentGroup)}
+                      >
+                        <option value="none">none</option>
+                        <option value="workspace">workspace</option>
+                      </select>
+                    </label>
+                  </div>
                 ) : scope === "space" && activeSpace ? (
                   <button
                     className="sec-add"
@@ -984,6 +1253,28 @@ function Switcher({
                     <strong>No detected agents</strong>
                     <span>Open the Tabs view for plain panes.</span>
                   </div>
+                ) : agentGroup === "workspace" ? (
+                  agentGroups.map((group) => (
+                    <Fragment key={group.workspace.workspace_id}>
+                      <div className="grp-space">
+                        <span className="dot" data-status={group.workspace.agent_status} />
+                        <span className="grp-space-name">{group.workspace.label}</span>
+                        <span className="grp-space-line" />
+                      </div>
+                      {group.panes.map((pane) => (
+                        <AgentRow
+                          key={pane.pane_id}
+                          index={agentPaneIndex++}
+                          pane={pane}
+                          workspace={group.workspace}
+                          tab={snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id)}
+                          active={pane.pane_id === selectedPane?.pane_id}
+                          onSelect={() => onSelectPane(pane)}
+                          onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
+                        />
+                      ))}
+                    </Fragment>
+                  ))
                 ) : (
                   agentPanes.map((pane, index) => (
                     <AgentRow
@@ -1284,6 +1575,10 @@ function basename(path?: string) {
     return "";
   }
   return trimmed.split("/").pop() ?? "";
+}
+
+function launchLabel(kind: LaunchKind) {
+  return LAUNCH_OPTIONS.find((option) => option.kind === kind)?.label ?? "Shell";
 }
 
 function SplitGlyph() {
