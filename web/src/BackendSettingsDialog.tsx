@@ -28,6 +28,7 @@ const emptyForm: FormState = {
 export function BackendSettingsDialog({ onClose }: Props) {
   const bridge = useBridge();
   const titleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(
@@ -44,8 +45,12 @@ export function BackendSettingsDialog({ onClose }: Props) {
   );
 
   useEffect(() => {
+    if (selectionMode === "same-origin") {
+      closeButtonRef.current?.focus();
+      return;
+    }
     nameInputRef.current?.focus();
-  }, []);
+  }, [selectionMode]);
 
   useEffect(() => {
     if (selectionMode !== "backend" || form.id || bridge.store.backends.length === 0) {
@@ -55,12 +60,16 @@ export function BackendSettingsDialog({ onClose }: Props) {
     setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
   }, [activeBackend, bridge.store.backends, form.id, selectionMode]);
 
-  const useSameOrigin = () => {
-    bridge.clearActiveBackend();
+  const selectSameOrigin = () => {
     setSelectionMode("same-origin");
     setForm(emptyForm);
-    setMessage("Using the same-origin bridge.");
+    setMessage(null);
     setDuplicate(null);
+  };
+
+  const useSameOrigin = () => {
+    bridge.clearActiveBackend();
+    onClose();
   };
 
   const startNew = () => {
@@ -181,6 +190,7 @@ export function BackendSettingsDialog({ onClose }: Props) {
       >
         <button
           className="modal-close icon-btn"
+          ref={closeButtonRef}
           type="button"
           aria-label="Close"
           title="Close"
@@ -195,7 +205,7 @@ export function BackendSettingsDialog({ onClose }: Props) {
               className="backend-row"
               type="button"
               data-active={selectionMode === "same-origin" ? "true" : undefined}
-              onClick={useSameOrigin}
+              onClick={selectSameOrigin}
             >
               {!bridge.store.activeBackendId ? <Check size={14} /> : <span />}
               <span>
@@ -270,7 +280,7 @@ export function BackendSettingsDialog({ onClose }: Props) {
               </>
             )}
             {selectionMode === "same-origin" && bridge.store.activeBackendId ? (
-              <div className="backend-warning">Select this row to switch back to same origin.</div>
+              <div className="backend-note">Use switches back from the active saved bridge.</div>
             ) : null}
             {duplicate ? (
               <div className="backend-warning">This URL is already saved as {duplicate.name}.</div>
@@ -282,6 +292,11 @@ export function BackendSettingsDialog({ onClose }: Props) {
           {canDelete ? (
             <button type="button" className="btn btn-danger" disabled={busy} onClick={deleteBackend}>
               Delete
+            </button>
+          ) : null}
+          {selectionMode === "same-origin" && bridge.store.activeBackendId ? (
+            <button type="button" className="btn btn-primary" onClick={useSameOrigin}>
+              Use
             </button>
           ) : null}
           {editingBackend ? (
