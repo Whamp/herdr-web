@@ -17,6 +17,8 @@ type FormState = {
   baseUrl: string;
 };
 
+type SelectionMode = "same-origin" | "new" | "backend";
+
 const emptyForm: FormState = {
   id: null,
   name: "",
@@ -28,7 +30,9 @@ export function BackendSettingsDialog({ onClose }: Props) {
   const titleId = useId();
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
-  const [creating, setCreating] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>(
+    bridge.activeBackend ? "backend" : "same-origin",
+  );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<BridgeBackendProfile | null>(null);
@@ -44,22 +48,30 @@ export function BackendSettingsDialog({ onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    if (creating || form.id || bridge.store.backends.length === 0) {
+    if (selectionMode !== "backend" || form.id || bridge.store.backends.length === 0) {
       return;
     }
     const backend = activeBackend ?? bridge.store.backends[0];
     setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
-  }, [activeBackend, bridge.store.backends, creating, form.id]);
+  }, [activeBackend, bridge.store.backends, form.id, selectionMode]);
+
+  const useSameOrigin = () => {
+    bridge.clearActiveBackend();
+    setSelectionMode("same-origin");
+    setForm(emptyForm);
+    setMessage("Using the bridge that served this page.");
+    setDuplicate(null);
+  };
 
   const startNew = () => {
-    setCreating(true);
+    setSelectionMode("new");
     setForm(emptyForm);
     setMessage(null);
     setDuplicate(null);
   };
 
   const editBackend = (backend: BridgeBackendProfile) => {
-    setCreating(false);
+    setSelectionMode("backend");
     setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
     setMessage(null);
     setDuplicate(null);
@@ -119,7 +131,7 @@ export function BackendSettingsDialog({ onClose }: Props) {
       if (activate && form.id) {
         bridge.setActiveBackend(profile.id);
       }
-      setCreating(false);
+      setSelectionMode("backend");
       setForm({ id: profile.id, name: profile.name, baseUrl: profile.baseUrl });
       setMessage(probeWarning ? `Backend saved. ${probeWarning}` : "Backend saved.");
       if (activate) {
@@ -141,7 +153,8 @@ export function BackendSettingsDialog({ onClose }: Props) {
   };
 
   const canDelete = Boolean(form.id && bridge.activeBackend?.id !== form.id);
-  const canUseSameOrigin = bridge.mode === "configured" || bridge.store.activeBackendId !== null;
+  const editingBackend = selectionMode !== "same-origin";
+  const sameOriginUrl = sameOriginDisplayUrl();
 
   return (
     <div className="overlay-root">
@@ -160,6 +173,9 @@ export function BackendSettingsDialog({ onClose }: Props) {
         }}
         onSubmit={(event) => {
           event.preventDefault();
+          if (!editingBackend) {
+            return;
+          }
           void saveBackend(true);
         }}
       >
@@ -169,7 +185,19 @@ export function BackendSettingsDialog({ onClose }: Props) {
             <button
               className="backend-row"
               type="button"
-              data-active={!form.id ? "true" : undefined}
+              data-active={selectionMode === "same-origin" ? "true" : undefined}
+              onClick={useSameOrigin}
+            >
+              {!bridge.store.activeBackendId ? <Check size={14} /> : <span />}
+              <span>
+                <strong>Same-origin bridge</strong>
+                <small>{sameOriginUrl}</small>
+              </span>
+            </button>
+            <button
+              className="backend-row"
+              type="button"
+              data-active={selectionMode === "new" ? "true" : undefined}
               onClick={startNew}
             >
               <Plus size={14} />
@@ -192,33 +220,52 @@ export function BackendSettingsDialog({ onClose }: Props) {
             ))}
           </div>
           <div className="backend-form">
-            <label className="field-label">
-              <span>Display name</span>
-              <input
-                ref={nameInputRef}
-                className="field"
-                value={form.name}
-                placeholder="Home workstation"
-                autoComplete="off"
-                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label className="field-label">
-              <span>Bridge URL</span>
-              <input
-                className="field"
-                value={form.baseUrl}
-                placeholder="http://192.168.1.20:4000"
-                autoComplete="off"
-                spellCheck={false}
-                onBlur={validateDuplicate}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, baseUrl: event.target.value }))
-                }
-              />
-            </label>
-            {selectedBackend?.lastConnectedAt ? (
-              <div className="backend-note">Last used {formatDate(selectedBackend.lastConnectedAt)}</div>
+            {selectionMode === "same-origin" ? (
+              <>
+                <label className="field-label">
+                  <span>Display name</span>
+                  <input className="field" value="Same-origin bridge" readOnly />
+                </label>
+                <label className="field-label">
+                  <span>Bridge URL</span>
+                  <input className="field" value={sameOriginUrl} readOnly />
+                </label>
+                <div className="backend-note">This built-in backend uses the bridge that served the web app.</div>
+              </>
+            ) : (
+              <>
+                <label className="field-label">
+                  <span>Display name</span>
+                  <input
+                    ref={nameInputRef}
+                    className="field"
+                    value={form.name}
+                    placeholder="Home workstation"
+                    autoComplete="off"
+                    onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                  />
+                </label>
+                <label className="field-label">
+                  <span>Bridge URL</span>
+                  <input
+                    className="field"
+                    value={form.baseUrl}
+                    placeholder="http://192.168.1.20:4000"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onBlur={validateDuplicate}
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, baseUrl: event.target.value }))
+                    }
+                  />
+                </label>
+                {selectedBackend?.lastConnectedAt ? (
+                  <div className="backend-note">Last used {formatDate(selectedBackend.lastConnectedAt)}</div>
+                ) : null}
+              </>
+            )}
+            {selectionMode === "same-origin" && bridge.store.activeBackendId ? (
+              <div className="backend-warning">Select this row to switch back to the serving bridge.</div>
             ) : null}
             {duplicate ? (
               <div className="backend-warning">This URL is already saved as {duplicate.name}.</div>
@@ -227,11 +274,6 @@ export function BackendSettingsDialog({ onClose }: Props) {
           </div>
         </div>
         <div className="modal-actions">
-          {canUseSameOrigin ? (
-            <button type="button" className="btn btn-clear" onClick={bridge.clearActiveBackend}>
-              Use same-origin
-            </button>
-          ) : null}
           {canDelete ? (
             <button type="button" className="btn btn-danger" disabled={busy} onClick={deleteBackend}>
               <Trash2 size={14} />
@@ -241,24 +283,36 @@ export function BackendSettingsDialog({ onClose }: Props) {
           <button type="button" className="btn" onClick={onClose}>
             Close
           </button>
-          <button type="button" className="btn" disabled={busy || !form.baseUrl.trim()} onClick={testBackend}>
-            Test
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={busy || !form.baseUrl.trim()}
-            onClick={() => void saveBackend(false)}
-          >
-            Save
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !form.baseUrl.trim()}>
-            Save & use
-          </button>
+          {editingBackend ? (
+            <>
+              <button type="button" className="btn" disabled={busy || !form.baseUrl.trim()} onClick={testBackend}>
+                Test
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || !form.baseUrl.trim()}
+                onClick={() => void saveBackend(false)}
+              >
+                Save
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={busy || !form.baseUrl.trim()}>
+                Save & use
+              </button>
+            </>
+          ) : null}
         </div>
       </form>
     </div>
   );
+}
+
+function sameOriginDisplayUrl() {
+  const location = globalThis.location;
+  if (!location?.origin || location.origin === "null") {
+    return "same-origin";
+  }
+  return location.origin;
 }
 
 function formatDate(value: string) {
