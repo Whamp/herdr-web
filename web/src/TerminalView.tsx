@@ -43,6 +43,7 @@ type UploadConflictState = {
 };
 
 const MAX_UPLOAD_FILES = 8;
+const TERMINAL_CONNECT_TIMEOUT_MS = 3500;
 
 export function TerminalView({
   pane,
@@ -70,6 +71,7 @@ export function TerminalView({
   const uploadConflictRef = useRef<UploadConflictState | null>(null);
   const connectionKeyRef = useRef(connectionKey);
   const terminalIdRef = useRef(pane?.terminal_id ?? null);
+  const lastResumeTokenRef = useRef(resumeToken);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [closeReason, setCloseReason] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
@@ -138,9 +140,12 @@ export function TerminalView({
     let disposeScroll: (() => void) | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let reconnectTimer: number | null = null;
+    let connectTimer: number | null = null;
     let reconnectAttempts = 0;
     let lastCloseReason: string | null = null;
+    const takeoverOnAttach = resumeToken > lastResumeTokenRef.current;
     const renderer: TerminalRenderer = new GhosttyRenderer();
+    lastResumeTokenRef.current = resumeToken;
     rendererRef.current = renderer;
     setConnectionState("connecting");
 
@@ -206,17 +211,48 @@ export function TerminalView({
           }, delay);
         };
 
+        const clearConnectTimer = () => {
+          if (connectTimer !== null) {
+            window.clearTimeout(connectTimer);
+            connectTimer = null;
+          }
+        };
+
+        const retryStalledConnect = (stalledSocket: WebSocket) => {
+          if (
+            disposed ||
+            socket !== stalledSocket ||
+            stalledSocket.readyState !== WebSocket.CONNECTING
+          ) {
+            return;
+          }
+          socket = null;
+          if (socketRef.current === stalledSocket) {
+            socketRef.current = null;
+          }
+          stalledSocket.close();
+          scheduleReconnect();
+        };
+
         const connectSocket = () => {
           if (disposed) {
             return;
           }
-          const nextSocket = new WebSocket(terminalSocketUrl(wsUrl, pane.terminal_id, renderer.fit()));
+          clearConnectTimer();
+          const nextSocket = new WebSocket(
+            terminalSocketUrl(wsUrl, pane.terminal_id, renderer.fit(), takeoverOnAttach),
+          );
           socket = nextSocket;
           socketRef.current = nextSocket;
           nextSocket.binaryType = "arraybuffer";
+          connectTimer = window.setTimeout(
+            () => retryStalledConnect(nextSocket),
+            TERMINAL_CONNECT_TIMEOUT_MS,
+          );
 
           nextSocket.addEventListener("open", () => {
             if (!disposed && socket === nextSocket) {
+              clearConnectTimer();
               reconnectAttempts = 0;
               lastCloseReason = null;
               setCloseReason(null);
@@ -246,6 +282,7 @@ export function TerminalView({
           });
           nextSocket.addEventListener("close", () => {
             if (!disposed && socket === nextSocket) {
+              clearConnectTimer();
               if (lastCloseReason) {
                 console.warn("terminal websocket closed", lastCloseReason);
               }
@@ -259,6 +296,7 @@ export function TerminalView({
           });
           nextSocket.addEventListener("error", () => {
             if (!disposed && socket === nextSocket) {
+              clearConnectTimer();
               setConnectionState("error");
             }
           });
@@ -286,6 +324,10 @@ export function TerminalView({
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = null;
+      }
+      if (connectTimer !== null) {
+        window.clearTimeout(connectTimer);
+        connectTimer = null;
       }
       socket?.close();
       if (socketRef.current === socket) {
@@ -789,12 +831,13 @@ function terminalSocketUrl(
   wsUrl: (path: string, query?: URLSearchParams) => string,
   terminalId: string,
   size: TerminalSize,
+  takeover: boolean,
 ) {
   const params = new URLSearchParams({
     terminal_id: terminalId,
     cols: String(size.cols),
     rows: String(size.rows),
-    takeover: "false",
+    takeover: takeover ? "true" : "false",
   });
   return wsUrl("/ws/terminal", params);
 }

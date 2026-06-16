@@ -30,6 +30,7 @@
 - Added same-origin browser request checks to bridge API and WebSocket routes.
 - Changed the Android shell origin to `http://localhost` with cleartext enabled for trusted-LAN
   HTTP bridge URLs.
+- Added the Herdr logo to the app header and Android launcher icon.
 - Disabled Android cloud backup for the shell and removed unused Capacitor mixed-content/deprecated
   runtime config.
 - Included Rust formatting checks for the vendored bridge overlay in the root lint command.
@@ -55,6 +56,7 @@
 - Kept clear-name requests compatible with older running Herdr daemons by translating them in the bridge.
 - Hid the clear-name action when a workspace or tab is already using its default label.
 - Preserved custom CORS preflight request headers for future bridge auth headers.
-- Re-probed and reconnected active Android bridge sessions promptly after app foreground/resume.
+- Re-probed and reconnected active Android bridge sessions promptly after app foreground/resume,
+  including stale terminal attaches left behind by Android backgrounding.
 
 ### Removed

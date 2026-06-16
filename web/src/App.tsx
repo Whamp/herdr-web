@@ -1598,10 +1598,13 @@ function Switcher({
     <>
       <header className="sb-head">
         <div className="brand">
-            <span className="brand-mark">
+          <span className="brand-mark">
+            <img className="brand-logo" src="/herdr-logo.svg" alt="" aria-hidden="true" />
+            <span className="brand-title">
               <span className="brand-dot dot" data-status={roll} />
               herdr-web
             </span>
+          </span>
           {headerSummary ? (
             <span className="brand-sub">
               <b>{headerSummary}</b>
