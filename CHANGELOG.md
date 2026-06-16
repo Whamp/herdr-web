@@ -56,7 +56,6 @@
 - Kept clear-name requests compatible with older running Herdr daemons by translating them in the bridge.
 - Hid the clear-name action when a workspace or tab is already using its default label.
 - Preserved custom CORS preflight request headers for future bridge auth headers.
-- Re-probed and reconnected active Android bridge sessions promptly after app foreground/resume,
-  including stale terminal attaches left behind by Android backgrounding.
+- Re-probed and reconnected active Android bridge sessions promptly after app foreground/resume.
 
 ### Removed

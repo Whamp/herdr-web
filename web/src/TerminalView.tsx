@@ -71,7 +71,6 @@ export function TerminalView({
   const uploadConflictRef = useRef<UploadConflictState | null>(null);
   const connectionKeyRef = useRef(connectionKey);
   const terminalIdRef = useRef(pane?.terminal_id ?? null);
-  const lastResumeTokenRef = useRef(resumeToken);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [closeReason, setCloseReason] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
@@ -143,9 +142,7 @@ export function TerminalView({
     let connectTimer: number | null = null;
     let reconnectAttempts = 0;
     let lastCloseReason: string | null = null;
-    const takeoverOnAttach = resumeToken > lastResumeTokenRef.current;
     const renderer: TerminalRenderer = new GhosttyRenderer();
-    lastResumeTokenRef.current = resumeToken;
     rendererRef.current = renderer;
     setConnectionState("connecting");
 
@@ -240,7 +237,7 @@ export function TerminalView({
           }
           clearConnectTimer();
           const nextSocket = new WebSocket(
-            terminalSocketUrl(wsUrl, pane.terminal_id, renderer.fit(), takeoverOnAttach),
+            terminalSocketUrl(wsUrl, pane.terminal_id, renderer.fit()),
           );
           socket = nextSocket;
           socketRef.current = nextSocket;
@@ -831,13 +828,12 @@ function terminalSocketUrl(
   wsUrl: (path: string, query?: URLSearchParams) => string,
   terminalId: string,
   size: TerminalSize,
-  takeover: boolean,
 ) {
   const params = new URLSearchParams({
     terminal_id: terminalId,
     cols: String(size.cols),
     rows: String(size.rows),
-    takeover: takeover ? "true" : "false",
+    takeover: "false",
   });
   return wsUrl("/ws/terminal", params);
 }
