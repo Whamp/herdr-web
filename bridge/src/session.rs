@@ -1,13 +1,28 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub const SESSION_ENV_VAR: &str = "HERDR_SESSION";
 const DEFAULT_SESSION_NAME: &str = "default";
 
 static EXPLICIT_SESSION_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn explicit_session_requested() -> bool {
     EXPLICIT_SESSION_REQUESTED.load(Ordering::Relaxed)
+}
+
+pub fn configure_explicit_session(name: &str) -> Result<(), String> {
+    validate_session_name(name)?;
+    if name == DEFAULT_SESSION_NAME {
+        std::env::remove_var(SESSION_ENV_VAR);
+    } else {
+        std::env::set_var(SESSION_ENV_VAR, name);
+    }
+    EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 pub fn active_name() -> Option<String> {
@@ -68,4 +83,59 @@ fn is_valid_session_name(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+pub fn validate_session_name(name: &str) -> Result<(), String> {
+    if is_valid_session_name(name) {
+        Ok(())
+    } else {
+        Err("session name must be 1-64 ASCII letters, digits, '.', '_', or '-'".to_string())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_explicit_session_for_test() {
+    EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_session_ignores_socket_override() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous_session = std::env::var(SESSION_ENV_VAR).ok();
+        let previous_socket = std::env::var(herdr_compat::api::SOCKET_PATH_ENV_VAR).ok();
+
+        std::env::set_var(
+            herdr_compat::api::SOCKET_PATH_ENV_VAR,
+            "/tmp/ignored-herdr.sock",
+        );
+        configure_explicit_session("work").unwrap();
+
+        assert_eq!(active_name().as_deref(), Some("work"));
+        assert!(active_api_socket_path().ends_with("sessions/work/herdr.sock"));
+        assert!(active_client_socket_path().ends_with("sessions/work/herdr-client.sock"));
+
+        restore_env(SESSION_ENV_VAR, previous_session);
+        restore_env(herdr_compat::api::SOCKET_PATH_ENV_VAR, previous_socket);
+        clear_explicit_session_for_test();
+    }
+
+    #[test]
+    fn invalid_session_names_are_rejected() {
+        assert!(validate_session_name("").is_err());
+        assert!(validate_session_name("not allowed").is_err());
+        assert!(validate_session_name("../work").is_err());
+        assert!(validate_session_name(&"a".repeat(65)).is_err());
+        assert!(validate_session_name("work_1.2-3").is_ok());
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
 }

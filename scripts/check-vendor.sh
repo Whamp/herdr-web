@@ -25,14 +25,15 @@ for path in "${required[@]}"; do
   fi
 done
 
-if [[ -e "$ROOT/vendor/herdr/Cargo.toml" || -e "$ROOT/vendor/herdr/src" ]]; then
+if [[ -d "$ROOT/vendor/herdr" ]]; then
   echo "full vendor/herdr snapshot is not allowed; keep only vendor/herdr-compat" >&2
   exit 1
 fi
 
-if rg -n '#\[path *= *".*vendor/herdr|vendor/herdr/src' "$ROOT/bridge" "$ROOT/vendor/herdr-compat" >/dev/null; then
+forbidden_vendor_ref='(#\[path[[:space:]]*=[[:space:]]*"[^"]*vendor/herdr/|vendor/herdr/src)'
+if rg -n "$forbidden_vendor_ref" "$ROOT/bridge" "$ROOT/vendor/herdr-compat" >/dev/null; then
   echo "build-time imports from vendor/herdr are not allowed" >&2
-  rg -n '#\[path *= *".*vendor/herdr|vendor/herdr/src' "$ROOT/bridge" "$ROOT/vendor/herdr-compat" >&2
+  rg -n "$forbidden_vendor_ref" "$ROOT/bridge" "$ROOT/vendor/herdr-compat" >&2
   exit 1
 fi
 

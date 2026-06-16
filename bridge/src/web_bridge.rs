@@ -261,7 +261,7 @@ pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
         Err(message) => {
             eprintln!("{message}");
             eprintln!(
-                "usage: herdr-web-bridge [--host HOST] [--port PORT] [--static-dir DIR] [--allow-origin ORIGIN] [--allow-host HOSTNAME]"
+                "usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--allow-origin ORIGIN] [--allow-host HOSTNAME]"
             );
             return Ok(2);
         }
@@ -273,8 +273,13 @@ pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
         .build()
         .expect("failed to create tokio runtime");
 
-    runtime.block_on(run_server(options))?;
-    Ok(0)
+    match runtime.block_on(run_server(options)) {
+        Ok(()) => Ok(0),
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(1)
+        }
+    }
 }
 
 fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
@@ -284,6 +289,7 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
     let mut upload_dir = default_upload_dir();
     let mut allowed_hosts = Vec::new();
     let mut allowed_origins = Vec::new();
+    let mut explicit_session = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -297,6 +303,14 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
                     return Err("missing value for --host".into());
                 };
                 host = value.clone();
+                index += 2;
+            }
+            "--session" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --session".into());
+                };
+                crate::session::validate_session_name(value)?;
+                explicit_session = Some(value.clone());
                 index += 2;
             }
             "--port" => {
@@ -340,6 +354,10 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
         }
     }
 
+    if let Some(name) = explicit_session {
+        crate::session::configure_explicit_session(&name)?;
+    }
+
     Ok(Some(BridgeOptions {
         host,
         port,
@@ -357,10 +375,11 @@ fn print_help() {
 fn help_text() -> &'static str {
     "herdr-web-bridge\n\
 \n\
-Usage: herdr-web-bridge [--host HOST] [--port PORT] [--static-dir DIR] [--upload-dir DIR] [--allow-origin ORIGIN] [--allow-host HOSTNAME]\n\
+Usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--upload-dir DIR] [--allow-origin ORIGIN] [--allow-host HOSTNAME]\n\
 \n\
 Runs the local HTTP/WebSocket bridge for herdr-web.\n\
 Defaults to the active Herdr daemon sockets and 127.0.0.1:8787.\n\
+Use --session NAME to target a named Herdr session and ignore HERDR_SOCKET_PATH.\n\
 Use --host 0.0.0.0 to listen on non-loopback interfaces.\n\
 Use --allow-origin http://localhost for bundled Android app access.\n\
 Use --allow-host HOSTNAME to accept that exact DNS hostname in Host headers.\n\
@@ -2557,7 +2576,37 @@ mod tests {
 
         assert!(help.contains("herdr-web-bridge"));
         assert!(help.contains("Usage: herdr-web-bridge"));
+        assert!(help.contains("--session NAME"));
         assert!(!help.contains("herdr web-bridge"));
+    }
+
+    #[test]
+    fn parse_options_configures_explicit_session() {
+        let _guard = crate::session::TEST_ENV_LOCK.lock().unwrap();
+        let previous_session = std::env::var(crate::session::SESSION_ENV_VAR).ok();
+        let previous_socket = std::env::var(herdr_compat::api::SOCKET_PATH_ENV_VAR).ok();
+
+        std::env::set_var(
+            herdr_compat::api::SOCKET_PATH_ENV_VAR,
+            "/tmp/ignored-herdr.sock",
+        );
+        let args = vec!["--session".to_string(), "work".to_string()];
+        let options = parse_options(&args).unwrap().unwrap();
+
+        assert_eq!(options.port, DEFAULT_PORT);
+        assert!(crate::session::explicit_session_requested());
+        assert!(crate::session::active_api_socket_path().ends_with("sessions/work/herdr.sock"));
+
+        restore_env(crate::session::SESSION_ENV_VAR, previous_session);
+        restore_env(herdr_compat::api::SOCKET_PATH_ENV_VAR, previous_socket);
+        crate::session::clear_explicit_session_for_test();
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     fn runtime_status(protocol: u32) -> herdr_compat::api::RuntimeStatus {

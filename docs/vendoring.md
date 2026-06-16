@@ -53,6 +53,12 @@ Herdr app, website, CI, terminal runtime build path, or legacy `herdr web-bridge
 is that copied private protocol/API code can drift from upstream Herdr, so refreshes must be
 intentional and reviewed.
 
+The compatibility crate currently keeps `ratatui` and `crossterm` because upstream
+`protocol::wire` includes semantic frame and input conversion types next to the terminal attach
+messages used by the bridge. `herdr-web-bridge` requests terminal ANSI rendering, but keeping the
+wire module broad makes protocol drift reviewable against upstream. Revisit this tradeoff if the
+bridge narrows the drift check to only the terminal attach message regions.
+
 ## Refresh Process
 
 Use a clean Herdr checkout as the source reference. Do not refresh from an experimental tree that

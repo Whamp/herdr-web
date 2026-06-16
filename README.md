@@ -121,7 +121,8 @@ The launcher uses the installed/stable Herdr socket by default:
 ```
 
 This avoids debug builds falling back to Herdr's `herdr-dev` app directory. To target a named or
-development Herdr session, set `HERDR_SOCKET_PATH` explicitly before running the script.
+development Herdr session, either pass `--session NAME` to the bridge or set `HERDR_SOCKET_PATH`
+explicitly before running the script.
 
 Open:
 

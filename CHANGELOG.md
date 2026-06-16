@@ -12,6 +12,8 @@
   Preferences, starts disconnected until a bridge is selected, and supports debug APK builds.
 - Added bridge `--allow-origin` and `--allow-host` options with CORS preflight support for bundled
   Android bridge access and explicit hostname backends.
+- Added `herdr-web-bridge --session NAME` to target a named Herdr session while ignoring
+  `HERDR_SOCKET_PATH`.
 - Added Android build, sync, HTTP/cleartext, and smoke-test documentation.
 - Added named bridge backend profiles and a settings dialog for switching the active backend.
 - Added a bridge capabilities endpoint so the web app can discover supported commands without
