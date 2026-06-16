@@ -673,6 +673,16 @@ export function App() {
         }
         event.preventDefault();
         event.stopPropagation();
+        const tabPanes = sortPanesForTab(snapshot.panes, tab.tab_id);
+        if (tabPanes.length > 1 && selectedPane?.tab_id === tab.tab_id) {
+          setDialog({
+            mode: "close",
+            kind: "pane",
+            id: selectedPane.pane_id,
+            label: paneTitle(selectedPane),
+          });
+          return;
+        }
         setDialog({
           mode: "close",
           kind: "tab",
@@ -1181,7 +1191,7 @@ function isNewTabShortcut(event: KeyboardEvent) {
 }
 
 function paneFocusShortcutDirection(event: KeyboardEvent): PaneFocusDirection | null {
-  if (!isPlatformShortcutModifier(event) || event.shiftKey) {
+  if (!isPlatformShortcutModifier(event)) {
     return null;
   }
   if (event.code === "KeyH") {

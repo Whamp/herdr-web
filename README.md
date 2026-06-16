@@ -149,13 +149,13 @@ work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts 
 | --- | --- | --- |
 | Select previous/next agent pane | `Cmd/Option+Shift+Up/Down` | `Meta/Alt+Shift+Up/Down` |
 | Select previous/next tab in the active space | `Cmd/Option+Shift+Left/Right` | `Meta/Alt+Shift+Left/Right` |
-| Focus split left/down/up/right | `Cmd/Option+H/J/K/L` | `Meta/Alt+H/J/K/L` |
+| Focus split left/down/up/right | `Cmd/Option(+Shift)+H/J/K/L` | `Meta/Alt(+Shift)+H/J/K/L` |
 | Cycle split next | `Cmd/Option+Tab` | `Meta/Alt+Tab` |
 | Cycle split previous | `Cmd/Option+Shift+Tab` | `Meta/Alt+Shift+Tab` |
 | Split selected pane down | `Cmd/Option+Shift+V` | `Meta/Alt+Shift+V` |
 | Split selected pane right | `Cmd/Option+Shift+-` | `Meta/Alt+Shift+-` |
 | Open the new-tab launch modal | `Cmd/Option+Shift+T` | `Meta/Alt+Shift+T` |
-| Confirm close for the active tab and its panes | `Cmd/Option+Shift+X` | `Meta/Alt+Shift+X` |
+| Confirm close for the focused split, or tab when only one split exists | `Cmd/Option+Shift+X` | `Meta/Alt+Shift+X` |
 
 ## Runtime Model
 
