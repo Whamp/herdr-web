@@ -223,30 +223,39 @@ export function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    cancelRef.current?.focus();
+    dialogRef.current?.focus();
   }, []);
 
   return (
     <div className="overlay-root">
       <button className="overlay-scrim" type="button" aria-label="Cancel" onClick={onCancel} />
       <div
+        ref={dialogRef}
         className="modal"
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
             onCancel();
+          } else if (
+            event.key === "Enter" &&
+            !busy &&
+            !(event.target instanceof HTMLButtonElement)
+          ) {
+            event.preventDefault();
+            onConfirm();
           }
         }}
       >
         <div className="modal-title">{title}</div>
         {message ? <div className="modal-message">{message}</div> : null}
         <div className="modal-actions">
-          <button ref={cancelRef} type="button" className="btn" onClick={onCancel}>
+          <button type="button" className="btn" onClick={onCancel}>
             Cancel
           </button>
           <button
