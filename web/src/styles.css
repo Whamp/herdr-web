@@ -1539,6 +1539,7 @@ button {
 
 .segmented-control {
   display: inline-flex;
+  width: 100%;
   min-width: 0;
   padding: 3px;
   border: 1px solid var(--line);
@@ -1549,6 +1550,7 @@ button {
 .segmented-control button {
   min-width: 0;
   height: 28px;
+  flex: 1 1 0;
   padding: 0 10px;
   border: 0;
   border-radius: calc(var(--r-sm) - 2px);

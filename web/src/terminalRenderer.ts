@@ -1,4 +1,6 @@
 import { FitAddon, init, Terminal } from "ghostty-web";
+import { terminalTapFocusAction } from "./terminalTapFocus";
+import type { TerminalTapFocusResult } from "./terminalTapFocus";
 
 const TERMINAL_FONT_FAMILY =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
@@ -16,7 +18,7 @@ export type TerminalRenderer = {
   write(data: string | Uint8Array): void;
   onInput(callback: (data: string) => void): () => void;
   onScroll(callback: (lines: number) => void): () => void;
-  setTapFocusHandler(callback: (() => boolean | "terminal") | null): void;
+  setTapFocusHandler(callback: (() => TerminalTapFocusResult) | null): void;
   fit(): TerminalSize;
   refreshMetrics(): TerminalSize;
   focus(): void;
@@ -33,7 +35,7 @@ export class GhosttyRenderer implements TerminalRenderer {
   #scrollCallback: ((lines: number) => void) | null = null;
   #touchCleanup: (() => void) | null = null;
   #mobileInputCleanup: (() => void) | null = null;
-  #tapFocusHandler: (() => boolean | "terminal") | null = null;
+  #tapFocusHandler: (() => TerminalTapFocusResult) | null = null;
   #textInputTapGraceUntil = 0;
 
   async mount(container: HTMLElement) {
@@ -115,7 +117,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
   }
 
-  setTapFocusHandler(callback: (() => boolean | "terminal") | null) {
+  setTapFocusHandler(callback: (() => TerminalTapFocusResult) | null) {
     this.#tapFocusHandler = callback;
   }
 
@@ -211,14 +213,12 @@ export class GhosttyRenderer implements TerminalRenderer {
     let touchScrolled = false;
     let pendingTouchLines = 0;
     const redirectTapFocus = (event: TouchEvent | MouseEvent) => {
-      if (
+      const terminalHadFocusOrGrace =
         document.activeElement === terminal.textarea ||
-        performance.now() < this.#textInputTapGraceUntil
-      ) {
-        return false;
-      }
+        performance.now() < this.#textInputTapGraceUntil;
       const tapFocusResult = this.#tapFocusHandler?.();
-      if (!tapFocusResult) {
+      const action = terminalTapFocusAction(tapFocusResult, terminalHadFocusOrGrace);
+      if (action === "ignore") {
         return false;
       }
       event.preventDefault();
@@ -226,7 +226,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       if (typeof event.stopImmediatePropagation === "function") {
         event.stopImmediatePropagation();
       }
-      if (tapFocusResult !== "terminal") {
+      if (action === "redirect") {
         terminal.textarea?.blur();
       }
       return true;

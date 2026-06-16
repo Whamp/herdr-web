@@ -1225,6 +1225,7 @@ export function App() {
 
       {backendSettingsOpen ? (
         <BackendSettingsDialog
+          showMobileTerminalSettings={isTouchInput}
           mobileTerminalTapTarget={mobileTerminalTapTarget}
           onMobileTerminalTapTarget={setMobileTerminalTapTarget}
           onClose={() => setBackendSettingsOpen(false)}
