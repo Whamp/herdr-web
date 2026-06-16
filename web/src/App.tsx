@@ -10,7 +10,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { AgentIcon, agentIconKind } from "./AgentIcon";
 import { commands, createdPaneId, probeSupportedCommands } from "./commands";
-import type { LaunchSpec } from "./commands";
+import type { LaunchSpec, PaneFocusDirection, SplitDirection } from "./commands";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
@@ -35,7 +35,7 @@ import {
   spaceSubtitle,
   statusLabel,
 } from "./state";
-import type { AgentStatus, PaneInfo, Snapshot, WorkspaceInfo } from "./types";
+import type { AgentStatus, PaneInfo, Snapshot, TabInfo, WorkspaceInfo } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
 type Scope = "space" | "all";
@@ -69,7 +69,8 @@ type DisplayPrefs = {
   selectedPaneId: string | null;
 };
 
-const NARROW_QUERY = "(max-width: 1024px), (hover: none) and (pointer: coarse)";
+const COMPACT_LAYOUT_QUERY = "(max-width: 820px)";
+const TOUCH_INPUT_QUERY = "(hover: none) and (pointer: coarse)";
 const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
 const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
 const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
@@ -200,19 +201,29 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [splitSupported, setSplitSupported] = useState(false);
+  const [paneFocusSupported, setPaneFocusSupported] = useState(false);
   const [paneMoveSupported, setPaneMoveSupported] = useState(false);
   const [refitToken, setRefitToken] = useState(0);
-  const isNarrow = useIsNarrow();
+  const [terminalFocusToken, setTerminalFocusToken] = useState(0);
+  const isCompactLayout = useIsCompactLayout();
+  const isTouchInput = useIsTouchInput();
   const snapshotRef = useRef<Snapshot | null>(null);
-  const isNarrowRef = useRef(isNarrow);
+  const isCompactLayoutRef = useRef(isCompactLayout);
   const showDetailRef = useRef(showDetail);
   const mobileSidebarHistoryRef = useRef(false);
   const mobileDetailHistoryRef = useRef(false);
+  const sidebarResizePressRef = useRef<{
+    timer: number;
+    pointerId: number;
+    x: number;
+    y: number;
+    target: HTMLDivElement;
+  } | null>(null);
 
   const resolvedPaneId = chooseSelectedPane(snapshot, selectedPaneId);
 
   const ensureMobileSidebarHistory = () => {
-    if (!isNarrowRef.current || isMobileDetailHistoryState(window.history.state)) {
+    if (!isCompactLayoutRef.current || isMobileDetailHistoryState(window.history.state)) {
       return;
     }
     if (isMobileSidebarHistoryState(window.history.state)) {
@@ -232,8 +243,8 @@ export function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    isNarrowRef.current = isNarrow;
-    if (isNarrow) {
+    isCompactLayoutRef.current = isCompactLayout;
+    if (isCompactLayout) {
       ensureMobileSidebarHistory();
       return;
     }
@@ -245,7 +256,7 @@ export function App() {
     ) {
       window.history.replaceState(stripMobileHistoryState(window.history.state), "", window.location.href);
     }
-  }, [isNarrow]);
+  }, [isCompactLayout]);
 
   useEffect(() => {
     showDetailRef.current = showDetail;
@@ -279,7 +290,19 @@ export function App() {
 
   useEffect(() => {
     setSidebarWidth((width) => clampSidebarWidth(width));
-  }, [isNarrow]);
+  }, [isCompactLayout]);
+
+  const clearSidebarResizePress = () => {
+    const pending = sidebarResizePressRef.current;
+    if (!pending) {
+      return;
+    }
+    window.clearTimeout(pending.timer);
+    if (pending.target.hasPointerCapture(pending.pointerId)) {
+      pending.target.releasePointerCapture(pending.pointerId);
+    }
+    sidebarResizePressRef.current = null;
+  };
 
   useEffect(() => {
     if (!resizingSidebar) {
@@ -302,6 +325,21 @@ export function App() {
       document.body.style.userSelect = "";
     };
   }, [resizingSidebar]);
+
+  useEffect(
+    () => () => {
+      const pending = sidebarResizePressRef.current;
+      if (!pending) {
+        return;
+      }
+      window.clearTimeout(pending.timer);
+      if (pending.target.hasPointerCapture(pending.pointerId)) {
+        pending.target.releasePointerCapture(pending.pointerId);
+      }
+      sidebarResizePressRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -342,6 +380,7 @@ export function App() {
     void probeSupportedCommands().then((supportedCommands) => {
       if (!cancelled) {
         setSplitSupported(supportedCommands.has("pane.split"));
+        setPaneFocusSupported(supportedCommands.has("pane.focus_direction"));
         setPaneMoveSupported(supportedCommands.has("pane.move"));
       }
     });
@@ -352,7 +391,7 @@ export function App() {
 
   useEffect(() => {
     const onPopState = (event: PopStateEvent) => {
-      if (!isNarrowRef.current) {
+      if (!isCompactLayoutRef.current) {
         return;
       }
       if (isMobileDetailHistoryState(event.state)) {
@@ -399,12 +438,12 @@ export function App() {
   });
 
   useEffect(() => {
-    if (isNarrow) {
+    if (isCompactLayout) {
       window.scrollTo(0, 0);
       document.documentElement.scrollLeft = 0;
       document.body.scrollLeft = 0;
     }
-  }, [isNarrow, showDetail]);
+  }, [isCompactLayout, showDetail]);
 
   const activeSpace = useMemo(() => {
     if (!snapshot || snapshot.workspaces.length === 0) {
@@ -459,7 +498,7 @@ export function App() {
     return cells.length > 1 ? cells : null;
   }, [snapshot, selectedPane]);
 
-  const showSplit = !isNarrow && splitCells !== null;
+  const showSplit = !isCompactLayout && splitCells !== null;
 
   // Mirror browser navigation to the herdr session so `active_tab_id` tracks
   // what we're viewing here. `tab.focus` also activates the tab's workspace, so
@@ -501,14 +540,16 @@ export function App() {
     setActiveSpaceId(pane.workspace_id);
     void syncSelectedPane(pane.pane_id).catch(() => {});
     pushFocus(pane.tab_id, pane.workspace_id);
-    if (isNarrow) {
+    if (isCompactLayout) {
       openMobileDetail();
     }
   };
 
+  const requestTerminalFocus = () => setTerminalFocusToken((token) => token + 1);
+
   const selectSpace = (workspaceId: string) => {
     setActiveSpaceId(workspaceId);
-    if (!isNarrow && snapshot) {
+    if (!isCompactLayout && snapshot) {
       const paneId = choosePaneForWorkspace(snapshot, workspaceId);
       if (paneId) {
         setSelectedPaneId(paneId);
@@ -535,6 +576,188 @@ export function App() {
     }
   };
 
+  const focusTab = (tabId: string) => {
+    selectTab(tabId);
+    requestTerminalFocus();
+  };
+
+  const focusPane = (pane: PaneInfo) => {
+    openPane(pane);
+    requestTerminalFocus();
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const navigationShortcut = isAppNavigationShortcut(event);
+      const closeTabShortcut = isCloseTabShortcut(event);
+      const newTabShortcut = isNewTabShortcut(event);
+      const splitDirection = splitSupported ? splitShortcutDirection(event) : null;
+      const paneFocusDirection = paneFocusSupported ? paneFocusShortcutDirection(event) : null;
+      const paneCycleStep = paneCycleShortcutStep(event);
+      if (
+        (!navigationShortcut &&
+          !closeTabShortcut &&
+          !newTabShortcut &&
+          !splitDirection &&
+          !paneFocusDirection &&
+          paneCycleStep === 0) ||
+        isShortcutTextEntryTarget(event.target) ||
+        !snapshot ||
+        busy ||
+        menu ||
+        dialog ||
+        launchTarget ||
+        hasOpenModal()
+      ) {
+        return;
+      }
+
+      if (paneFocusDirection) {
+        if (!selectedPane) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void exec(
+          () => commands.focusPaneDirection(selectedPane.pane_id, paneFocusDirection),
+          true,
+        ).then((ok) => ok && requestTerminalFocus());
+        return;
+      }
+
+      if (paneCycleStep !== 0) {
+        const panes = orderedShortcutTabPanes(snapshot, activeSpace, selectedPane);
+        if (panes.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const currentIndex = selectedPane
+          ? panes.findIndex((pane) => pane.pane_id === selectedPane.pane_id)
+          : -1;
+        const fallbackIndex = paneCycleStep > 0 ? 0 : panes.length - 1;
+        const nextIndex =
+          currentIndex === -1
+            ? fallbackIndex
+            : (currentIndex + paneCycleStep + panes.length) % panes.length;
+        focusPane(panes[nextIndex]);
+        return;
+      }
+
+      if (splitDirection) {
+        if (!selectedPane) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void exec(() => commands.splitPane(selectedPane.pane_id, splitDirection), true).then(
+          (ok) => ok && requestTerminalFocus(),
+        );
+        return;
+      }
+
+      if (newTabShortcut) {
+        if (!activeSpace) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        setLaunchTarget({ mode: "tab", workspaceId: activeSpace.workspace_id });
+        return;
+      }
+
+      if (closeTabShortcut) {
+        const tab = activeShortcutTab(snapshot, activeSpace, selectedPane);
+        if (!tab) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const tabPanes = sortPanesForTab(snapshot.panes, tab.tab_id);
+        if (tabPanes.length > 1 && selectedPane?.tab_id === tab.tab_id) {
+          setDialog({
+            mode: "close",
+            kind: "pane",
+            id: selectedPane.pane_id,
+            label: paneTitle(selectedPane),
+          });
+          return;
+        }
+        setDialog({
+          mode: "close",
+          kind: "tab",
+          id: tab.tab_id,
+          label: displayTabLabel(tab, snapshot.panes),
+        });
+        return;
+      }
+
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        const agentPanes = orderedShortcutAgentPanes(
+          snapshot,
+          scope,
+          activeSpace?.workspace_id,
+          agentSort,
+          agentGroup,
+        );
+        if (agentPanes.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const currentIndex = selectedPane
+          ? agentPanes.findIndex((pane) => pane.pane_id === selectedPane.pane_id)
+          : -1;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        const fallbackIndex = step > 0 ? 0 : agentPanes.length - 1;
+        const nextIndex =
+          currentIndex === -1
+            ? fallbackIndex
+            : (currentIndex + step + agentPanes.length) % agentPanes.length;
+        focusPane(agentPanes[nextIndex]);
+        return;
+      }
+
+      const workspace = activeSpace;
+      if (!workspace || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) {
+        return;
+      }
+      const tabs = sortTabsForWorkspace(snapshot.tabs, workspace.workspace_id);
+      if (tabs.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const activeTabId =
+        selectedPane && selectedPane.workspace_id === workspace.workspace_id
+          ? selectedPane.tab_id
+          : workspace.active_tab_id;
+      const currentIndex = tabs.findIndex((tab) => tab.tab_id === activeTabId);
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const fallbackIndex = step > 0 ? 0 : tabs.length - 1;
+      const nextIndex =
+        currentIndex === -1 ? fallbackIndex : (currentIndex + step + tabs.length) % tabs.length;
+      focusTab(tabs[nextIndex].tab_id);
+    };
+
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [
+    activeSpace,
+    agentGroup,
+    agentSort,
+    busy,
+    dialog,
+    isCompactLayout,
+    launchTarget,
+    menu,
+    paneFocusSupported,
+    scope,
+    selectedPane,
+    splitSupported,
+    snapshot,
+  ]);
+
   const refreshNow = () => {
     setLoadState("loading");
     void fetchSnapshot()
@@ -559,7 +782,7 @@ export function App() {
           setSelectedPaneId(created.pane_id);
           setActiveSpaceId(created.workspace_id);
           void syncSelectedPane(created.pane_id).catch(() => {});
-          if (isNarrow) {
+          if (isCompactLayout) {
             openMobileDetail();
           }
         }
@@ -657,7 +880,7 @@ export function App() {
     void exec(action, true).then((ok) => ok && setLaunchTarget(null));
   };
 
-  const renderTerminal = !isNarrow || showDetail;
+  const renderTerminal = !isCompactLayout || showDetail;
   const appStyle = { "--sidebar-w": `${sidebarWidth}px` } as CSSProperties &
     Record<"--sidebar-w", string>;
 
@@ -667,8 +890,9 @@ export function App() {
       style={appStyle}
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-resizing-sidebar={resizingSidebar ? "true" : "false"}
-      data-mobile={isNarrow ? "true" : "false"}
-      data-detail={isNarrow && showDetail ? "true" : "false"}
+      data-compact={isCompactLayout ? "true" : "false"}
+      data-touch={isTouchInput ? "true" : "false"}
+      data-detail={isCompactLayout && showDetail ? "true" : "false"}
     >
       <aside className="sidebar" aria-label="Switcher">
         <Switcher
@@ -704,14 +928,43 @@ export function App() {
           aria-valuenow={sidebarWidth}
           tabIndex={0}
           onPointerDown={(event) => {
-            if (isNarrow || !sidebarOpen) {
+            if (isCompactLayout || !sidebarOpen) {
               return;
             }
             event.preventDefault();
-            setResizingSidebar(true);
+            clearSidebarResizePress();
+            if (event.pointerType === "mouse") {
+              setResizingSidebar(true);
+              return;
+            }
+            const target = event.currentTarget;
+            target.setPointerCapture(event.pointerId);
+            const x = event.clientX;
+            const y = event.clientY;
+            const pointerId = event.pointerId;
+            const timer = window.setTimeout(() => {
+              sidebarResizePressRef.current = null;
+              if (target.hasPointerCapture(pointerId)) {
+                target.releasePointerCapture(pointerId);
+              }
+              setSidebarWidth(clampSidebarWidth(x));
+              setResizingSidebar(true);
+            }, 360);
+            sidebarResizePressRef.current = { timer, pointerId, x, y, target };
           }}
+          onPointerMove={(event) => {
+            const pending = sidebarResizePressRef.current;
+            if (!pending || pending.pointerId !== event.pointerId) {
+              return;
+            }
+            if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 12) {
+              clearSidebarResizePress();
+            }
+          }}
+          onPointerUp={clearSidebarResizePress}
+          onPointerCancel={clearSidebarResizePress}
           onKeyDown={(event) => {
-            if (isNarrow) {
+            if (isCompactLayout) {
               return;
             }
             if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -746,11 +999,11 @@ export function App() {
           <button
             className="icon-btn"
             type="button"
-            aria-label={isNarrow ? "Back to switcher" : "Toggle sidebar"}
-            title={isNarrow ? "Back" : "Toggle sidebar"}
-            onClick={() => (isNarrow ? closeMobileDetail() : setSidebarOpen((open) => !open))}
+            aria-label={isCompactLayout ? "Back to switcher" : "Toggle sidebar"}
+            title={isCompactLayout ? "Back" : "Toggle sidebar"}
+            onClick={() => (isCompactLayout ? closeMobileDetail() : setSidebarOpen((open) => !open))}
           >
-            {isNarrow ? <ChevronLeft size={20} /> : <PanelLeft size={18} />}
+            {isCompactLayout ? <ChevronLeft size={20} /> : <PanelLeft size={18} />}
           </button>
           <div className="stage-id" {...selectedPaneMenuPress}>
             <span className="stage-title">{selectedPane ? paneTitle(selectedPane) : "herdr-web"}</span>
@@ -758,7 +1011,7 @@ export function App() {
               {stageBreadcrumb(snapshot, selectedPane, loadState)}
             </span>
           </div>
-          {splitSupported && selectedPane && !isNarrow ? (
+          {splitSupported && selectedPane && !isCompactLayout ? (
             <>
               <button
                 className="icon-btn"
@@ -803,16 +1056,24 @@ export function App() {
           <SplitGrid
             cells={splitCells}
             selectedPaneId={selectedPane?.pane_id ?? null}
-            onSelectPane={openPane}
+            onSelectPane={(pane) => {
+              openPane(pane);
+              if (isTouchInput) {
+                requestTerminalFocus();
+              }
+            }}
             refitToken={refitToken}
+            focusToken={terminalFocusToken}
+            touchInput={isTouchInput}
           />
         ) : renderTerminal ? (
           <TerminalView
             pane={selectedPane}
-            autoFocus={!isNarrow}
-            scrollSensitivity={isNarrow ? 2 : 0.4}
-            mobileControls={isNarrow}
+            autoFocus={!isTouchInput}
+            scrollSensitivity={isTouchInput ? 2 : 0.4}
+            mobileControls={isTouchInput}
             refitToken={refitToken}
+            focusToken={terminalFocusToken}
           />
         ) : (
           <div className="terminal-stage" aria-hidden="true" />
@@ -871,35 +1132,179 @@ export function App() {
   );
 }
 
+function orderedShortcutAgentPanes(
+  snapshot: Snapshot,
+  scope: Scope,
+  activeWorkspaceId: string | undefined,
+  agentSort: AgentSort,
+  agentGroup: AgentGroup,
+) {
+  const scoped =
+    scope === "all"
+      ? snapshot.panes
+      : snapshot.panes.filter((pane) => pane.workspace_id === activeWorkspaceId);
+  const agentPanes = sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
+  if (agentGroup !== "workspace") {
+    return agentPanes;
+  }
+
+  const panesByWorkspace = new Map<string, PaneInfo[]>();
+  for (const pane of agentPanes) {
+    const panes = panesByWorkspace.get(pane.workspace_id) ?? [];
+    panes.push(pane);
+    panesByWorkspace.set(pane.workspace_id, panes);
+  }
+
+  return snapshot.workspaces.flatMap((workspace) => panesByWorkspace.get(workspace.workspace_id) ?? []);
+}
+
+function orderedShortcutTabPanes(
+  snapshot: Snapshot,
+  activeSpace: WorkspaceInfo | null,
+  selectedPane: PaneInfo | null,
+) {
+  const tab = activeShortcutTab(snapshot, activeSpace, selectedPane);
+  return tab ? sortPanesForTab(snapshot.panes, tab.tab_id) : [];
+}
+
+function isAppNavigationShortcut(event: KeyboardEvent) {
+  return (
+    isPlatformShortcutModifier(event) &&
+    event.shiftKey &&
+    (event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowRight")
+  );
+}
+
+function isCloseTabShortcut(event: KeyboardEvent) {
+  return (
+    isPlatformShortcutModifier(event) &&
+    event.shiftKey &&
+    event.code === "KeyX"
+  );
+}
+
+function isNewTabShortcut(event: KeyboardEvent) {
+  return isPlatformShortcutModifier(event) && event.shiftKey && event.code === "KeyT";
+}
+
+function paneFocusShortcutDirection(event: KeyboardEvent): PaneFocusDirection | null {
+  if (!isPlatformShortcutModifier(event)) {
+    return null;
+  }
+  if (event.code === "KeyH") {
+    return "left";
+  }
+  if (event.code === "KeyJ") {
+    return "down";
+  }
+  if (event.code === "KeyK") {
+    return "up";
+  }
+  if (event.code === "KeyL") {
+    return "right";
+  }
+  return null;
+}
+
+function paneCycleShortcutStep(event: KeyboardEvent) {
+  if (!isPlatformShortcutModifier(event) || event.key !== "Tab") {
+    return 0;
+  }
+  return event.shiftKey ? -1 : 1;
+}
+
+function splitShortcutDirection(event: KeyboardEvent): SplitDirection | null {
+  if (!isPlatformShortcutModifier(event) || !event.shiftKey) {
+    return null;
+  }
+  if (event.code === "KeyV") {
+    return "down";
+  }
+  if (event.code === "Minus") {
+    return "right";
+  }
+  return null;
+}
+
+function isPlatformShortcutModifier(event: KeyboardEvent) {
+  return !event.ctrlKey && event.metaKey !== event.altKey;
+}
+
+function activeShortcutTab(
+  snapshot: Snapshot,
+  activeSpace: WorkspaceInfo | null,
+  selectedPane: PaneInfo | null,
+): TabInfo | null {
+  const tabId =
+    selectedPane && selectedPane.workspace_id === activeSpace?.workspace_id
+      ? selectedPane.tab_id
+      : activeSpace?.active_tab_id;
+  if (!tabId) {
+    return null;
+  }
+  return snapshot.tabs.find((tab) => tab.tab_id === tabId) ?? null;
+}
+
+function isShortcutTextEntryTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.classList.contains("ghostty-hidden-input")) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  return target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement;
+}
+
+function hasOpenModal() {
+  return document.querySelector(".overlay-root [role='dialog']") !== null;
+}
+
 function SplitGrid({
   cells,
   selectedPaneId,
   onSelectPane,
   refitToken,
+  focusToken,
+  touchInput,
 }: {
   cells: { pane: PaneInfo; style: CSSProperties }[];
   selectedPaneId: string | null;
   onSelectPane: (pane: PaneInfo) => void;
   refitToken: number;
+  focusToken: number;
+  touchInput: boolean;
 }) {
   return (
     <div className="pane-grid" aria-label="Split panes">
-      {cells.map(({ pane, style }) => (
-        <div
-          key={pane.pane_id}
-          className="pane-cell"
-          data-selected={pane.pane_id === selectedPaneId}
-          style={style}
-          onPointerDown={() => onSelectPane(pane)}
-        >
-          <TerminalView
-            pane={pane}
-            autoFocus={pane.pane_id === selectedPaneId}
-            scrollSensitivity={0.4}
-            refitToken={pane.pane_id === selectedPaneId ? refitToken : 0}
-          />
-        </div>
-      ))}
+      {cells.map(({ pane, style }) => {
+        const selected = pane.pane_id === selectedPaneId;
+        return (
+          <div
+            key={pane.pane_id}
+            className="pane-cell"
+            data-selected={selected}
+            style={style}
+            onPointerDown={() => onSelectPane(pane)}
+          >
+            <TerminalView
+              pane={pane}
+              autoFocus={selected && !touchInput}
+              scrollSensitivity={touchInput ? 2 : 0.4}
+              mobileControls={selected && touchInput}
+              refitToken={selected ? refitToken : 0}
+              focusToken={selected ? focusToken : 0}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1658,11 +2063,11 @@ function closeCopy(kind: MenuKind) {
   }
 }
 
-function useIsNarrow() {
-  const [narrow, setNarrow] = useState(() => isMobileLayout());
+function useIsCompactLayout() {
+  const [compact, setCompact] = useState(() => isCompactLayoutViewport());
   useEffect(() => {
-    const mq = window.matchMedia(NARROW_QUERY);
-    const update = () => setNarrow(isMobileLayout());
+    const mq = window.matchMedia(COMPACT_LAYOUT_QUERY);
+    const update = () => setCompact(isCompactLayoutViewport());
     update();
     mq.addEventListener("change", update);
     window.addEventListener("resize", update);
@@ -1675,18 +2080,39 @@ function useIsNarrow() {
       window.visualViewport?.removeEventListener("resize", update);
     };
   }, []);
-  return narrow;
+  return compact;
 }
 
-function isMobileLayout() {
+function isCompactLayoutViewport() {
   if (typeof window === "undefined") {
     return false;
   }
-  return (
-    window.matchMedia(NARROW_QUERY).matches ||
-    navigator.maxTouchPoints > 0 ||
-    window.innerWidth <= 1024
-  );
+  return window.matchMedia(COMPACT_LAYOUT_QUERY).matches || window.innerWidth <= 820;
+}
+
+function useIsTouchInput() {
+  const [touchInput, setTouchInput] = useState(() => isTouchInputViewport());
+  useEffect(() => {
+    const mq = window.matchMedia(TOUCH_INPUT_QUERY);
+    const update = () => setTouchInput(isTouchInputViewport());
+    update();
+    mq.addEventListener("change", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      mq.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
+  return touchInput;
+}
+
+function isTouchInputViewport() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return window.matchMedia(TOUCH_INPUT_QUERY).matches || navigator.maxTouchPoints > 0;
 }
 
 function summary(panes: PaneInfo[]) {

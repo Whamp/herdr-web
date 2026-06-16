@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt;
 use std::io::{self, ErrorKind, Write};
@@ -538,6 +538,8 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "pane.send_input",
     // Layout-mutating: the web client builds splits directly.
     "pane.split",
+    // Directional pane focus: explicit pane_id only, matching the web selection.
+    "pane.focus_direction",
     // Narrow live pane moves: new tab or new workspace destinations only.
     "pane.move",
     // Agent creation: exposes Herdr's native agent.start placement and argv path.
@@ -759,6 +761,17 @@ fn validate_web_command(method: &Method) -> Result<(), BridgeError> {
                 ));
             }
         }
+        Method::PaneFocusDirection(params) => {
+            if params
+                .pane_id
+                .as_deref()
+                .is_none_or(|pane_id| pane_id.trim().is_empty())
+            {
+                return Err(BridgeError::BadRequest(
+                    "pane.focus_direction requires pane_id".to_string(),
+                ));
+            }
+        }
         Method::PaneMove(params) => {
             if params.pane_id.trim().is_empty() {
                 return Err(BridgeError::BadRequest("pane_id is required".to_string()));
@@ -904,6 +917,7 @@ async fn command_handler(
         .map_err(|err| BridgeError::BadRequest(format!("invalid command: {err}")))?;
     validate_web_command(&request.method)?;
     fill_clear_rename_labels(&state.api, &mut request.method)?;
+    let should_prune_terminal_sessions = command_may_close_terminal_session(&request.method);
 
     let api = state.api.clone();
     let response = tokio::task::spawn_blocking(move || api.request(request))
@@ -911,7 +925,21 @@ async fn command_handler(
         .map_err(|err| BridgeError::Protocol(err.to_string()))??;
     let value = serde_json::to_value(response.result)
         .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    if should_prune_terminal_sessions {
+        let prune_state = state.clone();
+        tokio::task::spawn_blocking(move || prune_detached_terminal_sessions(&prune_state));
+    }
     Ok(Json(value))
+}
+
+fn command_may_close_terminal_session(method: &Method) -> bool {
+    matches!(
+        method,
+        Method::WorkspaceClose(_)
+            | Method::TabClose(_)
+            | Method::PaneClose(_)
+            | Method::PaneMove(_)
+    )
 }
 
 fn fill_clear_rename_labels(api: &ApiClient, method: &mut Method) -> Result<(), BridgeError> {
@@ -1285,6 +1313,10 @@ async fn handle_events_socket(socket: WebSocket, state: BridgeState) {
     loop {
         tokio::select! {
             Some(event) = event_rx.recv() => {
+                if event_may_close_terminal_session(&event) {
+                    let prune_state = state.clone();
+                    tokio::task::spawn_blocking(move || prune_detached_terminal_sessions(&prune_state));
+                }
                 if ws_sender.send(Message::Text(event.into())).await.is_err() {
                     break;
                 }
@@ -1480,6 +1512,59 @@ fn release_terminal_session(
     {
         sessions.remove(terminal_id);
     }
+}
+
+fn prune_detached_terminal_sessions(state: &BridgeState) {
+    let Ok(panes) = current_panes(&state.api) else {
+        warn!("failed to prune herdr web terminal sessions");
+        return;
+    };
+    let active_terminal_ids = panes
+        .iter()
+        .map(|pane| pane.terminal_id.as_str())
+        .collect::<HashSet<_>>();
+    let stale_sessions = {
+        let Ok(sessions) = state.terminal_sessions.lock() else {
+            warn!("failed to lock herdr web terminal sessions for pruning");
+            return;
+        };
+        sessions
+            .iter()
+            .filter(|(terminal_id, _)| !active_terminal_ids.contains(terminal_id.as_str()))
+            .map(|(terminal_id, session)| (terminal_id.clone(), session.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    for (terminal_id, session) in stale_sessions {
+        close_terminal_session(state, &terminal_id, &session, "terminal closed by Herdr");
+    }
+}
+
+fn close_terminal_session(
+    state: &BridgeState,
+    terminal_id: &str,
+    session: &SharedTerminalSession,
+    reason: &str,
+) {
+    let _ = session
+        .output_tx
+        .send(TerminalOutput::Close(reason.to_string()));
+    let _ = session.write_tx.send(ClientMessage::Detach);
+    let Ok(mut sessions) = state.terminal_sessions.lock() else {
+        return;
+    };
+    if sessions
+        .get(terminal_id)
+        .is_some_and(|current| Arc::ptr_eq(&current.client_count, &session.client_count))
+    {
+        sessions.remove(terminal_id);
+    }
+}
+
+fn event_may_close_terminal_session(event: &str) -> bool {
+    event.contains("workspace.closed")
+        || event.contains("tab.closed")
+        || event.contains("pane.closed")
 }
 
 fn close_message(reason: &str) -> String {
@@ -1769,6 +1854,7 @@ mod tests {
         assert!(ALLOWED_COMMANDS.contains(&"pane.send_input"));
         // pane.split is intentionally allowed so the web client can create splits.
         assert!(ALLOWED_COMMANDS.contains(&"pane.split"));
+        assert!(ALLOWED_COMMANDS.contains(&"pane.focus_direction"));
         assert!(ALLOWED_COMMANDS.contains(&"pane.move"));
         assert!(ALLOWED_COMMANDS.contains(&"agent.start"));
     }

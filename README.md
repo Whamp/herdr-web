@@ -139,6 +139,24 @@ UPLOAD_DIR=/tmp/herdr-web-uploads scripts/run-bridge.sh
 The bridge rejects cross-origin browser requests, but it has no full browser authentication yet.
 Bind to `0.0.0.0` only on trusted networks.
 
+## Keyboard Shortcuts
+
+These app shortcuts are ignored while dialogs, menus, and normal text inputs are active. They still
+work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts such as `Cmd+Tab`,
+`Meta+Tab`, or some `Alt+Tab` setups may not reach the browser.
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Select previous/next agent pane | `Cmd/Option+Shift+Up/Down` | `Meta/Alt+Shift+Up/Down` |
+| Select previous/next tab in the active space | `Cmd/Option+Shift+Left/Right` | `Meta/Alt+Shift+Left/Right` |
+| Focus split left/down/up/right | `Cmd/Option(+Shift)+H/J/K/L` | `Meta/Alt(+Shift)+H/J/K/L` |
+| Cycle split next | `Cmd/Option+Tab` | `Meta/Alt+Tab` |
+| Cycle split previous | `Cmd/Option+Shift+Tab` | `Meta/Alt+Shift+Tab` |
+| Split selected pane down | `Cmd/Option+Shift+V` | `Meta/Alt+Shift+V` |
+| Split selected pane right | `Cmd/Option+Shift+-` | `Meta/Alt+Shift+-` |
+| Open the new-tab launch modal | `Cmd/Option+Shift+T` | `Meta/Alt+Shift+T` |
+| Confirm close for the focused split, or tab when only one split exists | `Cmd/Option+Shift+X` | `Meta/Alt+Shift+X` |
+
 ## Runtime Model
 
 The bridge exposes:
