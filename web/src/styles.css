@@ -190,7 +190,7 @@ button {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: baseline;
+  align-items: center;
   gap: 9px;
 }
 
@@ -230,6 +230,7 @@ button {
 .brand-sub {
   overflow: hidden;
   font-size: 12px;
+  line-height: 1;
   color: var(--overlay1);
   text-overflow: ellipsis;
   white-space: nowrap;

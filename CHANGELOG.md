@@ -57,5 +57,6 @@
 - Hid the clear-name action when a workspace or tab is already using its default label.
 - Preserved custom CORS preflight request headers for future bridge auth headers.
 - Re-probed and reconnected active Android bridge sessions promptly after app foreground/resume.
+- Centered the mobile header summary next to the Herdr logo and app title.
 
 ### Removed
