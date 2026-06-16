@@ -917,6 +917,7 @@ async fn command_handler(
         .map_err(|err| BridgeError::BadRequest(format!("invalid command: {err}")))?;
     validate_web_command(&request.method)?;
     fill_clear_rename_labels(&state.api, &mut request.method)?;
+    let should_prune_terminal_sessions = command_may_close_terminal_session(&request.method);
 
     let api = state.api.clone();
     let response = tokio::task::spawn_blocking(move || api.request(request))
@@ -924,8 +925,21 @@ async fn command_handler(
         .map_err(|err| BridgeError::Protocol(err.to_string()))??;
     let value = serde_json::to_value(response.result)
         .map_err(|err| BridgeError::Protocol(err.to_string()))?;
-    prune_detached_terminal_sessions(&state);
+    if should_prune_terminal_sessions {
+        let prune_state = state.clone();
+        tokio::task::spawn_blocking(move || prune_detached_terminal_sessions(&prune_state));
+    }
     Ok(Json(value))
+}
+
+fn command_may_close_terminal_session(method: &Method) -> bool {
+    matches!(
+        method,
+        Method::WorkspaceClose(_)
+            | Method::TabClose(_)
+            | Method::PaneClose(_)
+            | Method::PaneMove(_)
+    )
 }
 
 fn fill_clear_rename_labels(api: &ApiClient, method: &mut Method) -> Result<(), BridgeError> {
@@ -1502,7 +1516,7 @@ fn release_terminal_session(
 
 fn prune_detached_terminal_sessions(state: &BridgeState) {
     let Ok(panes) = current_panes(&state.api) else {
-        warn!("failed to prune herdr web terminal sessions after command");
+        warn!("failed to prune herdr web terminal sessions");
         return;
     };
     let active_terminal_ids = panes

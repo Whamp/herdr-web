@@ -142,7 +142,8 @@ Bind to `0.0.0.0` only on trusted networks.
 ## Keyboard Shortcuts
 
 These app shortcuts are ignored while dialogs, menus, and normal text inputs are active. They still
-work when the terminal's hidden keyboard input has focus.
+work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts such as `Cmd+Tab`,
+`Meta+Tab`, or some `Alt+Tab` setups may not reach the browser.
 
 | Action | macOS | Windows/Linux |
 | --- | --- | --- |

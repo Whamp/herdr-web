@@ -223,10 +223,10 @@ export function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    confirmRef.current?.focus();
+    cancelRef.current?.focus();
   }, []);
 
   return (
@@ -246,11 +246,10 @@ export function ConfirmDialog({
         <div className="modal-title">{title}</div>
         {message ? <div className="modal-message">{message}</div> : null}
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onCancel}>
+          <button ref={cancelRef} type="button" className="btn" onClick={onCancel}>
             Cancel
           </button>
           <button
-            ref={confirmRef}
             type="button"
             className="btn btn-danger"
             disabled={busy}
