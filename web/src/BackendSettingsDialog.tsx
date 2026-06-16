@@ -1,4 +1,4 @@
-import { Check, Plus, Trash2 } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   duplicateBackend,
@@ -179,6 +179,15 @@ export function BackendSettingsDialog({ onClose }: Props) {
           void saveBackend(true);
         }}
       >
+        <button
+          className="modal-close icon-btn"
+          type="button"
+          aria-label="Close"
+          title="Close"
+          onClick={onClose}
+        >
+          <X size={15} />
+        </button>
         <div id={titleId} className="modal-title">Bridges</div>
         <div className="backend-layout">
           <div className="backend-list" role="list" aria-label="Saved bridges">
@@ -272,13 +281,9 @@ export function BackendSettingsDialog({ onClose }: Props) {
         <div className="modal-actions">
           {canDelete ? (
             <button type="button" className="btn btn-danger" disabled={busy} onClick={deleteBackend}>
-              <Trash2 size={14} />
               Delete
             </button>
           ) : null}
-          <button type="button" className="btn" onClick={onClose}>
-            Close
-          </button>
           {editingBackend ? (
             <>
               <button type="button" className="btn" disabled={busy || !form.baseUrl.trim()} onClick={testBackend}>
