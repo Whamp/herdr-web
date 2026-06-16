@@ -1,19 +1,25 @@
 # Vendoring Herdr
 
-`herdr-web` currently vendors Herdr because the bridge depends on private Rust modules and wire
-protocol details that are not exposed as a stable library or daemon API.
+`herdr-web` vendors Herdr because the bridge depends on private Rust modules and wire protocol
+details that are not exposed as a stable library or daemon API.
 
 ## What Is Vendored
 
-`vendor/herdr/` is a full Herdr source snapshot plus the web bridge overlay:
+`vendor/herdr/` is a full Herdr source snapshot kept as the upstream protocol/API reference.
+The shipped bridge executable is the repo-owned `bridge/` crate:
 
-- `src/web_bridge.rs`
-- `src/main.rs` command wiring for `herdr web-bridge`
-- bridge dependencies in `Cargo.toml`
-- matching `Cargo.lock`
+- `bridge/src/main.rs` exposes the `herdr-web-bridge` command.
+- `bridge/src/` contains narrow compatibility shims for session paths, config paths, and small
+  Herdr helper types.
+- `bridge/src/web_bridge.rs` is the repo-owned HTTP/WebSocket bridge implementation.
+- `bridge/src/api/schema.rs` and `bridge/src/api/schema/` are copied from the vendored Herdr
+  snapshot so serde request/response shapes stay explicit in this repo.
+- `bridge/` references selected vendored source files for the current migration step
+  (API client/status, IPC, logging, socket paths, and wire protocol) without building through
+  `vendor/herdr/Cargo.toml` or its `build.rs`.
 
-The browser app is not vendored into Herdr. It lives at `web/`, and the bridge serves `web/dist`
-through `--static-dir`.
+The browser app is not vendored into Herdr. It lives at `web/`, and `herdr-web-bridge` serves
+`web/dist` through `--static-dir`.
 
 ## Current Snapshot
 
@@ -21,7 +27,7 @@ through `--static-dir`.
 - Upstream commit: `41d1c14e0784cf63dc4cddda21c7e5fd99813b24`
 - Upstream release: `v0.7.0`
 
-## Why Not Copy Only A Few Files?
+## Why Keep The Full Snapshot?
 
 The bridge needs private pieces across Herdr:
 
@@ -32,8 +38,17 @@ The bridge needs private pieces across Herdr:
 - protocol version constants
 - terminal attach launch mode and scroll frames
 
-Copying only those modules would create a partial fork with hidden dependencies. Vendoring the full
-tree is heavier, but it keeps the bridge buildable and makes compatibility failures obvious.
+The implementation now uses a two-step approach:
+
+1. Keep the full vendored Herdr snapshot so upstream refreshes and compatibility audits have a
+   concrete source of truth.
+2. Build and ship only the slim `herdr-web-bridge` crate, gradually shrinking copied/referenced
+   compatibility code as the bridge boundary becomes clearer.
+
+Copying or referencing only the bridge-needed modules creates drift risk, so compatibility tests and
+vendoring notes must stay tied to the upstream snapshot. Building directly through
+`vendor/herdr/Cargo.toml` is intentionally avoided because Herdr's package build invokes the full
+terminal runtime build path.
 
 ## Refresh Process
 
@@ -65,15 +80,18 @@ rsync -a \
   "$HERDR_SRC/" "$HERDR_WEB/vendor/herdr/"
 ```
 
-3. Reapply the web bridge overlay:
+3. Reconcile bridge compatibility files:
 
 ```bash
-# Either apply a maintained patch series, or copy/update these files from the bridge worktree.
-# Required overlay files today:
-# - vendor/herdr/src/web_bridge.rs
-# - vendor/herdr/src/main.rs
-# - vendor/herdr/Cargo.toml
-# - vendor/herdr/Cargo.lock
+# The bridge still references/copies these vendored areas. Reconcile changes into bridge/ as needed:
+# - vendor/herdr/src/api/client.rs
+# - vendor/herdr/src/api/status.rs
+# - vendor/herdr/src/api/schema.rs
+# - vendor/herdr/src/api/schema/
+# - vendor/herdr/src/protocol/wire.rs
+# - vendor/herdr/src/ipc.rs
+# - vendor/herdr/src/logging.rs
+# - vendor/herdr/src/server/socket_paths.rs
 ```
 
 4. Re-run validation:
@@ -96,9 +114,10 @@ the refit button after changing browser sizes.
 
 ## Compatibility Policy
 
-The bridge checks Herdr's terminal attach protocol version before opening an attach. That catches
-some incompatible daemon versions, but it is not a complete stability guarantee because the bridge
-uses private APIs.
+The bridge pings Herdr's status API at startup and checks the reported daemon protocol against the
+same supported range used for terminal attach. That catches incompatible daemon versions before
+serving the web app, but it is not a complete stability guarantee because the bridge uses private
+APIs.
 
 When updating Herdr:
 
@@ -106,7 +125,7 @@ When updating Herdr:
 - inspect API schema changes under `src/api/schema/`
 - inspect terminal attach handling in `src/server/headless.rs`
 - rerun bridge tests and a browser smoke test
-- update this document if the bridge overlay shape changes
+- update this document if the bridge compatibility surface changes
 
 ## Long-Term Removal Condition
 

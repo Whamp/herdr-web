@@ -8,7 +8,6 @@ They do not publish npm packages, and the package versions are not release versi
 - Clean `main` branch.
 - Node.js 22 or newer.
 - Rust stable.
-- Zig on `PATH` or exported through `ZIG`, because vendored Herdr builds `libghostty-vt`.
 - JDK 21 and Android SDK when validating the Android shell.
 - GitHub CLI authenticated as a user that can create releases.
 - A local Herdr session for browser smoke testing.
@@ -28,8 +27,7 @@ scripts/check-vendor.sh
 npm run check
 ```
 
-If Zig is missing, install Zig or set `ZIG=/path/to/zig` before releasing. Do not cut a release
-without bridge test/build coverage.
+Do not cut a release without bridge test/build coverage.
 
 ## Browser Smoke
 

@@ -8,7 +8,14 @@ required=(
   "$VENDOR/Cargo.toml"
   "$VENDOR/Cargo.lock"
   "$VENDOR/src/main.rs"
-  "$VENDOR/src/web_bridge.rs"
+  "$VENDOR/src/api/client.rs"
+  "$VENDOR/src/api/status.rs"
+  "$VENDOR/src/api/schema.rs"
+  "$VENDOR/src/api/schema"
+  "$VENDOR/src/ipc.rs"
+  "$VENDOR/src/logging.rs"
+  "$VENDOR/src/protocol/wire.rs"
+  "$VENDOR/src/server/socket_paths.rs"
   "$VENDOR/vendor/libghostty-vt.vendor.json"
 )
 

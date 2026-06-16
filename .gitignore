@@ -4,6 +4,7 @@
 /web/.vite/
 /web/.next/
 /web/tsconfig.tsbuildinfo
+/bridge/target/
 /vendor/herdr/target/
 /vendor/herdr/vendor/libghostty-vt/.zig-cache/
 /vendor/herdr/vendor/libghostty-vt/zig-out/
