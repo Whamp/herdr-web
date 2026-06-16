@@ -1,15 +1,16 @@
 //! Local socket helpers for the herdr-web bridge compatibility layer.
 //!
-//! Source reference: `vendor/herdr/src/ipc.rs` at the vendored Herdr snapshot
-//! tracked by this repository. The bridge only connects to existing Herdr
-//! daemon sockets, so listener/bind cleanup helpers are intentionally omitted.
+//! Source reference: upstream Herdr `src/ipc.rs`.
+//!
+//! The bridge only connects to existing Herdr daemon sockets, so listener/bind
+//! cleanup helpers are intentionally omitted.
 
 use std::io;
 use std::path::Path;
 
-pub(crate) type LocalStream = interprocess::local_socket::Stream;
+pub type LocalStream = interprocess::local_socket::Stream;
 
-pub(crate) fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
+pub fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
     #[cfg(unix)]
     {
         use interprocess::local_socket::{prelude::*, GenericFilePath};

@@ -1,8 +1,9 @@
 //! File logging for the herdr-web bridge.
 //!
-//! Source reference: `vendor/herdr/src/logging.rs` at the vendored Herdr
-//! snapshot tracked by this repository. This bridge-owned copy keeps only the
-//! rotating file writer needed by `herdr-web-bridge`.
+//! Source reference: upstream Herdr `src/logging.rs`.
+//!
+//! This compatibility copy keeps only the rotating file writer needed by
+//! `herdr-web-bridge`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -15,9 +16,9 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 0;
 
-pub(crate) fn init_file_logging(file_name: &str) {
+pub fn init_file_logging(dir: PathBuf, file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        crate::session::data_dir(),
+        dir,
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,

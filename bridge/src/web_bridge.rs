@@ -22,18 +22,18 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{extract::Request as AxumRequest, Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use interprocess::TryClone as _;
+use herdr_compat::TryClone as _;
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 use tracing::{debug, info, warn};
 
-use crate::api::client::{ApiClient, ApiClientError};
-use crate::api::schema::{
+use herdr_compat::api::client::{ApiClient, ApiClientError};
+use herdr_compat::api::schema::{
     EmptyParams, EventsSubscribeParams, Method, PaneInfo, PaneLayoutParams, PaneLayoutSnapshot,
     PaneListParams, PaneMoveDestination, Request, ResponseResult, SplitDirection, Subscription,
     TabInfo, TabListParams, WorkspaceInfo,
 };
-use crate::protocol::{
+use herdr_compat::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
     ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
     PROTOCOL_VERSION,
@@ -267,7 +267,7 @@ pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
         }
     };
 
-    crate::logging::init_file_logging("herdr-web.log");
+    herdr_compat::logging::init_file_logging(crate::session::data_dir(), "herdr-web.log");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -382,7 +382,7 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
         allowed_hosts: options.allowed_hosts.clone(),
         allowed_origins: options.allowed_origins.clone(),
     };
-    let api = ApiClient::local();
+    let api = ApiClient::for_socket_path(crate::session::active_api_socket_path());
     let daemon_protocol = startup_daemon_protocol(&api)?;
     info!(
         protocol = daemon_protocol,
@@ -390,7 +390,7 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
     );
     let state = BridgeState {
         api,
-        client_socket_path: crate::server::socket_paths::client_socket_path(),
+        client_socket_path: crate::session::active_client_socket_path(),
         request_policy: request_policy.clone(),
         terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
         selected_pane_id: Arc::new(Mutex::new(None)),
@@ -1764,7 +1764,7 @@ fn open_event_subscription(
         }),
     };
     let (ack, mut stream) = api.subscribe_value(&request, None)?;
-    let response = crate::api::client::parse_response_value(ack)?;
+    let response = herdr_compat::api::client::parse_response_value(ack)?;
     if !matches!(response.result, ResponseResult::SubscriptionStarted {}) {
         return Err(BridgeError::Protocol(format!(
             "unexpected subscription response: {:?}",
@@ -1853,7 +1853,7 @@ fn open_terminal_attach(
     protocol_version: u32,
     output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
 ) -> Result<TerminalAttach, BridgeError> {
-    let mut stream = crate::ipc::connect_local_stream(&client_socket_path)?;
+    let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)?;
     protocol::write_message(
         &mut stream,
         &ClientMessage::Hello {
@@ -1942,7 +1942,9 @@ fn terminal_attach_protocol(api: &ApiClient) -> Result<u32, BridgeError> {
     daemon_protocol_from_status(api.status_with_timeout(DAEMON_STATUS_TIMEOUT)?)
 }
 
-fn daemon_protocol_from_status(status: crate::api::RuntimeStatus) -> Result<u32, BridgeError> {
+fn daemon_protocol_from_status(
+    status: herdr_compat::api::RuntimeStatus,
+) -> Result<u32, BridgeError> {
     let protocol = status.protocol.ok_or_else(|| {
         BridgeError::Protocol("Herdr daemon status did not include a protocol".to_string())
     })?;
@@ -2506,7 +2508,7 @@ mod tests {
 
     #[test]
     fn daemon_status_protocol_rejects_defensive_missing_protocol() {
-        let missing = crate::api::RuntimeStatus {
+        let missing = herdr_compat::api::RuntimeStatus {
             version: Some("0.7.0".to_string()),
             protocol: None,
             capabilities: None,
@@ -2558,8 +2560,8 @@ mod tests {
         assert!(!help.contains("herdr web-bridge"));
     }
 
-    fn runtime_status(protocol: u32) -> crate::api::RuntimeStatus {
-        crate::api::RuntimeStatus {
+    fn runtime_status(protocol: u32) -> herdr_compat::api::RuntimeStatus {
+        herdr_compat::api::RuntimeStatus {
             version: Some("0.7.0".to_string()),
             protocol: Some(protocol),
             capabilities: None,

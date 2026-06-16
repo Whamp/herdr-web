@@ -1,8 +1,9 @@
 //! Herdr daemon/client socket path compatibility helpers.
 //!
-//! Source reference: `vendor/herdr/src/server/socket_paths.rs` at the vendored
-//! Herdr snapshot tracked by this repository. This bridge-owned copy keeps only
-//! client socket resolution used by terminal attach.
+//! Source reference: upstream Herdr `src/server/socket_paths.rs`.
+//!
+//! This compatibility copy keeps only client socket derivation used by terminal
+//! attach. The bridge executable owns session and environment resolution.
 
 use std::path::{Path, PathBuf};
 
@@ -13,30 +14,10 @@ use std::path::{Path, PathBuf};
 /// client-only override when `HERDR_SOCKET_PATH` is not set.
 pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "HERDR_CLIENT_SOCKET_PATH";
 
-/// Returns the path for the client protocol socket.
-///
-/// Contract-aligned override behavior:
-/// 1. If CLI `--session <name>` is active, use that session's client socket.
-/// 2. If `HERDR_SOCKET_PATH` is set, derive the client socket path from it by
-///    inserting `-client` before `.sock` (e.g. `herdr.sock` -> `herdr-client.sock`).
-///    This keeps JSON API and client socket overrides consistent.
-/// 3. Otherwise, honor `HERDR_CLIENT_SOCKET_PATH` (legacy/testing fallback).
-/// 4. Otherwise, use the active session data directory.
-pub fn client_socket_path() -> PathBuf {
-    if crate::session::explicit_session_requested() {
-        return crate::session::client_socket_path_for(crate::session::active_name().as_deref());
-    }
-    client_socket_path_from_overrides(
-        std::env::var(crate::api::SOCKET_PATH_ENV_VAR)
-            .ok()
-            .as_deref(),
-        std::env::var(CLIENT_SOCKET_PATH_ENV_VAR).ok().as_deref(),
-    )
-}
-
-pub(crate) fn client_socket_path_from_overrides(
+pub fn client_socket_path_from_overrides(
     api_socket_override: Option<&str>,
     client_socket_override: Option<&str>,
+    default_client_socket_path: PathBuf,
 ) -> PathBuf {
     if let Some(api_socket_override) = api_socket_override {
         return derive_client_socket_from_api_socket(Path::new(api_socket_override));
@@ -46,7 +27,7 @@ pub(crate) fn client_socket_path_from_overrides(
         return PathBuf::from(client_socket_override);
     }
 
-    crate::session::client_socket_path_for(crate::session::active_name().as_deref())
+    default_client_socket_path
 }
 
 pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
@@ -73,7 +54,11 @@ mod tests {
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
-        let path = client_socket_path_from_overrides(Some("/tmp/test-herdr.sock"), None);
+        let path = client_socket_path_from_overrides(
+            Some("/tmp/test-herdr.sock"),
+            None,
+            PathBuf::from("/tmp/default-client.sock"),
+        );
         assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
     }
 
@@ -82,22 +67,26 @@ mod tests {
         let path = client_socket_path_from_overrides(
             Some("/tmp/test-herdr.sock"),
             Some("/tmp/legacy-client.sock"),
+            PathBuf::from("/tmp/default-client.sock"),
         );
         assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
     }
 
     #[test]
     fn client_socket_path_respects_legacy_client_override_without_api_override() {
-        let path = client_socket_path_from_overrides(None, Some("/tmp/test-herdr-client.sock"));
+        let path = client_socket_path_from_overrides(
+            None,
+            Some("/tmp/test-herdr-client.sock"),
+            PathBuf::from("/tmp/default-client.sock"),
+        );
         assert_eq!(path, PathBuf::from("/tmp/test-herdr-client.sock"));
     }
 
     #[test]
-    fn client_socket_path_defaults_to_config_dir() {
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
-        crate::session::clear_explicit_session_for_test();
-        let path = client_socket_path_from_overrides(None, None);
-        assert_eq!(path, crate::config::config_dir().join("herdr-client.sock"));
+    fn client_socket_path_uses_supplied_default() {
+        let default = PathBuf::from("/tmp/default-client.sock");
+        let path = client_socket_path_from_overrides(None, None, default.clone());
+        assert_eq!(path, default);
     }
 
     #[test]

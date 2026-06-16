@@ -15,7 +15,7 @@ They do not publish npm packages, and the package versions are not release versi
 ## Prepare
 
 1. Confirm the changelog has user-facing notes under `## [Unreleased]`.
-2. Confirm vendored Herdr is intentional and clean:
+2. Confirm the vendored Herdr compatibility crate is intentional and clean:
 
 ```bash
 scripts/check-vendor.sh

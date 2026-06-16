@@ -3,8 +3,7 @@
 //! Defines the message types, framing, version negotiation, and safety
 //! constraints for the binary protocol over Unix domain sockets.
 //!
-//! Source reference: `vendor/herdr/src/protocol/wire.rs` at the vendored Herdr
-//! snapshot tracked by this repository.
+//! Source reference: upstream Herdr `src/protocol/wire.rs`.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};

@@ -35,7 +35,7 @@ navigation, multi-client viewing, mobile input controls, and synchronized pane s
 web/                 React + Vite browser app
 android/             Capacitor Android shell for the bundled web app
 bridge/              Slim Rust HTTP/WebSocket bridge executable
-vendor/herdr/        vendored Herdr source used as protocol/API reference
+vendor/herdr-compat/ minimal Herdr protocol/API compatibility crate
 scripts/run-bridge.sh
 scripts/check-vendor.sh
 docs/android.md
@@ -196,8 +196,9 @@ over `/ws/ui-events`, and other browsers switch to the same pane.
 
 ## Vendoring Strategy
 
-The vendored tree is intentionally a full Herdr source snapshot. This is the practical short-term
-path because the web app needs private APIs that are not available from released Herdr:
+The repository intentionally vendors only the Herdr compatibility pieces the bridge builds against,
+not the full upstream Herdr application. This is the practical short-term path because the web app
+needs private APIs that are not available from released Herdr:
 
 - internal API client and schema types
 - client socket path discovery
@@ -205,11 +206,11 @@ path because the web app needs private APIs that are not available from released
 - terminal ANSI render encoding
 - scroll and resize protocol frames
 
-The shipped bridge is `herdr-web-bridge`, a slim executable owned by this repo. It reuses/copies
-only the private Herdr compatibility surface it needs and keeps the full vendored Herdr tree as a
-reference snapshot for refreshes and compatibility checks. This lets `herdr-web` ship now without
-asking users to patch their installed Herdr checkout. The cost is that the bridge must be kept
-compatible with Herdr protocol changes.
+The shipped bridge is `herdr-web-bridge`, a slim executable owned by this repo. It depends on the
+local `vendor/herdr-compat` crate for copied Herdr protocol/schema/client/socket helpers and keeps
+bridge HTTP/WebSocket behavior in `bridge/src/web_bridge.rs`. A separate upstream Herdr checkout can
+be used for refreshes and drift audits, but a full `vendor/herdr` snapshot is not part of this repo.
+The cost is that `vendor/herdr-compat` must be kept compatible with Herdr protocol changes.
 
 See [docs/vendoring.md](docs/vendoring.md) for the refresh process.
 
@@ -228,7 +229,8 @@ The cleaner upstream shape is for Herdr to expose a supported web bridge or publ
 - resize ownership semantics
 - browser auth/token support
 
-Once that exists, this repository can drop most or all of `vendor/herdr` and use the public surface.
+Once that exists, this repository can drop most or all of `vendor/herdr-compat` and use the public
+surface.
 
 ## Acknowledgements
 

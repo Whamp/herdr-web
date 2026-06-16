@@ -1,7 +1,6 @@
 //! Herdr JSON API client compatibility surface.
 //!
-//! Source reference: `vendor/herdr/src/api/client.rs` at the vendored Herdr
-//! snapshot tracked by this repository.
+//! Source reference: upstream Herdr `src/api/client.rs`.
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -20,15 +19,12 @@ use crate::ipc::LocalStream;
 /// API connection target resolved by clients at the process edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionTarget {
-    LocalSession(Option<String>),
     SocketPath(PathBuf),
 }
 
 impl ConnectionTarget {
     fn socket_path(&self) -> PathBuf {
         match self {
-            Self::LocalSession(None) => crate::api::socket_path(),
-            Self::LocalSession(Some(name)) => crate::session::api_socket_path_for(Some(name)),
             Self::SocketPath(path) => path.clone(),
         }
     }
@@ -41,8 +37,8 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn local() -> Self {
-        Self::for_target(ConnectionTarget::LocalSession(None))
+    pub fn for_socket_path(socket_path: PathBuf) -> Self {
+        Self::for_target(ConnectionTarget::SocketPath(socket_path))
     }
 
     pub fn for_target(target: ConnectionTarget) -> Self {
@@ -259,9 +255,7 @@ enum WireResponse {
     Error(ErrorResponse),
 }
 
-pub(crate) fn parse_response_value(
-    value: serde_json::Value,
-) -> Result<SuccessResponse, ApiClientError> {
+pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse, ApiClientError> {
     match serde_json::from_value(value)? {
         WireResponse::Success(response) => Ok(*response),
         WireResponse::Error(response) => Err(ApiClientError::ErrorResponse(response)),
@@ -273,15 +267,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_session_target_resolves_named_session_socket() {
-        let client = ApiClient::for_target(ConnectionTarget::LocalSession(Some("work".into())));
-        assert!(client.socket_path().ends_with("sessions/work/herdr.sock"));
-    }
-
-    #[test]
     fn socket_path_target_uses_explicit_path() {
         let path = PathBuf::from("/tmp/herdr-test.sock");
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket_path(path.clone());
         assert_eq!(client.socket_path(), path);
     }
 }

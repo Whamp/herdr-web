@@ -1,60 +1,62 @@
-# Vendoring Herdr
+# Vendoring Herdr Compatibility
 
-`herdr-web` vendors Herdr because the bridge depends on private API and wire protocol details that
-are not exposed as a stable library or daemon API.
+`herdr-web` vendors a small Herdr compatibility crate because the bridge depends on private API and
+wire protocol details that are not exposed as a stable Herdr library or daemon API.
 
 ## What Is Vendored
 
-`vendor/herdr/` is a full Herdr source snapshot kept as the upstream protocol/API reference.
-The shipped bridge executable is the repo-owned `bridge/` crate:
+`vendor/herdr-compat/` is the only vendored Herdr source in this repository. It is a minimal local
+Rust crate containing copied or lightly pruned compatibility code needed by `herdr-web-bridge`:
+
+- JSON API client, status, request, response, and event schema types.
+- Terminal attach wire protocol messages, framing, protocol constants, and frame data types.
+- Local socket connection helpers.
+- Client socket path derivation helpers.
+- Small dependent model shims needed by copied schema/protocol modules.
+- Bridge file logging adapted to accept a bridge-owned log directory.
+
+`bridge/` remains the repo-owned executable:
 
 - `bridge/src/main.rs` exposes the `herdr-web-bridge` command.
-- `bridge/src/` contains bridge-owned compatibility code for session paths, config paths, API
-  client/status types, socket path discovery, local socket connection, logging, and terminal wire
-  protocol.
-- `bridge/src/web_bridge.rs` is the repo-owned HTTP/WebSocket bridge implementation.
-- `bridge/src/api/schema.rs` and `bridge/src/api/schema/` are copied from the vendored Herdr
-  snapshot so serde request/response shapes stay explicit in this repo.
-- `bridge/` does not path-import vendored Rust files at build time and does not build through
-  `vendor/herdr/Cargo.toml` or its `build.rs`.
+- `bridge/src/session.rs` owns active Herdr session, config directory, and socket path selection.
+- `bridge/src/web_bridge.rs` owns the HTTP/WebSocket bridge implementation and browser command
+  allow-list.
+- `bridge/src/workspace.rs` owns web-specific workspace label derivation.
+
+The full upstream Herdr source tree is intentionally not vendored. Do not recreate `vendor/herdr/`
+or path-import files from an upstream checkout at build time.
 
 The browser app is not vendored into Herdr. It lives at `web/`, and `herdr-web-bridge` serves
 `web/dist` through `--static-dir`.
 
-## Current Snapshot
+## Current Reference
 
 - Upstream checkout: `/home/kevin/worktrees/herdr`
-- Upstream commit: `41d1c14e0784cf63dc4cddda21c7e5fd99813b24`
-- Upstream release: `v0.7.0`
+- Upstream release baseline: `v0.7.0`
 
-## Why Keep The Full Snapshot?
+Use the upstream checkout as an external reference for audits and refreshes. It is not required to
+build `herdr-web`.
 
-The bridge mirrors private pieces across Herdr:
+## Why This Shape
 
-- `crate::api::client::ApiClient`
+The bridge needs private pieces from Herdr:
+
+- `api::client::ApiClient`
 - API schema enums and response types
-- `crate::protocol::{ClientMessage, ServerMessage, RenderEncoding, ...}`
+- `protocol::{ClientMessage, ServerMessage, RenderEncoding, ...}`
 - local IPC socket helpers
 - protocol version constants
-- terminal attach launch mode and scroll frames
+- terminal attach launch mode, resize, scroll, and input frames
 
-The implementation now uses a two-step approach:
-
-1. Keep the full vendored Herdr snapshot so upstream refreshes and compatibility audits have a
-   concrete source of truth.
-2. Build and ship only the slim `herdr-web-bridge` crate, keeping copied bridge-owned
-   compatibility code as narrow as practical.
-
-Copying only the bridge-needed modules creates drift risk, so compatibility tests and vendoring
-notes must stay tied to the upstream snapshot. Building directly through `vendor/herdr/Cargo.toml`
-is intentionally avoided because Herdr's package build invokes the full terminal runtime build path.
-`scripts/check-vendor.sh` fails if exact mirrored API schema files or the terminal wire protocol
-body drift from the vendored reference snapshot without an intentional reconciliation.
+Vendoring only `vendor/herdr-compat` keeps these dependencies explicit without carrying the full
+Herdr app, website, CI, terminal runtime build path, or legacy `herdr web-bridge` overlay. The cost
+is that copied private protocol/API code can drift from upstream Herdr, so refreshes must be
+intentional and reviewed.
 
 ## Refresh Process
 
-Use a clean Herdr checkout as the base. Do not refresh from an experimental tree that may contain
-unrelated local drift.
+Use a clean Herdr checkout as the source reference. Do not refresh from an experimental tree that
+may contain unrelated local drift.
 
 ```bash
 HERDR_SRC=/home/kevin/worktrees/herdr
@@ -68,44 +70,49 @@ git -C "$HERDR_SRC" status --short
 git -C "$HERDR_SRC" rev-parse --short HEAD
 ```
 
-2. Replace the vendored tree, excluding generated files:
+2. Reconcile only the compatibility surface:
 
-```bash
-rm -rf "$HERDR_WEB/vendor/herdr"
-rsync -a \
-  --exclude '/.git/' \
-  --exclude '/target/' \
-  --exclude '/mobile-web/' \
-  --exclude '/vendor/libghostty-vt/.zig-cache/' \
-  --exclude '/vendor/libghostty-vt/zig-out/' \
-  "$HERDR_SRC/" "$HERDR_WEB/vendor/herdr/"
+```text
+src/api/client.rs          -> vendor/herdr-compat/src/api/client.rs
+src/api/status.rs          -> vendor/herdr-compat/src/api/status.rs
+src/api/schema.rs          -> vendor/herdr-compat/src/api/schema.rs
+src/api/schema/*.rs        -> vendor/herdr-compat/src/api/schema/*.rs
+src/protocol/wire.rs       -> vendor/herdr-compat/src/protocol/wire.rs
+src/ipc.rs                 -> vendor/herdr-compat/src/ipc.rs
+src/logging.rs             -> vendor/herdr-compat/src/logging.rs
+src/server/socket_paths.rs -> vendor/herdr-compat/src/server/socket_paths.rs
 ```
 
-3. Reconcile bridge compatibility files:
+3. Preserve intentional local adaptations:
 
-```bash
-# Compare these vendored reference areas with bridge-owned compatibility files and reconcile
-# intentional changes into bridge/ as needed:
-# - vendor/herdr/src/api/client.rs -> bridge/src/api/client.rs
-# - vendor/herdr/src/api/status.rs -> bridge/src/api/status.rs
-# - vendor/herdr/src/api/schema.rs -> bridge/src/api/schema.rs
-# - vendor/herdr/src/api/schema/ -> bridge/src/api/schema/
-# - vendor/herdr/src/protocol/wire.rs -> bridge/src/protocol/wire.rs
-# - vendor/herdr/src/ipc.rs -> bridge/src/ipc.rs
-# - vendor/herdr/src/logging.rs -> bridge/src/logging.rs
-# - vendor/herdr/src/server/socket_paths.rs -> bridge/src/server/socket_paths.rs
-```
+- `ApiClient` takes concrete socket paths; it must not know bridge session rules.
+- `logging::init_file_logging` takes a concrete directory from the bridge.
+- socket path helpers derive paths from supplied overrides/defaults; bridge session resolution stays
+  in `bridge/src/session.rs`.
+- `tabs.rs` and `workspaces.rs` contain clear-name compatibility changes for older daemons.
+- `protocol.rs` and schema tests include bridge fixture tests for the reviewed protocol/schema
+  baseline.
 
-4. Re-run validation:
+4. Run layout and optional upstream drift checks:
 
 ```bash
 scripts/check-vendor.sh
+HERDR_SRC="$HERDR_SRC" scripts/check-vendor.sh
+```
+
+The optional `HERDR_SRC` mode exact-compares unmodified schema files and the terminal wire protocol
+body. Locally adapted files are intentionally excluded from exact comparison and must be reviewed
+manually during refresh.
+
+5. Re-run validation:
+
+```bash
 npm run lint
 npm run test
 npm run build
 ```
 
-5. Smoke test:
+6. Smoke test:
 
 ```bash
 scripts/run-bridge.sh
@@ -126,12 +133,13 @@ When updating Herdr:
 - inspect `src/protocol/wire.rs`
 - inspect API schema changes under `src/api/schema/`
 - inspect terminal attach handling in `src/server/headless.rs`
+- rerun `HERDR_SRC=/path/to/herdr scripts/check-vendor.sh`
 - rerun bridge tests and a browser smoke test
 - update this document if the bridge compatibility surface changes
 
 ## Long-Term Removal Condition
 
-Remove this vendored tree when Herdr exposes enough public surface for the bridge to live outside
+Remove `vendor/herdr-compat` when Herdr exposes enough public surface for the bridge to live outside
 Herdr:
 
 - public snapshot/events API

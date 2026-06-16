@@ -28,12 +28,13 @@
 
 - Changed bridge build, test, and run scripts to use the repo-owned `herdr-web-bridge` executable
   instead of invoking `herdr web-bridge` from the vendored Herdr package.
-- Updated the vendoring strategy so `vendor/herdr/` remains a full protocol/API reference snapshot
-  while bridge-owned compatibility code lives under `bridge/`.
-- Removed bridge build-time path imports from `vendor/herdr/src` and narrowed copied compatibility
-  modules for IPC, runtime status, socket path discovery, and bridge file logging.
-- Added vendoring checks that fail when exact mirrored bridge protocol/schema compatibility files
-  drift from the vendored Herdr reference snapshot.
+- Updated the vendoring strategy so only a minimal `vendor/herdr-compat` crate is checked in
+  instead of the full upstream Herdr source tree.
+- Removed bridge build-time path imports from `vendor/herdr/src` and moved copied compatibility
+  modules for IPC, runtime status, socket path discovery, bridge file logging, API schema, and
+  terminal protocol into `vendor/herdr-compat`.
+- Added vendoring checks that reject a restored full `vendor/herdr` tree and optionally compare
+  exact upstream schema/protocol copies when `HERDR_SRC` points at a Herdr checkout.
 - Added a bridge `Host` header allow-list and basic static security headers.
 - Narrowed web bridge validation for workspace and tab creation parameters.
 - Narrowed web bridge command validation for browser-launched pane input, splits, and agent starts.
@@ -72,3 +73,6 @@
   unresponsive Herdr daemon returns actionable restart guidance instead of blocking indefinitely.
 
 ### Removed
+
+- Removed the full `vendor/herdr/` source snapshot and the legacy vendored `herdr web-bridge`
+  overlay from this repository.

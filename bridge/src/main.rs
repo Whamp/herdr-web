@@ -1,15 +1,4 @@
-mod agent_resume;
-mod api;
-mod build_info;
-mod config;
-mod input;
-mod ipc;
-mod logging;
-mod protocol;
-mod raw_input;
-mod server;
 mod session;
-mod sound;
 mod web_bridge;
 mod workspace;
 
