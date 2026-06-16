@@ -29,7 +29,7 @@
   release uploads.
 - Added a run-focused README for desktop tarball distributions.
 - Added top-level agent onboarding guidance for web app, bridge, vendoring, testing, and release work.
-- Added a mobile terminal tap-focus setting and a stage-only command input action.
+- Added a mobile terminal tap-focus setting and a stage-only text input action.
 
 ### Changed
 
@@ -54,7 +54,7 @@
 - Disabled Android cloud backup for the shell and removed unused Capacitor mixed-content/deprecated
   runtime config.
 - Included Rust formatting checks for the bridge in the root lint command.
-- Changed mobile terminal taps to focus the command input by default, with raw terminal focus behind
+- Changed mobile terminal taps to focus the text input by default, with raw terminal focus behind
   a keyboard-row button.
 - Moved mobile arrow keys into the expanded keyboard and added separate `1`, `2`, and `3` quick keys.
 - Changed new-tab launches so the entered title names the created pane while default-looking single-pane tabs display that pane title.

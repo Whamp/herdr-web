@@ -310,7 +310,7 @@ export function BackendSettingsDialog({
                       aria-pressed={mobileTerminalTapTarget === "command-input"}
                       onClick={() => onMobileTerminalTapTarget("command-input")}
                     >
-                      Command input
+                      Text input
                     </button>
                     <button
                       type="button"

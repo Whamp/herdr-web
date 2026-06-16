@@ -179,8 +179,8 @@ On a trusted LAN:
 5. Add a backend such as `http://192.168.1.20:4000`.
 6. Use `Test` and confirm it reports reachable.
 7. Use `Save & use`.
-8. Confirm snapshot, event updates, terminal attach, command input, stage-only input, uploads, and pane controls work.
-9. Toggle the mobile terminal tap setting and confirm terminal taps can focus either the command input or terminal.
+8. Confirm snapshot, event updates, terminal attach, text input, stage-only input, uploads, and pane controls work.
+9. Toggle the mobile terminal tap setting and confirm terminal taps can focus either the text input or terminal.
 10. Force-close and reopen the app; confirm the active backend persists.
 11. Test Android back behavior from the mobile sidebar/detail views.
 12. Test an unreachable backend and confirm the app stays usable enough to edit settings.
