@@ -52,6 +52,9 @@
   --r-md: 9px;
   --r-lg: 13px;
   --sidebar-w: 320px;
+  --content-inset-top: 0px;
+  --content-inset-bottom: 0px;
+  --mobile-controls-scale: 1;
 
   --ui:
     "Geist Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -103,6 +106,7 @@ button {
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   width: 100%;
   height: 100%;
+  padding-block: var(--content-inset-top) var(--content-inset-bottom);
   overflow: hidden;
   background: var(--app-bg);
   transition: grid-template-columns 200ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -1072,10 +1076,20 @@ button {
 }
 
 .terminal-mobile-controls {
+  --mobile-control-gap: calc(5px * var(--mobile-controls-scale));
+  --mobile-key-height: calc(30px * var(--mobile-controls-scale));
+  --mobile-key-min-width: calc(34px * var(--mobile-controls-scale));
+  --mobile-key-icon-width: calc(34px * var(--mobile-controls-scale));
+  --mobile-key-padding-x: calc(7px * var(--mobile-controls-scale));
+  --mobile-key-panel-padding-x: calc(3px * var(--mobile-controls-scale));
+  --mobile-input-row-height: calc(34px * var(--mobile-controls-scale));
+  --mobile-input-padding-x: calc(10px * var(--mobile-controls-scale));
+  --mobile-send-width: calc(38px * var(--mobile-controls-scale));
   display: none;
   flex: 0 0 auto;
-  gap: 5px;
-  padding: 6px max(8px, env(safe-area-inset-right)) 7px max(8px, env(safe-area-inset-left));
+  gap: var(--mobile-control-gap);
+  padding: calc(6px * var(--mobile-controls-scale)) max(8px, env(safe-area-inset-right))
+    calc(7px * var(--mobile-controls-scale)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--mantle) 94%, black);
 }
@@ -1087,7 +1101,7 @@ button {
 .term-input-row {
   display: flex;
   min-width: 0;
-  gap: 5px;
+  gap: var(--mobile-control-gap);
 }
 
 .term-key-strip {
@@ -1109,7 +1123,7 @@ button {
   flex: 0 0 auto;
   justify-content: flex-end;
   margin-left: auto;
-  padding-left: 7px;
+  padding-left: var(--mobile-key-padding-x);
   border-left: 1px solid var(--line);
 }
 
@@ -1122,14 +1136,14 @@ button {
 .term-send {
   display: inline-grid;
   min-width: 0;
-  height: 30px;
+  height: var(--mobile-key-height);
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--surface0);
   color: var(--text);
-  font-size: 11px;
+  font-size: clamp(10px, calc(11px * var(--mobile-controls-scale)), 16px);
   line-height: 1;
   white-space: nowrap;
   user-select: none;
@@ -1137,18 +1151,28 @@ button {
 }
 
 .term-key {
-  min-width: 34px;
-  padding: 0 7px;
+  min-width: var(--mobile-key-min-width);
+  padding: 0 var(--mobile-key-padding-x);
 }
 
 .term-key-icon {
-  width: 34px;
+  width: var(--mobile-key-icon-width);
   padding: 0;
+}
+
+.term-key-icon svg {
+  width: calc(15px * var(--mobile-controls-scale));
+  height: calc(15px * var(--mobile-controls-scale));
+}
+
+.term-send svg {
+  width: calc(16px * var(--mobile-controls-scale));
+  height: calc(16px * var(--mobile-controls-scale));
 }
 
 .term-key-panel .term-key {
   width: 100%;
-  padding: 0 3px;
+  padding: 0 var(--mobile-key-panel-padding-x);
 }
 
 .term-key[data-active="true"] {
@@ -1166,7 +1190,7 @@ button {
 }
 
 .term-input-row {
-  height: 34px;
+  height: var(--mobile-input-row-height);
 }
 
 .term-native-input {
@@ -1175,10 +1199,10 @@ button {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   outline: none;
-  padding: 0 10px;
+  padding: 0 var(--mobile-input-padding-x);
   background: var(--crust);
   color: var(--text);
-  font-size: 13px;
+  font-size: clamp(11px, calc(13px * var(--mobile-controls-scale)), 20px);
 }
 
 .term-native-input:focus {
@@ -1187,8 +1211,8 @@ button {
 }
 
 .term-send {
-  width: 38px;
-  flex: 0 0 38px;
+  width: var(--mobile-send-width);
+  flex: 0 0 var(--mobile-send-width);
   background: color-mix(in srgb, var(--blue) 22%, var(--surface0));
   color: var(--blue);
 }
@@ -1663,6 +1687,61 @@ button {
   background: var(--surface1);
 }
 
+.settings-value-control {
+  display: grid;
+  grid-template-columns: 74px auto 30px;
+  align-items: center;
+  gap: 6px;
+  justify-self: end;
+}
+
+.settings-slider-control {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: min(340px, 100%);
+}
+
+.settings-range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.settings-number-field {
+  width: 74px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--surface1);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--crust);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.settings-number-field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.settings-unit {
+  color: var(--overlay1);
+  font-size: 12px;
+}
+
+.settings-reset {
+  width: 30px;
+  height: 30px;
+}
+
+.settings-reset:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
 .field-label {
   display: grid;
   gap: 6px;
@@ -1847,10 +1926,10 @@ button {
   .sidebar,
   .stage {
     position: fixed;
-    top: 0;
+    top: var(--content-inset-top);
     left: 0;
     width: 100vw;
-    height: 100dvh;
+    height: calc(100dvh - var(--content-inset-top) - var(--content-inset-bottom));
     flex: none;
     transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -1907,6 +1986,12 @@ button {
   .settings-row {
     grid-template-columns: 1fr;
   }
+
+  .settings-value-control,
+  .settings-slider-control {
+    justify-self: stretch;
+    width: 100%;
+  }
 }
 
 .app[data-compact="true"] {
@@ -1925,10 +2010,10 @@ button {
 .app[data-compact="true"] .sidebar,
 .app[data-compact="true"] .stage {
   position: fixed;
-  top: 0;
+  top: var(--content-inset-top);
   left: 0;
   width: 100vw;
-  height: 100dvh;
+  height: calc(100dvh - var(--content-inset-top) - var(--content-inset-bottom));
   flex: none;
   transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -1978,31 +2063,31 @@ button {
 }
 
 .app[data-touch="true"] .terminal-stage:has(.terminal-mobile-controls) .terminal-overlay {
-  bottom: 120px;
+  bottom: calc(120px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"] .terminal-stage:has(.terminal-mobile-controls) .terminal-upload-status {
-  bottom: 122px;
+  bottom: calc(122px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"] .terminal-stage:has(.terminal-mobile-controls) .terminal-selection-sheet {
-  bottom: 122px;
+  bottom: calc(122px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"]
   .terminal-stage:has(.terminal-mobile-controls[data-expanded="true"])
   .terminal-overlay {
-  bottom: 158px;
+  bottom: calc(158px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"]
   .terminal-stage:has(.terminal-mobile-controls[data-expanded="true"])
   .terminal-upload-status {
-  bottom: 160px;
+  bottom: calc(160px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"]
   .terminal-stage:has(.terminal-mobile-controls[data-expanded="true"])
   .terminal-selection-sheet {
-  bottom: 160px;
+  bottom: calc(160px * var(--mobile-controls-scale));
 }

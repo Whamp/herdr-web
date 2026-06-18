@@ -1,4 +1,13 @@
-import { Check, Plus, Server, Smartphone, SquareTerminal, X } from "lucide-react";
+import {
+  Check,
+  Plus,
+  RotateCcw,
+  Server,
+  SlidersHorizontal,
+  Smartphone,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   duplicateBackend,
@@ -6,6 +15,20 @@ import {
   useBridge,
 } from "./bridge";
 import type { BridgeBackendProfile } from "./bridge";
+import {
+  DEFAULT_CONTENT_INSET_BOTTOM_PX,
+  DEFAULT_CONTENT_INSET_TOP_PX,
+  DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
+  MAX_CONTENT_INSET_BOTTOM_PX,
+  MAX_CONTENT_INSET_TOP_PX,
+  MAX_MOBILE_CONTROLS_SCALE_PERCENT,
+  MIN_CONTENT_INSET_BOTTOM_PX,
+  MIN_CONTENT_INSET_TOP_PX,
+  MIN_MOBILE_CONTROLS_SCALE_PERCENT,
+  parseContentInsetBottomPx,
+  parseContentInsetTopPx,
+  parseMobileControlsScalePercent,
+} from "./displayPrefs";
 import type { MobileTerminalTapTarget } from "./mobileTerminalPrefs";
 import { TERMINAL_INPUT_BATCH_DELAY_OPTIONS_MS } from "./terminalInputTransport";
 import type { TerminalInputTransport } from "./terminalInputTransport";
@@ -16,6 +39,12 @@ type Props = {
   onTerminalInputTransport: (transport: TerminalInputTransport) => void;
   terminalInputBatchDelayMs: number;
   onTerminalInputBatchDelayMs: (delayMs: number) => void;
+  contentInsetTopPx: number;
+  onContentInsetTopPx: (value: number) => void;
+  contentInsetBottomPx: number;
+  onContentInsetBottomPx: (value: number) => void;
+  mobileControlsScalePercent: number;
+  onMobileControlsScalePercent: (value: number) => void;
   mobileTerminalTapTarget: MobileTerminalTapTarget;
   onMobileTerminalTapTarget: (target: MobileTerminalTapTarget) => void;
   mobileTouchSelection: boolean;
@@ -33,7 +62,7 @@ type FormState = {
 };
 
 type SelectionMode = "same-origin" | "new" | "backend";
-type SettingsArea = "bridge" | "terminal" | "mobile";
+type SettingsArea = "bridge" | "display" | "terminal" | "mobile";
 
 const emptyForm: FormState = {
   id: null,
@@ -47,6 +76,12 @@ export function BackendSettingsDialog({
   onTerminalInputTransport,
   terminalInputBatchDelayMs,
   onTerminalInputBatchDelayMs,
+  contentInsetTopPx,
+  onContentInsetTopPx,
+  contentInsetBottomPx,
+  onContentInsetBottomPx,
+  mobileControlsScalePercent,
+  onMobileControlsScalePercent,
   mobileTerminalTapTarget,
   onMobileTerminalTapTarget,
   mobileTouchSelection,
@@ -207,6 +242,7 @@ export function BackendSettingsDialog({
   const showSameOrigin = bridge.sameOriginAvailable;
   const areas: { id: SettingsArea; label: string; icon: typeof Server }[] = [
     { id: "bridge", label: "Bridge", icon: Server },
+    { id: "display", label: "Display", icon: SlidersHorizontal },
     { id: "terminal", label: "Terminal", icon: SquareTerminal },
     ...(showMobileTerminalSettings
       ? [{ id: "mobile" as const, label: "Mobile", icon: Smartphone }]
@@ -405,6 +441,53 @@ export function BackendSettingsDialog({
               </>
             ) : null}
 
+            {activeArea === "display" ? (
+              <div className="settings-section settings-section-flat">
+                <div className="settings-label">Display spacing</div>
+                <div className="settings-row">
+                  <span>Top padding</span>
+                  <NumberSettingControl
+                    ariaLabel="Top padding"
+                    value={contentInsetTopPx}
+                    min={MIN_CONTENT_INSET_TOP_PX}
+                    max={MAX_CONTENT_INSET_TOP_PX}
+                    unit="px"
+                    defaultValue={DEFAULT_CONTENT_INSET_TOP_PX}
+                    onChange={(value) => onContentInsetTopPx(parseContentInsetTopPx(value))}
+                  />
+                </div>
+                <div className="settings-row">
+                  <span>Bottom padding</span>
+                  <NumberSettingControl
+                    ariaLabel="Bottom padding"
+                    value={contentInsetBottomPx}
+                    min={MIN_CONTENT_INSET_BOTTOM_PX}
+                    max={MAX_CONTENT_INSET_BOTTOM_PX}
+                    unit="px"
+                    defaultValue={DEFAULT_CONTENT_INSET_BOTTOM_PX}
+                    onChange={(value) => onContentInsetBottomPx(parseContentInsetBottomPx(value))}
+                  />
+                </div>
+                {showMobileTerminalSettings ? (
+                  <div className="settings-row settings-slider-row">
+                    <span>Mobile input controls size</span>
+                    <SliderSettingControl
+                      ariaLabel="Mobile input controls size"
+                      value={mobileControlsScalePercent}
+                      min={MIN_MOBILE_CONTROLS_SCALE_PERCENT}
+                      max={MAX_MOBILE_CONTROLS_SCALE_PERCENT}
+                      step={5}
+                      unit="%"
+                      defaultValue={DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT}
+                      onChange={(value) =>
+                        onMobileControlsScalePercent(parseMobileControlsScalePercent(value))
+                      }
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {activeArea === "terminal" ? (
               <div className="settings-section settings-section-flat">
                 <div className="settings-label">Terminal transport</div>
@@ -526,6 +609,171 @@ export function BackendSettingsDialog({
         </div>
       </form>
     </div>
+  );
+}
+
+function NumberSettingControl({
+  ariaLabel,
+  value,
+  min,
+  max,
+  unit,
+  defaultValue,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  unit: string;
+  defaultValue: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="settings-value-control">
+      <DraftNumberInput
+        ariaLabel={ariaLabel}
+        value={value}
+        min={min}
+        max={max}
+        step={1}
+        onCommit={onChange}
+      />
+      <span className="settings-unit">{unit}</span>
+      <ResetSettingButton
+        disabled={value === defaultValue}
+        label={`Reset ${ariaLabel.toLowerCase()}`}
+        onClick={() => onChange(defaultValue)}
+      />
+    </div>
+  );
+}
+
+function SliderSettingControl({
+  ariaLabel,
+  value,
+  min,
+  max,
+  step,
+  unit,
+  defaultValue,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  defaultValue: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="settings-slider-control">
+      <input
+        className="settings-range"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        aria-label={ariaLabel}
+        onChange={(event) => onChange(event.currentTarget.valueAsNumber)}
+      />
+      <div className="settings-value-control">
+        <DraftNumberInput
+          ariaLabel={`${ariaLabel} percent`}
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          onCommit={onChange}
+        />
+        <span className="settings-unit">{unit}</span>
+        <ResetSettingButton
+          disabled={value === defaultValue}
+          label={`Reset ${ariaLabel.toLowerCase()}`}
+          onClick={() => onChange(defaultValue)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DraftNumberInput({
+  ariaLabel,
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+}: {
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const next = Number(draft);
+    if (Number.isFinite(next)) {
+      onCommit(next);
+      return;
+    }
+    setDraft(String(value));
+  };
+
+  return (
+    <input
+      className="settings-number-field"
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      aria-label={ariaLabel}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
+          setDraft(String(value));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function ResetSettingButton({
+  disabled,
+  label,
+  onClick,
+}: {
+  disabled: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="settings-reset icon-btn"
+      type="button"
+      aria-label={label}
+      title="Reset"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <RotateCcw size={13} />
+    </button>
   );
 }
 
