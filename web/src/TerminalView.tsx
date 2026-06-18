@@ -75,7 +75,6 @@ type MobileSelectionAction = {
 
 const MAX_UPLOAD_FILES = 8;
 const TERMINAL_CONNECT_TIMEOUT_MS = 3500;
-const CONNECTING_OVERLAY_DELAY_MS = 250;
 
 export function TerminalView({
   pane,
@@ -110,9 +109,7 @@ export function TerminalView({
   const uploadConflictRef = useRef<UploadConflictState | null>(null);
   const connectionKeyRef = useRef(connectionKey);
   const terminalIdRef = useRef(pane?.terminal_id ?? null);
-  const connectingOverlayTimerRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
-  const [showDelayedConnectingOverlay, setShowDelayedConnectingOverlay] = useState(false);
   const [closeReason, setCloseReason] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -601,38 +598,10 @@ export function TerminalView({
   }, [connectionKey, pane?.terminal_id]);
 
   useEffect(() => {
-    if (connectingOverlayTimerRef.current !== null) {
-      window.clearTimeout(connectingOverlayTimerRef.current);
-      connectingOverlayTimerRef.current = null;
-    }
-
-    if (connectionState !== "connecting") {
-      setShowDelayedConnectingOverlay(false);
-      return;
-    }
-
-    connectingOverlayTimerRef.current = window.setTimeout(() => {
-      connectingOverlayTimerRef.current = null;
-      setShowDelayedConnectingOverlay(true);
-    }, CONNECTING_OVERLAY_DELAY_MS);
-
-    return () => {
-      if (connectingOverlayTimerRef.current !== null) {
-        window.clearTimeout(connectingOverlayTimerRef.current);
-        connectingOverlayTimerRef.current = null;
-      }
-    };
-  }, [connectionState]);
-
-  useEffect(() => {
     return () => {
       if (uploadStatusTimerRef.current !== null) {
         window.clearTimeout(uploadStatusTimerRef.current);
         uploadStatusTimerRef.current = null;
-      }
-      if (connectingOverlayTimerRef.current !== null) {
-        window.clearTimeout(connectingOverlayTimerRef.current);
-        connectingOverlayTimerRef.current = null;
       }
       resolveUploadConflict(false, false);
     };
@@ -666,10 +635,6 @@ export function TerminalView({
     sendTerminalInputData(data);
   };
   const uploadDisabled = !pane || uploading;
-  const showConnectionOverlay =
-    pane !== null &&
-    connectionState !== "attached" &&
-    (connectionState !== "connecting" || showDelayedConnectingOverlay);
 
   const openSelectionUrl = () => {
     if (!mobileSelectionAction) {
@@ -852,7 +817,7 @@ export function TerminalView({
         onChange={handleFileInput}
       />
       {!pane ? <div className="terminal-overlay">No panes available</div> : null}
-      {showConnectionOverlay ? (
+      {pane && connectionState !== "attached" ? (
         <div className="terminal-overlay">{connectionCopy(connectionState, closeReason)}</div>
       ) : null}
       {uploadStatus ? (

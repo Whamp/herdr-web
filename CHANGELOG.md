@@ -30,9 +30,6 @@
 
 ### Fixed
 
-- Cleared stale terminal content immediately when switching panes in the single-terminal mobile
-  detail view, and delayed transient connecting status during fast terminal attaches.
-
 ### Removed
 
 ## [0.1.1] - 2026-06-17

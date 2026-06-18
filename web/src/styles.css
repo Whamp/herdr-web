@@ -2034,15 +2034,6 @@ button {
   transform: translateX(0);
 }
 
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-host,
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-mobile-controls,
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-overlay,
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-upload-fab,
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-upload-status,
-.app[data-compact="true"][data-terminal-switching="true"] .terminal-selection-sheet {
-  visibility: hidden;
-}
-
 .app[data-compact="true"] .sidebar {
   border-right: 0;
 }
