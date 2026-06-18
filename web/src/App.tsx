@@ -20,6 +20,14 @@ import {
   currentConnectionSnapshot,
   isConnectionResultCurrent,
 } from "./connectionState";
+import {
+  DEFAULT_CONTENT_INSET_BOTTOM_PX,
+  DEFAULT_CONTENT_INSET_TOP_PX,
+  DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
+  parseContentInsetBottomPx,
+  parseContentInsetTopPx,
+  parseMobileControlsScalePercent,
+} from "./displayPrefs";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
@@ -102,6 +110,9 @@ type DisplayPrefs = {
   selectedPaneId: string | null;
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
+  contentInsetTopPx: number;
+  contentInsetBottomPx: number;
+  mobileControlsScalePercent: number;
   mobileTerminalTapTarget: MobileTerminalTapTarget;
   mobileTouchSelection: boolean;
   mobileKeyboardHideRefit: boolean;
@@ -127,6 +138,9 @@ function readDisplayPrefs(): DisplayPrefs {
     selectedPaneId: null,
     terminalInputTransport: DEFAULT_TERMINAL_INPUT_TRANSPORT,
     terminalInputBatchDelayMs: DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
+    contentInsetTopPx: DEFAULT_CONTENT_INSET_TOP_PX,
+    contentInsetBottomPx: DEFAULT_CONTENT_INSET_BOTTOM_PX,
+    mobileControlsScalePercent: DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
     mobileTerminalTapTarget: DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
     mobileTouchSelection: DEFAULT_MOBILE_TOUCH_SELECTION,
     mobileKeyboardHideRefit: DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
@@ -165,6 +179,11 @@ function readDisplayPrefs(): DisplayPrefs {
         typeof parsed.selectedPaneId === "string" ? parsed.selectedPaneId : fallback.selectedPaneId,
       terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
       terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
+      contentInsetTopPx: parseContentInsetTopPx(parsed.contentInsetTopPx),
+      contentInsetBottomPx: parseContentInsetBottomPx(parsed.contentInsetBottomPx),
+      mobileControlsScalePercent: parseMobileControlsScalePercent(
+        parsed.mobileControlsScalePercent,
+      ),
       mobileTerminalTapTarget: parseMobileTerminalTapTarget(parsed.mobileTerminalTapTarget),
       mobileTouchSelection: parseMobileTouchSelection(parsed.mobileTouchSelection),
       mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
@@ -254,6 +273,13 @@ export function App() {
   );
   const [terminalInputBatchDelayMs, setTerminalInputBatchDelayMs] = useState(
     initialPrefs.terminalInputBatchDelayMs,
+  );
+  const [contentInsetTopPx, setContentInsetTopPx] = useState(initialPrefs.contentInsetTopPx);
+  const [contentInsetBottomPx, setContentInsetBottomPx] = useState(
+    initialPrefs.contentInsetBottomPx,
+  );
+  const [mobileControlsScalePercent, setMobileControlsScalePercent] = useState(
+    initialPrefs.mobileControlsScalePercent,
   );
   const [mobileTerminalTapTarget, setMobileTerminalTapTarget] = useState(
     initialPrefs.mobileTerminalTapTarget,
@@ -378,6 +404,9 @@ export function App() {
       selectedPaneId,
       terminalInputTransport,
       terminalInputBatchDelayMs,
+      contentInsetTopPx,
+      contentInsetBottomPx,
+      mobileControlsScalePercent,
       mobileTerminalTapTarget,
       mobileTouchSelection,
       mobileKeyboardHideRefit,
@@ -393,6 +422,9 @@ export function App() {
     selectedPaneId,
     terminalInputTransport,
     terminalInputBatchDelayMs,
+    contentInsetTopPx,
+    contentInsetBottomPx,
+    mobileControlsScalePercent,
     mobileTerminalTapTarget,
     mobileTouchSelection,
     mobileKeyboardHideRefit,
@@ -1106,8 +1138,19 @@ export function App() {
   };
 
   const renderTerminal = !isCompactLayout || showDetail;
-  const appStyle = { "--sidebar-w": `${sidebarWidth}px` } as CSSProperties &
-    Record<"--sidebar-w", string>;
+  const appStyle = {
+    "--sidebar-w": `${sidebarWidth}px`,
+    "--content-inset-top": `${contentInsetTopPx}px`,
+    "--content-inset-bottom": `${contentInsetBottomPx}px`,
+    "--mobile-controls-scale": String(mobileControlsScalePercent / 100),
+  } as CSSProperties &
+    Record<
+      | "--sidebar-w"
+      | "--content-inset-top"
+      | "--content-inset-bottom"
+      | "--mobile-controls-scale",
+      string
+    >;
 
   return (
     <div
@@ -1377,6 +1420,12 @@ export function App() {
           onTerminalInputTransport={setTerminalInputTransport}
           terminalInputBatchDelayMs={terminalInputBatchDelayMs}
           onTerminalInputBatchDelayMs={setTerminalInputBatchDelayMs}
+          contentInsetTopPx={contentInsetTopPx}
+          onContentInsetTopPx={setContentInsetTopPx}
+          contentInsetBottomPx={contentInsetBottomPx}
+          onContentInsetBottomPx={setContentInsetBottomPx}
+          mobileControlsScalePercent={mobileControlsScalePercent}
+          onMobileControlsScalePercent={setMobileControlsScalePercent}
           mobileTerminalTapTarget={mobileTerminalTapTarget}
           onMobileTerminalTapTarget={setMobileTerminalTapTarget}
           mobileTouchSelection={mobileTouchSelection}
