@@ -19,6 +19,8 @@
 
 ### Changed
 
+- Coalesced fast terminal output bursts in the bridge before forwarding them to browser clients,
+  reducing WebSocket frame churn during rapid TUI redraws.
 - Reworked Settings into Bridge, Terminal, and Mobile areas, with horizontal area tabs on narrow
   screens. [PR #12](https://github.com/kcosr/herdr-web/pull/12)
 - Improved browser startup by lazy-loading the terminal renderer with retry after load failures,
@@ -27,6 +29,9 @@
   [PR #10](https://github.com/kcosr/herdr-web/pull/10)
 
 ### Fixed
+
+- Cleared stale terminal content immediately when switching panes in the single-terminal mobile
+  detail view, and delayed transient connecting status during fast terminal attaches.
 
 ### Removed
 

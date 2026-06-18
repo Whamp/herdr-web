@@ -24,6 +24,7 @@ use axum::{extract::Request as AxumRequest, Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use herdr_compat::TryClone as _;
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
@@ -50,6 +51,10 @@ const DEFAULT_STATIC_DIR: &str = "web/dist";
 const MIN_TERMINAL_ATTACH_PROTOCOL: u32 = 13;
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const MAX_TERMINAL_INPUT_CHUNK_BYTES: usize = 768 * 1024;
+const TERMINAL_OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(8);
+const TERMINAL_OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
+const TERMINAL_OUTPUT_COALESCE_MAX_CHUNKS: usize = 256;
+const TERMINAL_OUTPUT_STATS_INTERVAL: Duration = Duration::from_secs(10);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTIVITY_WATCHER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const ACTIVITY_WATCHER_MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -176,8 +181,347 @@ fn default_scroll_lines() -> u16 {
 
 #[derive(Debug, Clone)]
 enum TerminalOutput {
-    Bytes(Vec<u8>),
+    Bytes(Bytes),
     Close(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalOutputFlushReason {
+    Timer,
+    ByteThreshold,
+    ChunkThreshold,
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TerminalOutputCoalescingDecision {
+    SendNow(Bytes),
+    Pending,
+    FlushPending(TerminalOutputFlushReason),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TerminalOutputCoalescingStats {
+    source_frames: u64,
+    source_bytes: u64,
+    sent_frames: u64,
+    sent_bytes: u64,
+    immediate_frames: u64,
+    coalesced_source_frames: u64,
+    coalesced_sent_frames: u64,
+    timer_flushes: u64,
+    byte_flushes: u64,
+    chunk_flushes: u64,
+    single_chunk_flushes: u64,
+    merged_flushes: u64,
+    lagged_events: u64,
+    lagged_frames: u64,
+    max_pending_bytes: usize,
+    max_pending_chunks: usize,
+    total_flush_latency_us: u128,
+    max_flush_latency_us: u128,
+}
+
+impl TerminalOutputCoalescingStats {
+    fn record_source(&mut self, bytes: usize) {
+        self.source_frames += 1;
+        self.source_bytes += bytes as u64;
+    }
+
+    fn record_immediate_send(&mut self, bytes: usize) {
+        self.sent_frames += 1;
+        self.sent_bytes += bytes as u64;
+        self.immediate_frames += 1;
+    }
+
+    fn record_pending(&mut self, bytes: usize, chunks: usize) {
+        self.max_pending_bytes = self.max_pending_bytes.max(bytes);
+        self.max_pending_chunks = self.max_pending_chunks.max(chunks);
+    }
+
+    fn record_flush_reason(&mut self, reason: TerminalOutputFlushReason) {
+        match reason {
+            TerminalOutputFlushReason::Timer => self.timer_flushes += 1,
+            TerminalOutputFlushReason::ByteThreshold => self.byte_flushes += 1,
+            TerminalOutputFlushReason::ChunkThreshold => self.chunk_flushes += 1,
+            TerminalOutputFlushReason::Close => {}
+        }
+    }
+
+    fn record_coalesced_send(&mut self, source_chunks: usize, bytes: usize, latency: Duration) {
+        self.sent_frames += 1;
+        self.sent_bytes += bytes as u64;
+        self.coalesced_source_frames += source_chunks as u64;
+        self.coalesced_sent_frames += 1;
+        if source_chunks <= 1 {
+            self.single_chunk_flushes += 1;
+        } else {
+            self.merged_flushes += 1;
+        }
+
+        let latency_us = latency.as_micros();
+        self.total_flush_latency_us += latency_us;
+        self.max_flush_latency_us = self.max_flush_latency_us.max(latency_us);
+    }
+
+    fn record_lagged(&mut self, frames: u64) {
+        self.lagged_events += 1;
+        self.lagged_frames += frames;
+    }
+
+    fn has_activity(&self) -> bool {
+        self.source_frames > 0 || self.lagged_events > 0
+    }
+
+    fn has_source_frames(&self) -> bool {
+        self.source_frames > 0
+    }
+
+    fn frames_saved(&self) -> u64 {
+        self.source_frames.saturating_sub(self.sent_frames)
+    }
+
+    fn coalescing_ratio(&self) -> f64 {
+        if self.sent_frames == 0 {
+            return 0.0;
+        }
+        self.source_frames as f64 / self.sent_frames as f64
+    }
+
+    fn avg_source_frame_bytes(&self) -> f64 {
+        if self.source_frames == 0 {
+            return 0.0;
+        }
+        self.source_bytes as f64 / self.source_frames as f64
+    }
+
+    fn avg_sent_frame_bytes(&self) -> f64 {
+        if self.sent_frames == 0 {
+            return 0.0;
+        }
+        self.sent_bytes as f64 / self.sent_frames as f64
+    }
+
+    fn avg_flush_latency_us(&self) -> f64 {
+        if self.coalesced_sent_frames == 0 {
+            return 0.0;
+        }
+        self.total_flush_latency_us as f64 / self.coalesced_sent_frames as f64
+    }
+}
+
+#[derive(Debug)]
+struct TerminalOutputCoalescer {
+    pending: Vec<Bytes>,
+    pending_bytes: usize,
+    pending_started_at: Option<Instant>,
+    deadline: Option<Instant>,
+    interval_stats: TerminalOutputCoalescingStats,
+    lifetime_stats: TerminalOutputCoalescingStats,
+    last_stats_log_at: Instant,
+}
+
+impl TerminalOutputCoalescer {
+    fn new(now: Instant) -> Self {
+        Self {
+            pending: Vec::new(),
+            pending_bytes: 0,
+            pending_started_at: None,
+            deadline: None,
+            interval_stats: TerminalOutputCoalescingStats::default(),
+            lifetime_stats: TerminalOutputCoalescingStats::default(),
+            last_stats_log_at: now,
+        }
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    fn push_bytes(&mut self, bytes: Bytes, now: Instant) -> TerminalOutputCoalescingDecision {
+        let byte_count = bytes.len();
+        self.record_source(byte_count);
+
+        if self.deadline.is_none() {
+            self.deadline = Some(now + TERMINAL_OUTPUT_COALESCE_WINDOW);
+            self.record_immediate_send(byte_count);
+            return TerminalOutputCoalescingDecision::SendNow(bytes);
+        }
+
+        if self.pending.is_empty() {
+            self.pending_started_at = Some(now);
+        }
+        self.pending_bytes += byte_count;
+        self.pending.push(bytes);
+        self.record_pending();
+
+        if self.pending_bytes >= TERMINAL_OUTPUT_COALESCE_MAX_BYTES {
+            TerminalOutputCoalescingDecision::FlushPending(TerminalOutputFlushReason::ByteThreshold)
+        } else if self.pending.len() >= TERMINAL_OUTPUT_COALESCE_MAX_CHUNKS {
+            TerminalOutputCoalescingDecision::FlushPending(
+                TerminalOutputFlushReason::ChunkThreshold,
+            )
+        } else {
+            TerminalOutputCoalescingDecision::Pending
+        }
+    }
+
+    fn handle_deadline(&mut self) -> Option<TerminalOutputFlushReason> {
+        self.deadline?;
+        if self.pending.is_empty() {
+            self.deadline = None;
+            return None;
+        }
+        Some(TerminalOutputFlushReason::Timer)
+    }
+
+    fn flush_pending(&mut self, reason: TerminalOutputFlushReason, now: Instant) -> Option<Bytes> {
+        if self.pending.is_empty() {
+            self.pending_bytes = 0;
+            self.pending_started_at = None;
+            if matches!(reason, TerminalOutputFlushReason::Close) {
+                self.deadline = None;
+            }
+            return None;
+        }
+
+        self.record_flush_reason(reason);
+        let source_chunks = self.pending.len();
+        let latency = self
+            .pending_started_at
+            .map(|started_at| now.saturating_duration_since(started_at))
+            .unwrap_or_default();
+        let Some(bytes) = drain_terminal_output_pending(&mut self.pending, &mut self.pending_bytes)
+        else {
+            self.pending_started_at = None;
+            return None;
+        };
+
+        self.pending_started_at = None;
+        if matches!(reason, TerminalOutputFlushReason::Close) {
+            self.deadline = None;
+        } else {
+            self.deadline = Some(now + TERMINAL_OUTPUT_COALESCE_WINDOW);
+        }
+        self.record_coalesced_send(source_chunks, bytes.len(), latency);
+        Some(bytes)
+    }
+
+    fn record_lagged(&mut self, frames: u64) {
+        self.interval_stats.record_lagged(frames);
+        self.lifetime_stats.record_lagged(frames);
+    }
+
+    fn maybe_log_interval(&mut self, terminal_id: &str, now: Instant) {
+        if now.duration_since(self.last_stats_log_at) < TERMINAL_OUTPUT_STATS_INTERVAL {
+            return;
+        }
+
+        if self.interval_stats.has_source_frames() {
+            log_terminal_output_coalescing_stats(terminal_id, "interval", &self.interval_stats);
+            self.interval_stats = TerminalOutputCoalescingStats::default();
+        }
+        self.last_stats_log_at = now;
+    }
+
+    fn log_final(&self, terminal_id: &str) {
+        if self.interval_stats.has_activity() {
+            log_terminal_output_coalescing_stats(
+                terminal_id,
+                "final_interval",
+                &self.interval_stats,
+            );
+        }
+        if self.lifetime_stats.has_activity() {
+            log_terminal_output_coalescing_stats(terminal_id, "lifetime", &self.lifetime_stats);
+        }
+    }
+
+    fn record_source(&mut self, bytes: usize) {
+        self.interval_stats.record_source(bytes);
+        self.lifetime_stats.record_source(bytes);
+    }
+
+    fn record_immediate_send(&mut self, bytes: usize) {
+        self.interval_stats.record_immediate_send(bytes);
+        self.lifetime_stats.record_immediate_send(bytes);
+    }
+
+    fn record_pending(&mut self) {
+        self.interval_stats
+            .record_pending(self.pending_bytes, self.pending.len());
+        self.lifetime_stats
+            .record_pending(self.pending_bytes, self.pending.len());
+    }
+
+    fn record_flush_reason(&mut self, reason: TerminalOutputFlushReason) {
+        self.interval_stats.record_flush_reason(reason);
+        self.lifetime_stats.record_flush_reason(reason);
+    }
+
+    fn record_coalesced_send(&mut self, chunks: usize, bytes: usize, latency: Duration) {
+        self.interval_stats
+            .record_coalesced_send(chunks, bytes, latency);
+        self.lifetime_stats
+            .record_coalesced_send(chunks, bytes, latency);
+    }
+}
+
+fn drain_terminal_output_pending(
+    pending: &mut Vec<Bytes>,
+    pending_bytes: &mut usize,
+) -> Option<Bytes> {
+    if pending.is_empty() {
+        *pending_bytes = 0;
+        return None;
+    }
+
+    let byte_count = *pending_bytes;
+    *pending_bytes = 0;
+    if pending.len() == 1 {
+        return pending.pop();
+    }
+
+    let mut output = Vec::with_capacity(byte_count);
+    for chunk in pending.drain(..) {
+        output.extend_from_slice(&chunk);
+    }
+    Some(Bytes::from(output))
+}
+
+fn log_terminal_output_coalescing_stats(
+    terminal_id: &str,
+    scope: &str,
+    stats: &TerminalOutputCoalescingStats,
+) {
+    debug!(
+        terminal_id = %terminal_id,
+        scope = %scope,
+        source_frames = stats.source_frames,
+        source_bytes = stats.source_bytes,
+        sent_frames = stats.sent_frames,
+        sent_bytes = stats.sent_bytes,
+        immediate_frames = stats.immediate_frames,
+        coalesced_source_frames = stats.coalesced_source_frames,
+        coalesced_sent_frames = stats.coalesced_sent_frames,
+        timer_flushes = stats.timer_flushes,
+        byte_flushes = stats.byte_flushes,
+        chunk_flushes = stats.chunk_flushes,
+        single_chunk_flushes = stats.single_chunk_flushes,
+        merged_flushes = stats.merged_flushes,
+        lagged_events = stats.lagged_events,
+        lagged_frames = stats.lagged_frames,
+        max_pending_bytes = stats.max_pending_bytes,
+        max_pending_chunks = stats.max_pending_chunks,
+        total_flush_latency_us = stats.total_flush_latency_us,
+        max_flush_latency_us = stats.max_flush_latency_us,
+        coalescing_ratio = stats.coalescing_ratio(),
+        frames_saved = stats.frames_saved(),
+        avg_source_frame_bytes = stats.avg_source_frame_bytes(),
+        avg_sent_frame_bytes = stats.avg_sent_frame_bytes(),
+        avg_flush_latency_us = stats.avg_flush_latency_us(),
+        "terminal output coalescing stats"
+    );
 }
 
 #[derive(Clone)]
@@ -1681,6 +2025,7 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
 
     let write_tx = session.write_tx.clone();
     let mut terminal_rx = session.output_tx.subscribe();
+    let mut output_coalescer = TerminalOutputCoalescer::new(Instant::now());
     let _ = write_tx.send(ClientMessage::Resize {
         cols,
         rows,
@@ -1689,46 +2034,147 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     });
 
     loop {
-        tokio::select! {
-            output = terminal_rx.recv() => {
-                match output {
-                    Ok(output) => match output {
-                    TerminalOutput::Bytes(bytes) => {
-                        if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    TerminalOutput::Close(reason) => {
-                        let _ = ws_sender.send(Message::Text(close_message(&reason).into())).await;
+        if let Some(deadline) = output_coalescer.deadline() {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    if !handle_terminal_output_deadline(
+                        &terminal_id,
+                        &mut ws_sender,
+                        &mut output_coalescer,
+                    )
+                    .await
+                    {
                         break;
                     }
-                    },
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
-            }
-            Some(message) = ws_receiver.next() => {
-                match message {
-                    Ok(Message::Text(text)) => {
-                        if handle_terminal_text_frame(&write_tx, text.as_str()).is_err() {
-                            break;
-                        }
+                Some(message) = ws_receiver.next() => {
+                    if !handle_terminal_client_message(&write_tx, message) {
+                        break;
                     }
-                    Ok(Message::Binary(bytes)) => {
-                        if send_terminal_input_chunks(&write_tx, &bytes).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(Message::Close(_)) => break,
-                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
-                    Err(_) => break,
                 }
+                output = terminal_rx.recv() => {
+                    if !handle_terminal_output_message(
+                        &terminal_id,
+                        output,
+                        &mut ws_sender,
+                        &mut output_coalescer,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                else => break,
             }
-            else => break,
+        } else {
+            tokio::select! {
+                output = terminal_rx.recv() => {
+                    if !handle_terminal_output_message(
+                        &terminal_id,
+                        output,
+                        &mut ws_sender,
+                        &mut output_coalescer,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                Some(message) = ws_receiver.next() => {
+                    if !handle_terminal_client_message(&write_tx, message) {
+                        break;
+                    }
+                }
+                else => break,
+            }
         }
     }
 
+    output_coalescer.log_final(&terminal_id);
     release_terminal_session(&state, &terminal_id, &session);
+}
+
+async fn handle_terminal_output_deadline(
+    terminal_id: &str,
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    output_coalescer: &mut TerminalOutputCoalescer,
+) -> bool {
+    let Some(reason) = output_coalescer.handle_deadline() else {
+        return true;
+    };
+    let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
+        return true;
+    };
+    if ws_sender.send(Message::Binary(bytes)).await.is_err() {
+        return false;
+    }
+    output_coalescer.maybe_log_interval(terminal_id, Instant::now());
+    true
+}
+
+async fn handle_terminal_output_message(
+    terminal_id: &str,
+    output: Result<TerminalOutput, tokio::sync::broadcast::error::RecvError>,
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    output_coalescer: &mut TerminalOutputCoalescer,
+) -> bool {
+    match output {
+        Ok(TerminalOutput::Bytes(bytes)) => {
+            let decision = output_coalescer.push_bytes(bytes, Instant::now());
+            match decision {
+                TerminalOutputCoalescingDecision::SendNow(bytes) => {
+                    if ws_sender.send(Message::Binary(bytes)).await.is_err() {
+                        return false;
+                    }
+                    output_coalescer.maybe_log_interval(terminal_id, Instant::now());
+                }
+                TerminalOutputCoalescingDecision::Pending => {}
+                TerminalOutputCoalescingDecision::FlushPending(reason) => {
+                    let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
+                        return true;
+                    };
+                    if ws_sender.send(Message::Binary(bytes)).await.is_err() {
+                        return false;
+                    }
+                    output_coalescer.maybe_log_interval(terminal_id, Instant::now());
+                }
+            }
+            true
+        }
+        Ok(TerminalOutput::Close(reason)) => {
+            if let Some(bytes) =
+                output_coalescer.flush_pending(TerminalOutputFlushReason::Close, Instant::now())
+            {
+                if ws_sender.send(Message::Binary(bytes)).await.is_err() {
+                    return false;
+                }
+                output_coalescer.maybe_log_interval(terminal_id, Instant::now());
+            }
+            let _ = ws_sender
+                .send(Message::Text(close_message(&reason).into()))
+                .await;
+            false
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(frames)) => {
+            output_coalescer.record_lagged(frames);
+            true
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => false,
+    }
+}
+
+fn handle_terminal_client_message(
+    write_tx: &mpsc::Sender<ClientMessage>,
+    message: Result<Message, axum::Error>,
+) -> bool {
+    match message {
+        Ok(Message::Text(text)) => handle_terminal_text_frame(write_tx, text.as_str()).is_ok(),
+        Ok(Message::Binary(bytes)) => send_terminal_input_chunks(write_tx, &bytes).is_ok(),
+        Ok(Message::Close(_)) => false,
+        Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => true,
+        Err(_) => false,
+    }
 }
 
 async fn acquire_terminal_session(
@@ -2281,7 +2727,7 @@ fn open_terminal_attach(
             };
         match message {
             ServerMessage::Terminal(frame) => {
-                let _ = output_tx.send(TerminalOutput::Bytes(frame.bytes));
+                let _ = output_tx.send(TerminalOutput::Bytes(Bytes::from(frame.bytes)));
             }
             ServerMessage::ServerShutdown { reason } => {
                 let _ = output_tx.send(TerminalOutput::Close(
@@ -2354,6 +2800,235 @@ fn unsupported_daemon_protocol_message(protocol: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalescer_sends_first_output_immediately() {
+        let now = Instant::now();
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+
+        assert_eq!(
+            coalescer.push_bytes(Bytes::from_static(b"first"), now),
+            TerminalOutputCoalescingDecision::SendNow(Bytes::from_static(b"first"))
+        );
+        assert_eq!(
+            coalescer.deadline(),
+            Some(now + TERMINAL_OUTPUT_COALESCE_WINDOW)
+        );
+        assert_eq!(coalescer.lifetime_stats.source_frames, 1);
+        assert_eq!(coalescer.lifetime_stats.sent_frames, 1);
+        assert_eq!(coalescer.lifetime_stats.immediate_frames, 1);
+    }
+
+    #[test]
+    fn coalescer_pends_output_inside_active_window() {
+        let now = Instant::now();
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"first"), now);
+
+        assert_eq!(
+            coalescer.push_bytes(Bytes::from_static(b"second"), now),
+            TerminalOutputCoalescingDecision::Pending
+        );
+        assert_eq!(coalescer.pending_bytes, 6);
+        assert_eq!(coalescer.pending.len(), 1);
+        assert_eq!(coalescer.lifetime_stats.max_pending_bytes, 6);
+        assert_eq!(coalescer.lifetime_stats.max_pending_chunks, 1);
+    }
+
+    #[test]
+    fn coalescer_flushes_when_byte_threshold_is_reached() {
+        let now = Instant::now();
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"first"), now);
+
+        let decision = coalescer.push_bytes(
+            Bytes::from(vec![b'x'; TERMINAL_OUTPUT_COALESCE_MAX_BYTES]),
+            now,
+        );
+
+        assert_eq!(
+            decision,
+            TerminalOutputCoalescingDecision::FlushPending(
+                TerminalOutputFlushReason::ByteThreshold
+            )
+        );
+        let flushed = coalescer
+            .flush_pending(TerminalOutputFlushReason::ByteThreshold, now)
+            .unwrap();
+        assert_eq!(flushed.len(), TERMINAL_OUTPUT_COALESCE_MAX_BYTES);
+        assert_eq!(coalescer.pending_bytes, 0);
+        assert_eq!(coalescer.pending.len(), 0);
+        assert_eq!(coalescer.lifetime_stats.byte_flushes, 1);
+        assert_eq!(coalescer.lifetime_stats.coalesced_sent_frames, 1);
+    }
+
+    #[test]
+    fn coalescer_deadline_returns_to_idle_when_nothing_pending() {
+        let now = Instant::now();
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"first"), now);
+
+        assert_eq!(coalescer.handle_deadline(), None);
+        assert_eq!(coalescer.deadline(), None);
+    }
+
+    #[test]
+    fn coalescer_deadline_flushes_pending_and_rearms_window() {
+        let now = Instant::now();
+        let flush_at = now + TERMINAL_OUTPUT_COALESCE_WINDOW;
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"first"), now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"second"), now);
+
+        assert_eq!(
+            coalescer.handle_deadline(),
+            Some(TerminalOutputFlushReason::Timer)
+        );
+        assert_eq!(
+            coalescer.flush_pending(TerminalOutputFlushReason::Timer, flush_at),
+            Some(Bytes::from_static(b"second"))
+        );
+        assert_eq!(
+            coalescer.deadline(),
+            Some(flush_at + TERMINAL_OUTPUT_COALESCE_WINDOW)
+        );
+        assert_eq!(coalescer.lifetime_stats.timer_flushes, 1);
+    }
+
+    #[test]
+    fn coalescer_keeps_spaced_output_immediate() {
+        let now = Instant::now();
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+
+        assert_eq!(
+            coalescer.push_bytes(Bytes::from_static(b"one"), now),
+            TerminalOutputCoalescingDecision::SendNow(Bytes::from_static(b"one"))
+        );
+        assert_eq!(coalescer.handle_deadline(), None);
+        assert_eq!(
+            coalescer.push_bytes(
+                Bytes::from_static(b"two"),
+                now + TERMINAL_OUTPUT_COALESCE_WINDOW + Duration::from_millis(1),
+            ),
+            TerminalOutputCoalescingDecision::SendNow(Bytes::from_static(b"two"))
+        );
+        assert_eq!(coalescer.handle_deadline(), None);
+        assert_eq!(
+            coalescer.push_bytes(
+                Bytes::from_static(b"three"),
+                now + TERMINAL_OUTPUT_COALESCE_WINDOW * 2 + Duration::from_millis(2),
+            ),
+            TerminalOutputCoalescingDecision::SendNow(Bytes::from_static(b"three"))
+        );
+
+        assert_eq!(coalescer.lifetime_stats.source_frames, 3);
+        assert_eq!(coalescer.lifetime_stats.sent_frames, 3);
+        assert_eq!(coalescer.lifetime_stats.immediate_frames, 3);
+        assert_eq!(coalescer.lifetime_stats.coalesced_source_frames, 0);
+        assert_eq!(coalescer.lifetime_stats.coalesced_sent_frames, 0);
+        assert_eq!(coalescer.lifetime_stats.merged_flushes, 0);
+    }
+
+    #[test]
+    fn coalescer_keeps_continuous_stream_in_active_window() {
+        let now = Instant::now();
+        let first_flush = now + TERMINAL_OUTPUT_COALESCE_WINDOW;
+        let second_flush = first_flush + TERMINAL_OUTPUT_COALESCE_WINDOW;
+        let mut coalescer = TerminalOutputCoalescer::new(now);
+
+        let _ = coalescer.push_bytes(Bytes::from_static(b"one"), now);
+        let _ = coalescer.push_bytes(Bytes::from_static(b"two"), now + Duration::from_millis(1));
+        let _ = coalescer.push_bytes(Bytes::from_static(b"three"), now + Duration::from_millis(2));
+        assert_eq!(
+            coalescer.handle_deadline(),
+            Some(TerminalOutputFlushReason::Timer)
+        );
+        assert_eq!(
+            coalescer.flush_pending(TerminalOutputFlushReason::Timer, first_flush),
+            Some(Bytes::from_static(b"twothree"))
+        );
+
+        let _ = coalescer.push_bytes(
+            Bytes::from_static(b"four"),
+            first_flush + Duration::from_millis(1),
+        );
+        let _ = coalescer.push_bytes(
+            Bytes::from_static(b"five"),
+            first_flush + Duration::from_millis(2),
+        );
+        assert_eq!(
+            coalescer.handle_deadline(),
+            Some(TerminalOutputFlushReason::Timer)
+        );
+        assert_eq!(
+            coalescer.flush_pending(TerminalOutputFlushReason::Timer, second_flush),
+            Some(Bytes::from_static(b"fourfive"))
+        );
+
+        assert_eq!(coalescer.lifetime_stats.source_frames, 5);
+        assert_eq!(coalescer.lifetime_stats.sent_frames, 3);
+        assert_eq!(coalescer.lifetime_stats.immediate_frames, 1);
+        assert_eq!(coalescer.lifetime_stats.coalesced_source_frames, 4);
+        assert_eq!(coalescer.lifetime_stats.coalesced_sent_frames, 2);
+        assert_eq!(coalescer.lifetime_stats.merged_flushes, 2);
+    }
+
+    #[test]
+    fn draining_terminal_output_pending_preserves_order() {
+        let mut pending = vec![
+            Bytes::from_static(b"abc"),
+            Bytes::from_static(b"def"),
+            Bytes::from_static(b"ghi"),
+        ];
+        let mut pending_bytes = 9;
+
+        assert_eq!(
+            drain_terminal_output_pending(&mut pending, &mut pending_bytes),
+            Some(Bytes::from_static(b"abcdefghi"))
+        );
+        assert!(pending.is_empty());
+        assert_eq!(pending_bytes, 0);
+    }
+
+    #[test]
+    fn coalescing_stats_derived_values_are_zero_safe() {
+        let stats = TerminalOutputCoalescingStats::default();
+
+        assert_eq!(stats.frames_saved(), 0);
+        assert_eq!(stats.coalescing_ratio(), 0.0);
+        assert_eq!(stats.avg_source_frame_bytes(), 0.0);
+        assert_eq!(stats.avg_sent_frame_bytes(), 0.0);
+        assert_eq!(stats.avg_flush_latency_us(), 0.0);
+    }
+
+    #[test]
+    fn coalescing_stats_track_saved_frames_and_latency() {
+        let mut stats = TerminalOutputCoalescingStats::default();
+
+        stats.record_source(4);
+        stats.record_source(6);
+        stats.record_source(10);
+        stats.record_immediate_send(4);
+        stats.record_flush_reason(TerminalOutputFlushReason::Timer);
+        stats.record_coalesced_send(2, 16, Duration::from_micros(800));
+
+        assert_eq!(stats.sent_frames, 2);
+        assert_eq!(stats.frames_saved(), 1);
+        assert_eq!(stats.coalesced_source_frames, 2);
+        assert_eq!(stats.merged_flushes, 1);
+        assert_eq!(
+            stats.sent_frames,
+            stats.immediate_frames + stats.coalesced_sent_frames
+        );
+        assert_eq!(
+            stats.source_frames,
+            stats.immediate_frames + stats.coalesced_source_frames
+        );
+        assert_eq!(stats.coalescing_ratio(), 1.5);
+        assert_eq!(stats.avg_flush_latency_us(), 800.0);
+        assert_eq!(stats.avg_source_frame_bytes(), 20.0 / 3.0);
+        assert_eq!(stats.avg_sent_frame_bytes(), 10.0);
+    }
 
     #[test]
     fn parses_input_frame() {

@@ -119,6 +119,7 @@ type DisplayPrefs = {
 };
 const COMPACT_LAYOUT_QUERY = "(max-width: 820px)";
 const TOUCH_INPUT_QUERY = "(hover: none) and (pointer: coarse)";
+const MOBILE_TERMINAL_SWITCH_CLEAR_MS = 300;
 const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
 const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
 const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
@@ -295,6 +296,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [refitToken, setRefitToken] = useState(0);
   const [terminalFocusToken, setTerminalFocusToken] = useState(0);
+  const [mobileTerminalSwitchingId, setMobileTerminalSwitchingId] = useState<string | null>(null);
   const isCompactLayout = useIsCompactLayout();
   const isTouchInput = useIsTouchInput();
   const showMobileKeyboardHideRefit = isNativeAndroid();
@@ -761,6 +763,9 @@ export function App() {
   };
 
   const openPane = (pane: PaneInfo) => {
+    if (isCompactLayout && selectedPane?.terminal_id !== pane.terminal_id) {
+      setMobileTerminalSwitchingId(pane.terminal_id);
+    }
     setSelectedPaneId(pane.pane_id);
     setActiveSpaceId(pane.workspace_id);
     void syncSelectedPane(bridge.httpUrl, pane.pane_id).catch(() => {});
@@ -771,6 +776,29 @@ export function App() {
   };
 
   const requestTerminalFocus = () => setTerminalFocusToken((token) => token + 1);
+
+  useEffect(() => {
+    if (!isCompactLayout || !showDetail) {
+      setMobileTerminalSwitchingId(null);
+    }
+  }, [isCompactLayout, showDetail]);
+
+  useEffect(() => {
+    if (
+      !isCompactLayout ||
+      !showDetail ||
+      mobileTerminalSwitchingId === null ||
+      selectedPane?.terminal_id !== mobileTerminalSwitchingId
+    ) {
+      return;
+    }
+
+    const switchingId = mobileTerminalSwitchingId;
+    const timer = window.setTimeout(() => {
+      setMobileTerminalSwitchingId((current) => (current === switchingId ? null : current));
+    }, MOBILE_TERMINAL_SWITCH_CLEAR_MS);
+    return () => window.clearTimeout(timer);
+  }, [isCompactLayout, mobileTerminalSwitchingId, selectedPane?.terminal_id, showDetail]);
 
   const selectSpace = (workspaceId: string) => {
     setActiveSpaceId(workspaceId);
@@ -1161,6 +1189,7 @@ export function App() {
       data-compact={isCompactLayout ? "true" : "false"}
       data-touch={isTouchInput ? "true" : "false"}
       data-detail={isCompactLayout && showDetail ? "true" : "false"}
+      data-terminal-switching={mobileTerminalSwitchingId !== null ? "true" : "false"}
     >
       <aside className="sidebar" aria-label="Switcher">
         <Switcher
@@ -1350,6 +1379,7 @@ export function App() {
           />
         ) : renderTerminal ? (
           <TerminalView
+            key={selectedPane?.terminal_id ?? "empty-terminal"}
             pane={selectedPane}
             connectionKey={bridge.connectionKey}
             resumeToken={bridge.resumeToken}
