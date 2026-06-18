@@ -108,7 +108,7 @@ impl ApiClient {
             ack,
             EventStream {
                 reader,
-                pending_line: String::new(),
+                pending_line: Vec::new(),
             },
         ))
     }
@@ -177,7 +177,7 @@ fn set_timeout_best_effort(
 
 pub struct EventStream {
     reader: BufReader<LocalStream>,
-    pending_line: String,
+    pending_line: Vec<u8>,
 }
 
 impl EventStream {
@@ -245,11 +245,11 @@ fn read_json_line<T: DeserializeOwned>(
 }
 
 fn read_optional_json_line<T: DeserializeOwned>(
-    reader: &mut BufReader<LocalStream>,
-    pending_line: &mut String,
+    reader: &mut impl BufRead,
+    pending_line: &mut Vec<u8>,
 ) -> Result<Option<T>, ApiClientError> {
     let mut line = std::mem::take(pending_line);
-    let read = match reader.read_line(&mut line) {
+    let read = match reader.read_until(b'\n', &mut line) {
         Ok(read) => read,
         Err(err) if is_timeout_error(&err) => {
             *pending_line = line;
@@ -260,10 +260,10 @@ fn read_optional_json_line<T: DeserializeOwned>(
     if read == 0 {
         return Ok(None);
     }
-    if line.trim().is_empty() {
+    if line.iter().all(|byte| byte.is_ascii_whitespace()) {
         return Err(ApiClientError::EmptyResponse);
     }
-    serde_json::from_str(&line)
+    serde_json::from_slice(&line)
         .map(Some)
         .map_err(ApiClientError::Json)
 }
@@ -292,11 +292,66 @@ pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::io::Read;
 
     #[test]
     fn socket_path_target_uses_explicit_path() {
         let path = PathBuf::from("/tmp/herdr-test.sock");
         let client = ApiClient::for_socket_path(path.clone());
         assert_eq!(client.socket_path(), path);
+    }
+
+    #[test]
+    fn optional_json_line_preserves_split_utf8_across_timeout() {
+        let mut reader = BufReader::new(ScriptedRead::new(vec![
+            ReadStep::Bytes(b"{\"value\":\"caf\xc3"),
+            ReadStep::Error(io::ErrorKind::WouldBlock),
+            ReadStep::Bytes(b"\xa9\"}\n"),
+        ]));
+        let mut pending_line = Vec::new();
+
+        let first = read_optional_json_line::<serde_json::Value>(&mut reader, &mut pending_line);
+        assert!(matches!(
+            first,
+            Err(ApiClientError::Io(err)) if err.kind() == io::ErrorKind::WouldBlock
+        ));
+        assert_eq!(pending_line, b"{\"value\":\"caf\xc3");
+
+        let second =
+            read_optional_json_line::<serde_json::Value>(&mut reader, &mut pending_line).unwrap();
+        assert_eq!(second, Some(serde_json::json!({ "value": "café" })));
+        assert!(pending_line.is_empty());
+    }
+
+    enum ReadStep {
+        Bytes(&'static [u8]),
+        Error(io::ErrorKind),
+    }
+
+    struct ScriptedRead {
+        steps: VecDeque<ReadStep>,
+    }
+
+    impl ScriptedRead {
+        fn new(steps: Vec<ReadStep>) -> Self {
+            Self {
+                steps: steps.into(),
+            }
+        }
+    }
+
+    impl Read for ScriptedRead {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.steps.pop_front() {
+                Some(ReadStep::Bytes(bytes)) => {
+                    assert!(buf.len() >= bytes.len());
+                    buf[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                Some(ReadStep::Error(kind)) => Err(io::Error::new(kind, "scripted read error")),
+                None => Ok(0),
+            }
+        }
     }
 }

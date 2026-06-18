@@ -35,6 +35,7 @@ import type { MobileTerminalTapTarget } from "./mobileTerminalPrefs";
 import { addNativeBackHandler, addNativeKeyboardHideHandler, isNativeAndroid } from "./native";
 import { ActionMenu, ConfirmDialog, RenameDialog, useLongPress } from "./overlays";
 import type { MenuItem } from "./overlays";
+import { createSnapshotRefreshController } from "./refreshCoordinator";
 import { TerminalView } from "./TerminalView";
 import {
   aggregateStatus,
@@ -472,55 +473,23 @@ export function App() {
       };
     }
     const requestConnectionKey = bridge.connectionKey;
-    let refreshInFlight = false;
-    let refreshPending = false;
     const isCurrentConnection = () =>
       !disposed && isConnectionResultCurrent(connectionKeyRef.current, requestConnectionKey);
-    const runRefresh = () => {
-      const refreshGeneration = activityGenerationRef.current;
-      refreshInFlight = true;
-      void fetchSnapshot(bridge.httpUrl)
-        .then((next) => {
-          if (!isCurrentConnection()) {
-            return;
-          }
-          if (resyncBarrierGenerationRef.current > refreshGeneration) {
-            refreshPending = true;
-            return;
-          }
-          const patched = replayActivityMessages(
-            next,
-            activityLogRef.current,
-            refreshGeneration,
-          );
-          snapshotRef.current = patched;
-          setSnapshot(patched);
-          setSnapshotConnectionKey(requestConnectionKey);
-          setLoadState("ready");
-        })
-        .catch(() => {
-          if (isCurrentConnection()) {
-            setLoadState("error");
-          }
-        })
-        .finally(() => {
-          refreshInFlight = false;
-          if (isCurrentConnection() && refreshPending) {
-            refreshPending = false;
-            runRefresh();
-          }
-        });
-    };
-    const refresh = () => {
-      if (!isCurrentConnection()) {
-        return;
-      }
-      if (refreshInFlight) {
-        refreshPending = true;
-        return;
-      }
-      runRefresh();
-    };
+    const refreshController = createSnapshotRefreshController({
+      fetchSnapshot: () => fetchSnapshot(bridge.httpUrl),
+      getGeneration: () => activityGenerationRef.current,
+      getBarrierGeneration: () => resyncBarrierGenerationRef.current,
+      isCurrent: isCurrentConnection,
+      onError: () => setLoadState("error"),
+      applySnapshot: (next, refreshGeneration) => {
+        const patched = replayActivityMessages(next, activityLogRef.current, refreshGeneration);
+        snapshotRef.current = patched;
+        setSnapshot(patched);
+        setSnapshotConnectionKey(requestConnectionKey);
+        setLoadState("ready");
+      },
+    });
+    const refresh = () => refreshController.request();
     const requestActivityResync = () => {
       activityGenerationRef.current += 1;
       resyncBarrierGenerationRef.current = activityGenerationRef.current;

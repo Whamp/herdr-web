@@ -1956,8 +1956,7 @@ fn run_agent_activity_subscription(
 
     loop {
         if drain_resubscribe_signals(resubscribe_rx) {
-            let next_pane_ids = sorted_pane_ids(&current_panes(&state.api)?);
-            if next_pane_ids == pane_ids {
+            if !activity_resubscribe_needed(&pane_ids, &current_panes(&state.api)?) {
                 continue;
             }
             return Ok(());
@@ -1987,6 +1986,10 @@ fn sorted_pane_ids(panes: &[PaneInfo]) -> Vec<String> {
     pane_ids.sort();
     pane_ids.dedup();
     pane_ids
+}
+
+fn activity_resubscribe_needed(current_pane_ids: &[String], next_panes: &[PaneInfo]) -> bool {
+    sorted_pane_ids(next_panes) != current_pane_ids
 }
 
 fn wait_for_resubscribe_signal(resubscribe_rx: &mpsc::Receiver<()>) -> Result<(), BridgeError> {
@@ -2402,6 +2405,21 @@ mod tests {
     }
 
     #[test]
+    fn activity_resubscribe_needed_compares_sorted_pane_sets() {
+        let current = vec!["pane-1".to_string(), "pane-2".to_string()];
+
+        assert!(!activity_resubscribe_needed(
+            &current,
+            &[test_pane("pane-2"), test_pane("pane-1")]
+        ));
+        assert!(activity_resubscribe_needed(
+            &current,
+            &[test_pane("pane-1"), test_pane("pane-3")]
+        ));
+        assert!(activity_resubscribe_needed(&current, &[]));
+    }
+
+    #[test]
     fn structural_subscriptions_are_separate_from_activity_subscriptions() {
         let subscriptions = structural_event_subscriptions();
 
@@ -2462,6 +2480,27 @@ mod tests {
             "event": "pane.agent_status_changed",
             "data": { "pane_id": "pane-1" }
         })));
+    }
+
+    fn test_pane(pane_id: &str) -> PaneInfo {
+        PaneInfo {
+            pane_id: pane_id.to_string(),
+            terminal_id: format!("terminal-{pane_id}"),
+            workspace_id: "workspace-1".to_string(),
+            tab_id: "tab-1".to_string(),
+            focused: false,
+            cwd: None,
+            foreground_cwd: None,
+            label: None,
+            agent: None,
+            title: None,
+            display_agent: None,
+            agent_status: AgentStatus::Idle,
+            custom_status: None,
+            state_labels: HashMap::new(),
+            agent_session: None,
+            revision: 1,
+        }
     }
 
     #[test]
