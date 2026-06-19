@@ -10,8 +10,12 @@
   server chips and an all-agents sidebar overview.
 - Added a bridge `--allow-connect-origin` option so bridge-served web pages can opt into connecting
   to other trusted bridge origins without relaxing the default Content Security Policy.
+- Added a Host + workspace grouping option for agent lists.
 
 ### Changed
+
+- Moved sidebar agent/tab sorting and grouping controls into a vertical options menu, and removed
+  redundant host prefixes from grouped tab labels.
 
 ### Fixed
 

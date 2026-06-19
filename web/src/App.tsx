@@ -1,5 +1,6 @@
 import {
   ChevronLeft,
+  MoreVertical,
   PanelLeft,
   Plus,
   RefreshCw,
@@ -7,7 +8,7 @@ import {
   SplitSquareHorizontal,
   SplitSquareVertical,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, Dispatch, MutableRefObject, SetStateAction } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
@@ -87,7 +88,7 @@ type Scope = "space" | "all";
 type HostScope = "selected" | "all";
 type SidebarView = "agents" | "tabs";
 type AgentSort = "attention" | "status" | "workspace";
-type AgentGroup = "none" | "host" | "workspace";
+type AgentGroup = "none" | "host" | "workspace" | "hostWorkspace";
 type MenuKind = "space" | "tab" | "pane";
 type ScopedPaneRef = {
   bridgeId: BridgeId;
@@ -141,6 +142,7 @@ type ScopedTabWorkspace = ScopedWorkspace & {
 };
 type ScopedAgentGroup = {
   key: string;
+  bridgeId: BridgeId;
   label: string;
   bridgeColor?: string;
   status?: AgentStatus;
@@ -275,7 +277,8 @@ function parseDisplayPrefsValue(
     agentGroup:
       parsed.agentGroup === "none" ||
       parsed.agentGroup === "host" ||
-      parsed.agentGroup === "workspace"
+      parsed.agentGroup === "workspace" ||
+      parsed.agentGroup === "hostWorkspace"
         ? parsed.agentGroup
         : fallback.agentGroup,
     sidebarWidth:
@@ -352,7 +355,8 @@ function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
       agentGroup:
         parsed.agentGroup === "none" ||
         parsed.agentGroup === "host" ||
-        parsed.agentGroup === "workspace"
+        parsed.agentGroup === "workspace" ||
+        parsed.agentGroup === "hostWorkspace"
           ? parsed.agentGroup
           : fallback.agentGroup,
       sidebarWidth:
@@ -2327,7 +2331,7 @@ function orderedShortcutAgentPanes(
       ? snapshot.panes
       : snapshot.panes.filter((pane) => pane.workspace_id === activeWorkspaceId);
   const agentPanes = sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
-  if (agentGroup !== "workspace") {
+  if (agentGroup !== "workspace" && agentGroup !== "hostWorkspace") {
     return agentPanes;
   }
 
@@ -2672,6 +2676,7 @@ function Switcher({
     clearable?: boolean,
   ) => void;
 }) {
+  const [optionsMenu, setOptionsMenu] = useState<{ x: number; y: number } | null>(null);
   const selectedBridgeView = selectedBridgeId
     ? (bridgeViews.find((view) => view.runtime.id === selectedBridgeId) ?? null)
     : null;
@@ -2780,12 +2785,16 @@ function Switcher({
       return [];
     }
     const paneBuckets = new Map<string, ScopedAgentGroup>();
+    const groupByWorkspace = agentGroup === "workspace" || agentGroup === "hostWorkspace";
     for (const entry of agentPanes) {
-      const key =
-        agentGroup === "host" ? entry.bridgeId : `${entry.bridgeId}:${entry.pane.workspace_id}`;
+      const key = groupByWorkspace
+        ? `${entry.bridgeId}:${entry.pane.workspace_id}`
+        : entry.bridgeId;
       const label =
         agentGroup === "host"
           ? entry.bridgeLabel
+          : agentGroup === "hostWorkspace"
+            ? (entry.workspace?.label ?? "workspace")
           : hostScope === "all"
             ? `${entry.bridgeLabel} / ${entry.workspace?.label ?? "workspace"}`
             : (entry.workspace?.label ?? "workspace");
@@ -2793,9 +2802,10 @@ function Switcher({
         paneBuckets.get(key) ??
         {
           key,
+          bridgeId: entry.bridgeId,
           label,
           bridgeColor: entry.bridgeColor,
-          status: agentGroup === "workspace" ? entry.workspace?.agent_status : undefined,
+          status: groupByWorkspace ? entry.workspace?.agent_status : undefined,
           panes: [],
         };
       existing.panes.push(entry);
@@ -2822,7 +2832,21 @@ function Switcher({
     0,
   );
   const showGroupedHostContext = hostScope === "all";
-  const showGroupControl = sidebarView === "agents" || hostScope === "all" || scope === "all";
+  const showGroupControl =
+    sidebarView === "agents" || hostScope === "all" || scope === "all" || agentGroup !== "none";
+  const showOptionsControl = sidebarView === "agents" || showGroupControl;
+  const canCreateTabFromHeader = Boolean(
+    sidebarView === "tabs" &&
+      scope === "space" &&
+      activeSpace &&
+      selectedBridgeId,
+  );
+
+  useEffect(() => {
+    if (optionsMenu && !showOptionsControl) {
+      setOptionsMenu(null);
+    }
+  }, [optionsMenu, showOptionsControl]);
 
   let agentPaneIndex = 0;
   let paneIndex = 0;
@@ -2830,17 +2854,18 @@ function Switcher({
     group: ScopedTabWorkspace,
     showWorkspaceHeader: boolean,
     showContextInTabLabel: boolean,
+    showBridgeInWorkspaceHeader = showGroupedHostContext,
   ) => (
     <Fragment key={`${group.bridgeId}:${group.workspace.workspace_id}`}>
       {showWorkspaceHeader ? (
         <GroupHeader
           label={
-            showGroupedHostContext
+            showBridgeInWorkspaceHeader
               ? `${group.bridgeLabel} / ${group.workspace.label}`
               : group.workspace.label
           }
-          bridgeColor={showGroupedHostContext ? group.bridgeColor : undefined}
-          status={showGroupedHostContext ? undefined : group.workspace.agent_status}
+          bridgeColor={showBridgeInWorkspaceHeader ? group.bridgeColor : undefined}
+          status={showBridgeInWorkspaceHeader ? undefined : group.workspace.agent_status}
         />
       ) : null}
       {group.tabs.map(({ tab, panes: tabPanes }) => {
@@ -2886,7 +2911,7 @@ function Switcher({
     </Fragment>
   );
   const renderTabGroups = () => {
-    if (agentGroup === "host") {
+    if (agentGroup === "host" || (agentGroup === "hostWorkspace" && hostScope === "all")) {
       return hostBridgeViews.map((view) => {
         const groups = spaceGroups.filter(
           (group) => group.bridgeId === view.runtime.id && group.tabs.length > 0,
@@ -2897,13 +2922,13 @@ function Switcher({
         return (
           <Fragment key={view.runtime.id}>
             <GroupHeader label={view.runtime.label} bridgeColor={view.runtime.color} />
-            {groups.map((group) => renderTabWorkspaceGroup(group, true, false))}
+            {groups.map((group) => renderTabWorkspaceGroup(group, true, false, false))}
           </Fragment>
         );
       });
     }
 
-    if (agentGroup === "workspace") {
+    if (agentGroup === "workspace" || agentGroup === "hostWorkspace") {
       return spaceGroups.map((group) => renderTabWorkspaceGroup(group, true, false));
     }
 
@@ -2928,6 +2953,60 @@ function Switcher({
         onRetry={() => onRefreshBridge(view.runtime.id)}
       />
     ));
+  const showAgentRowBridgeLabel = showGroupedHostContext && agentGroup === "none";
+  const renderAgentGroupRows = () => {
+    const renderGroup = (group: ScopedAgentGroup) => (
+      <Fragment key={group.key}>
+        <GroupHeader
+          label={group.label}
+          bridgeColor={agentGroup === "host" ? group.bridgeColor : undefined}
+          status={agentGroup === "workspace" || agentGroup === "hostWorkspace" ? group.status : undefined}
+        />
+        {group.panes.map((entry) => (
+          <AgentRow
+            key={`${entry.bridgeId}:${entry.pane.pane_id}`}
+            index={agentPaneIndex++}
+            pane={entry.pane}
+            workspace={entry.workspace}
+            tabLabel={entry.tabLabel}
+            bridgeLabel={showAgentRowBridgeLabel ? entry.bridgeLabel : undefined}
+            active={
+              entry.bridgeId === selectedBridgeId &&
+              entry.pane.pane_id === selectedPane?.pane_id
+            }
+            onSelect={() => onSelectPane(entry.bridgeId, entry.pane)}
+            onMenu={(x, y) =>
+              onScopedMenu(
+                "pane",
+                entry.bridgeId,
+                entry.pane.pane_id,
+                paneTitle(entry.pane),
+                x,
+                y,
+              )
+            }
+          />
+        ))}
+      </Fragment>
+    );
+
+    if (agentGroup !== "hostWorkspace" || hostScope !== "all") {
+      return agentGroups.map(renderGroup);
+    }
+
+    return hostBridgeViews.map((view) => {
+      const groups = agentGroups.filter((group) => group.bridgeId === view.runtime.id);
+      if (groups.length === 0) {
+        return null;
+      }
+      return (
+        <Fragment key={view.runtime.id}>
+          <GroupHeader label={view.runtime.label} bridgeColor={view.runtime.color} />
+          {groups.map(renderGroup)}
+        </Fragment>
+      );
+    });
+  };
 
   return (
     <>
@@ -3174,56 +3253,35 @@ function Switcher({
                         : (activeSpace?.label ?? "tabs")}
                 </span>
                 <span className="sec-rule" />
-                {sidebarView === "agents" ? (
-                  <div className="agent-list-controls">
-                    <label className="sort-control">
-                      <span>sort</span>
-                      <select
-                        value={agentSort}
-                        onChange={(event) => onAgentSort(event.currentTarget.value as AgentSort)}
-                      >
-                        <option value="attention">attention</option>
-                        <option value="status">status</option>
-                        <option value="workspace">workspace</option>
-                      </select>
-                    </label>
-                    <label className="sort-control">
-                      <span>group</span>
-                      <select
-                        value={agentGroup}
-                        onChange={(event) => onAgentGroup(event.currentTarget.value as AgentGroup)}
-                      >
-                        <option value="none">none</option>
-                        <option value="host">host</option>
-                        <option value="workspace">workspace</option>
-                      </select>
-                    </label>
-                  </div>
-                ) : showGroupControl ? (
-                  <div className="agent-list-controls">
-                    <label className="sort-control">
-                      <span>group</span>
-                      <select
-                        value={agentGroup}
-                        onChange={(event) => onAgentGroup(event.currentTarget.value as AgentGroup)}
-                      >
-                        <option value="none">none</option>
-                        <option value="host">host</option>
-                        <option value="workspace">workspace</option>
-                      </select>
-                    </label>
-                  </div>
-                ) : scope === "space" && activeSpace && selectedBridgeId ? (
+                {canCreateTabFromHeader ? (
                   <button
                     className="sec-add"
                     type="button"
                     aria-label="New tab"
                     title="New tab"
                     onClick={() =>
-                      selectedBridgeId ? onCreateTab(selectedBridgeId, activeSpace.workspace_id) : undefined
+                      selectedBridgeId && activeSpace
+                        ? onCreateTab(selectedBridgeId, activeSpace.workspace_id)
+                        : undefined
                     }
                   >
                     <Plus size={14} />
+                  </button>
+                ) : null}
+                {showOptionsControl ? (
+                  <button
+                    className="sec-add"
+                    type="button"
+                    aria-label={`${sidebarView === "agents" ? "Agent" : "Tab"} list options`}
+                    title={`${sidebarView === "agents" ? "Agent" : "Tab"} list options`}
+                    aria-haspopup="dialog"
+                    aria-expanded={optionsMenu ? "true" : "false"}
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setOptionsMenu({ x: rect.right, y: rect.bottom + 4 });
+                    }}
+                  >
+                    <MoreVertical size={14} />
                   </button>
                 ) : null}
               </div>
@@ -3238,40 +3296,7 @@ function Switcher({
                   <>
                     {renderDisconnectedBridgeRows()}
                     {agentGroup !== "none"
-                      ? agentGroups.map((group) => (
-                          <Fragment key={group.key}>
-                            <GroupHeader
-                              label={group.label}
-                              bridgeColor={agentGroup === "host" ? group.bridgeColor : undefined}
-                              status={agentGroup === "workspace" ? group.status : undefined}
-                            />
-                            {group.panes.map((entry) => (
-                              <AgentRow
-                                key={`${entry.bridgeId}:${entry.pane.pane_id}`}
-                                index={agentPaneIndex++}
-                                pane={entry.pane}
-                                workspace={entry.workspace}
-                                tabLabel={entry.tabLabel}
-                                bridgeLabel={showGroupedHostContext ? entry.bridgeLabel : undefined}
-                                active={
-                                  entry.bridgeId === selectedBridgeId &&
-                                  entry.pane.pane_id === selectedPane?.pane_id
-                                }
-                                onSelect={() => onSelectPane(entry.bridgeId, entry.pane)}
-                                onMenu={(x, y) =>
-                                  onScopedMenu(
-                                    "pane",
-                                    entry.bridgeId,
-                                    entry.pane.pane_id,
-                                    paneTitle(entry.pane),
-                                    x,
-                                    y,
-                                  )
-                                }
-                              />
-                            ))}
-                          </Fragment>
-                        ))
+                      ? renderAgentGroupRows()
                       : agentPanes.map((entry, index) => (
                           <AgentRow
                             key={`${entry.bridgeId}:${entry.pane.pane_id}`}
@@ -3279,7 +3304,7 @@ function Switcher({
                             pane={entry.pane}
                             workspace={entry.workspace}
                             tabLabel={entry.tabLabel}
-                            bridgeLabel={showGroupedHostContext ? entry.bridgeLabel : undefined}
+                            bridgeLabel={showAgentRowBridgeLabel ? entry.bridgeLabel : undefined}
                             active={
                               entry.bridgeId === selectedBridgeId &&
                               entry.pane.pane_id === selectedPane?.pane_id
@@ -3316,7 +3341,133 @@ function Switcher({
           </>
         )}
       </div>
+      {optionsMenu ? (
+        <SidebarOptionsMenu
+          x={optionsMenu.x}
+          y={optionsMenu.y}
+          sidebarView={sidebarView}
+          showGroup={showGroupControl}
+          agentSort={agentSort}
+          agentGroup={agentGroup}
+          onAgentSort={onAgentSort}
+          onAgentGroup={onAgentGroup}
+          onClose={() => setOptionsMenu(null)}
+        />
+      ) : null}
     </>
+  );
+}
+
+function SidebarOptionsMenu({
+  x,
+  y,
+  sidebarView,
+  showGroup,
+  agentSort,
+  agentGroup,
+  onAgentSort,
+  onAgentGroup,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  sidebarView: SidebarView;
+  showGroup: boolean;
+  agentSort: AgentSort;
+  agentGroup: AgentGroup;
+  onAgentSort: (sort: AgentSort) => void;
+  onAgentGroup: (group: AgentGroup) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const showSort = sidebarView === "agents";
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) {
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let left = x - rect.width;
+    let top = y;
+    if (left < margin) {
+      left = margin;
+    }
+    if (top + rect.height > window.innerHeight - margin) {
+      top = window.innerHeight - margin - rect.height;
+    }
+    setPos({ left, top: Math.max(margin, top) });
+    el.focus();
+  }, [x, y]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    const removeNativeBackHandler = addNativeBackHandler(() => {
+      onClose();
+      return true;
+    });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      removeNativeBackHandler();
+    };
+  }, [onClose]);
+
+  return (
+    <div className="overlay-root">
+      <button
+        className="overlay-scrim overlay-scrim-clear"
+        type="button"
+        aria-label="Close list options"
+        onClick={onClose}
+      />
+      <div
+        ref={ref}
+        className="sidebar-options-menu"
+        role="dialog"
+        aria-label={`${sidebarView === "agents" ? "Agent" : "Tab"} list options`}
+        tabIndex={-1}
+        style={{
+          left: pos?.left ?? x,
+          top: pos?.top ?? y,
+          visibility: pos ? "visible" : "hidden",
+        }}
+      >
+        {showSort ? (
+          <label className="sidebar-option-field">
+            <span>Sort</span>
+            <select
+              value={agentSort}
+              onChange={(event) => onAgentSort(event.currentTarget.value as AgentSort)}
+            >
+              <option value="attention">Attention</option>
+              <option value="status">Status</option>
+              <option value="workspace">Workspace</option>
+            </select>
+          </label>
+        ) : null}
+        {showGroup ? (
+          <label className="sidebar-option-field">
+            <span>Group</span>
+            <select
+              value={agentGroup}
+              onChange={(event) => onAgentGroup(event.currentTarget.value as AgentGroup)}
+            >
+              <option value="none">None</option>
+              <option value="host">Host</option>
+              <option value="workspace">Workspace</option>
+              <option value="hostWorkspace">Host + workspace</option>
+            </select>
+          </label>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
