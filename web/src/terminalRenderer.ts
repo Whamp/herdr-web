@@ -13,6 +13,12 @@ import {
   startTouchSelectionPlacement,
 } from "./terminalTouchSelection";
 import type { TerminalTouchSelectionState } from "./terminalTouchSelection";
+import { DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS } from "./mobileTerminalPrefs";
+import type {
+  MobileLongPressBehavior,
+  MobileTouchSelectionEndpointTimeoutMs,
+} from "./mobileTerminalPrefs";
+import { DEFAULT_TERMINAL_FONT_SIZE_PX } from "./terminalPrefs";
 
 const TERMINAL_FONT_FAMILY =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
@@ -20,14 +26,17 @@ const TERMINAL_TEXT_INPUT_TAP_GRACE_MS = 4000;
 const TOUCH_SELECTION_LONG_PRESS_MS = 600;
 const TOUCH_SELECTION_TOLERANCE_PX = 10;
 const TOUCH_SELECTION_SCROLL_INTENT_PX = 5;
-const TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS = 1500;
+const TOUCH_SELECTION_CLEAR_DELAY_MS = 1200;
 const TOUCH_COMPAT_MOUSE_SUPPRESS_MS = 1200;
 const TOUCH_LOUPE_WIDTH_PX = 132;
 const TOUCH_LOUPE_HEIGHT_PX = 82;
 const TOUCH_LOUPE_SOURCE_WIDTH_PX = 70;
 const TOUCH_LOUPE_SOURCE_HEIGHT_PX = 44;
-const TOUCH_LOUPE_OFFSET_Y_PX = 108;
-const TOUCH_ENDPOINT_SIZE_PX = 46;
+const TOUCH_LOUPE_OFFSET_Y_PX = 132;
+const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
+const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
+const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
+const TOUCH_ENDPOINT_HANDLE_OFFSET_Y_PX = TOUCH_LOUPE_TARGET_OFFSET_Y_PX;
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -92,9 +101,14 @@ export type TerminalRenderer = {
   onInput(callback: (data: string) => void): () => void;
   onScroll(callback: (lines: number) => void): () => void;
   setTapFocusHandler(callback: (() => TerminalTapFocusResult) | null): void;
-  setMobileTouchSelection(enabled: boolean, callback: ((event: MobileTerminalTouchEvent) => void) | null): void;
+  setMobileTouchSelection(
+    behavior: MobileLongPressBehavior,
+    callback: ((event: MobileTerminalTouchEvent) => void) | null,
+    endpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs,
+  ): void;
   fit(): TerminalSize;
   refreshMetrics(): TerminalSize;
+  setFontSize(fontSizePx: number): TerminalSize | null;
   focus(): void;
   focusTextInput(): void;
   clearSelection(): void;
@@ -111,9 +125,16 @@ export class GhosttyRenderer implements TerminalRenderer {
   #touchCleanup: (() => void) | null = null;
   #mobileInputCleanup: (() => void) | null = null;
   #tapFocusHandler: (() => TerminalTapFocusResult) | null = null;
-  #mobileTouchSelectionEnabled = false;
+  #mobileLongPressBehavior: MobileLongPressBehavior = "off";
   #mobileTouchSelectionHandler: ((event: MobileTerminalTouchEvent) => void) | null = null;
+  #mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs =
+    DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS;
   #textInputTapGraceUntil = 0;
+  #fontSizePx: number;
+
+  constructor(fontSizePx = DEFAULT_TERMINAL_FONT_SIZE_PX) {
+    this.#fontSizePx = fontSizePx;
+  }
 
   async mount(container: HTMLElement) {
     const { FitAddon, Terminal } = await loadGhosttyModule();
@@ -123,7 +144,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       convertEol: false,
       cursorBlink: true,
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 13,
+      fontSize: this.#fontSizePx,
       scrollback: 8000,
       smoothScrollDuration: 0,
       theme: {
@@ -198,10 +219,15 @@ export class GhosttyRenderer implements TerminalRenderer {
     this.#tapFocusHandler = callback;
   }
 
-  setMobileTouchSelection(enabled: boolean, callback: ((event: MobileTerminalTouchEvent) => void) | null) {
-    const changed = this.#mobileTouchSelectionEnabled !== enabled;
-    this.#mobileTouchSelectionEnabled = enabled;
+  setMobileTouchSelection(
+    behavior: MobileLongPressBehavior,
+    callback: ((event: MobileTerminalTouchEvent) => void) | null,
+    endpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs,
+  ) {
+    const changed = this.#mobileLongPressBehavior !== behavior;
+    this.#mobileLongPressBehavior = behavior;
     this.#mobileTouchSelectionHandler = callback;
+    this.#mobileTouchSelectionEndpointTimeoutMs = endpointTimeoutMs;
     if (changed && this.#terminal && this.#container) {
       this.#installTouchHandlers();
     }
@@ -219,8 +245,17 @@ export class GhosttyRenderer implements TerminalRenderer {
   refreshMetrics() {
     const terminal = this.#requireTerminal();
     terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
+    terminal.options.fontSize = this.#fontSizePx;
     terminal.renderer?.remeasureFont();
     return this.fit();
+  }
+
+  setFontSize(fontSizePx: number) {
+    this.#fontSizePx = fontSizePx;
+    if (!this.#terminal) {
+      return null;
+    }
+    return this.refreshMetrics();
   }
 
   focus() {
@@ -329,7 +364,12 @@ export class GhosttyRenderer implements TerminalRenderer {
     let pendingTouchLines = 0;
     let suppressMouseUntil = 0;
     let selectionTimer: number | null = null;
+    let selectingFromTouch = false;
+    let simpleSelectionStart: TerminalCellPosition | null = null;
+    let simpleSelectionEnd: TerminalCellPosition | null = null;
+    let selectionClearTimer: number | null = null;
     let endpointTimer: number | null = null;
+    let loupeRenderFrame: number | null = null;
     let selectionState: TerminalTouchSelectionState = idleTouchSelectionState;
     let endpointBubble: HTMLDivElement | null = null;
     let loupe: { root: HTMLDivElement; canvas: HTMLCanvasElement } | null = null;
@@ -352,17 +392,37 @@ export class GhosttyRenderer implements TerminalRenderer {
         endpointTimer = null;
       }
     };
+    const clearLoupeRenderFrame = () => {
+      if (loupeRenderFrame !== null) {
+        window.cancelAnimationFrame(loupeRenderFrame);
+        loupeRenderFrame = null;
+      }
+    };
+    const clearSelectionClearTimer = () => {
+      if (selectionClearTimer !== null) {
+        window.clearTimeout(selectionClearTimer);
+        selectionClearTimer = null;
+      }
+    };
+    const stopSimpleTouchSelection = () => {
+      clearSelectionTimer();
+      selectingFromTouch = false;
+      simpleSelectionStart = null;
+      simpleSelectionEnd = null;
+    };
     const removeEndpointBubble = () => {
       endpointBubble?.remove();
       endpointBubble = null;
     };
     const removeLoupe = () => {
+      clearLoupeRenderFrame();
       loupe?.root.remove();
       loupe = null;
     };
     const resetTouchSelection = (clearTerminalSelection = true) => {
       clearSelectionTimer();
       clearEndpointTimer();
+      stopSimpleTouchSelection();
       selectionState = idleTouchSelectionState;
       removeEndpointBubble();
       removeLoupe();
@@ -382,6 +442,21 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
     const positionFromTouch = (touch: Touch) => touchCellPosition(terminal, touch.clientX, touch.clientY);
     const clientFromTouch = (touch: Touch) => ({ clientX: touch.clientX, clientY: touch.clientY });
+    const loupePositionFromClient = (clientX: number, clientY: number) =>
+      touchCellPosition(terminal, clientX, clientY - TOUCH_LOUPE_TARGET_OFFSET_Y_PX);
+    const loupePositionFromTouch = (touch: Touch) =>
+      loupePositionFromClient(touch.clientX, touch.clientY);
+    const endpointPositionFromTouch = (touch: Touch) =>
+      touchCellPosition(terminal, touch.clientX, touch.clientY - TOUCH_ENDPOINT_HANDLE_OFFSET_Y_PX);
+    const updateSimpleTouchSelection = (touch: Touch) => {
+      if (!simpleSelectionStart) {
+        return;
+      }
+      const current = positionFromTouch(touch);
+      const range = terminalSelectionRange(simpleSelectionStart, current, terminal.cols);
+      simpleSelectionEnd = current;
+      selectTerminalViewportRange(terminal, range.from, range.to);
+    };
     const selectCurrentTouchRange = () => {
       if (selectionState.phase === "idle") {
         return;
@@ -470,16 +545,52 @@ export class GhosttyRenderer implements TerminalRenderer {
         TOUCH_LOUPE_WIDTH_PX,
         TOUCH_LOUPE_HEIGHT_PX,
       );
-      const caretX = ((centerX - sxCss) / sourceWidth) * TOUCH_LOUPE_WIDTH_PX;
-      ctx.strokeStyle = "rgba(245, 224, 220, 0.95)";
+      const markerLeft = ((point.col * cellWidth - sxCss) / sourceWidth) * TOUCH_LOUPE_WIDTH_PX;
+      const markerRight = (((point.col + 1) * cellWidth - sxCss) / sourceWidth) * TOUCH_LOUPE_WIDTH_PX;
+      const markerY = (((point.row + 1) * cellHeight - syCss) / sourceHeight) * TOUCH_LOUPE_HEIGHT_PX - 2;
+      const anchorLeft = clampNumber(markerLeft, 4, TOUCH_LOUPE_WIDTH_PX - 4);
+      const anchorRight = clampNumber(markerRight, 4, TOUCH_LOUPE_WIDTH_PX - 4);
+      const anchorY = clampNumber(markerY, 8, TOUCH_LOUPE_HEIGHT_PX - 18);
+      const anchorCenter = (anchorLeft + anchorRight) / 2;
+      const markerBottom = TOUCH_LOUPE_HEIGHT_PX - 2;
+      const markerColor = cssColor(
+        container,
+        "--terminal-touch-marker",
+        cssColor(container, "--accent", "#b4befe"),
+      );
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(17, 17, 27, 0.78)";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(anchorLeft, anchorY + 1);
+      ctx.lineTo(anchorRight, anchorY + 1);
+      ctx.moveTo(anchorCenter, anchorY + 1);
+      ctx.lineTo(anchorCenter, markerBottom);
+      ctx.stroke();
+      ctx.strokeStyle = markerColor;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(caretX, 10);
-      ctx.lineTo(caretX, TOUCH_LOUPE_HEIGHT_PX - 10);
+      ctx.moveTo(anchorLeft, anchorY);
+      ctx.lineTo(anchorRight, anchorY);
+      ctx.moveTo(anchorCenter, anchorY);
+      ctx.lineTo(anchorCenter, markerBottom);
       ctx.stroke();
+      ctx.lineCap = "butt";
       ctx.strokeStyle = "rgba(17, 17, 27, 0.85)";
       ctx.lineWidth = 1;
       ctx.strokeRect(1, 1, TOUCH_LOUPE_WIDTH_PX - 2, TOUCH_LOUPE_HEIGHT_PX - 2);
+    };
+    const renderLoupeAfterTerminalPaint = (
+      point: TerminalCellPosition,
+      client: { clientX: number; clientY: number },
+    ) => {
+      clearLoupeRenderFrame();
+      loupeRenderFrame = window.requestAnimationFrame(() => {
+        loupeRenderFrame = null;
+        if (selectionState.phase === "dragging-endpoint") {
+          renderLoupe(point, client);
+        }
+      });
     };
     const ensureEndpointBubble = () => {
       if (endpointBubble) {
@@ -489,6 +600,11 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointBubble.className = "terminal-touch-endpoint";
       endpointBubble.setAttribute("aria-hidden", "true");
       endpointBubble.setAttribute("data-hint", "Drag");
+      const line = document.createElement("span");
+      line.className = "terminal-touch-endpoint-line";
+      const knob = document.createElement("span");
+      knob.className = "terminal-touch-endpoint-knob";
+      endpointBubble.append(line, knob);
       container.append(endpointBubble);
       return endpointBubble;
     };
@@ -498,23 +614,38 @@ export class GhosttyRenderer implements TerminalRenderer {
         bubble,
         client.clientX,
         client.clientY,
-        TOUCH_ENDPOINT_SIZE_PX,
-        TOUCH_ENDPOINT_SIZE_PX,
-        TOUCH_ENDPOINT_SIZE_PX / 2,
+        TOUCH_ENDPOINT_HIT_WIDTH_PX,
+        TOUCH_ENDPOINT_HIT_HEIGHT_PX,
+        0,
       );
     };
     const startTouchSelection = () => {
       selectionTimer = null;
       if (
-        !this.#mobileTouchSelectionEnabled ||
+        this.#mobileLongPressBehavior === "off" ||
         this.#hasMouseTracking(terminal) ||
         touchStartX === null ||
         touchStartY === null
       ) {
         return;
       }
-      const position = touchCellPosition(terminal, touchStartX, touchStartY);
       const client = { clientX: touchStartX, clientY: touchStartY };
+      if (this.#mobileLongPressBehavior === "copy") {
+        const position = touchCellPosition(terminal, touchStartX, touchStartY);
+        simpleSelectionStart = position;
+        simpleSelectionEnd = position;
+        selectingFromTouch = true;
+        touchMoved = true;
+        suppressMouseEvents();
+        terminal.textarea?.blur();
+        terminal.clearSelection();
+        selectTerminalViewportRange(terminal, position, position);
+        if (navigator.vibrate) {
+          navigator.vibrate(35);
+        }
+        return;
+      }
+      const position = loupePositionFromClient(touchStartX, touchStartY);
       selectionState = startTouchSelectionPlacement(position, client);
       touchMoved = true;
       suppressMouseEvents();
@@ -527,7 +658,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
     };
     const updateStartPlacement = (touch: Touch) => {
-      const position = positionFromTouch(touch);
+      const position = loupePositionFromTouch(touch);
       const client = clientFromTouch(touch);
       selectionState = moveTouchSelectionPlacement(selectionState, position, client);
       selectCurrentTouchRange();
@@ -544,7 +675,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       clearEndpointTimer();
       endpointTimer = window.setTimeout(() => {
         resetTouchSelection(true);
-      }, TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS);
+      }, this.#mobileTouchSelectionEndpointTimeoutMs);
     };
     const beginEndpointDrag = (touch: Touch) => {
       clearEndpointTimer();
@@ -554,32 +685,35 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointDragStartX = touch.clientX;
       endpointDragStartY = touch.clientY;
       endpointDragMoved = false;
+      const position = endpointPositionFromTouch(touch);
       const client = clientFromTouch(touch);
-      selectionState = beginTouchSelectionEndpointDrag(selectionState, selectionState.endpoint, client);
+      selectionState = beginTouchSelectionEndpointDrag(selectionState, position, client);
       if (selectionState.phase !== "dragging-endpoint") {
         return;
       }
       selectCurrentTouchRange();
-      positionEndpointBubble(client);
+      positionEndpointBubble(cellClientCenter(selectionState.endpoint));
       renderLoupe(selectionState.endpoint, client);
+      renderLoupeAfterTerminalPaint(selectionState.endpoint, client);
       suppressMouseEvents();
       terminal.textarea?.blur();
     };
     const updateEndpointDrag = (touch: Touch, force = false) => {
+      clearLoupeRenderFrame();
       if (endpointDragStartX !== null && endpointDragStartY !== null) {
         const deltaX = touch.clientX - endpointDragStartX;
         const deltaY = touch.clientY - endpointDragStartY;
         if (!endpointDragMoved && Math.hypot(deltaX, deltaY) <= TOUCH_SELECTION_TOLERANCE_PX && !force) {
-          positionEndpointBubble(clientFromTouch(touch));
+          positionEndpointBubble(cellClientCenter(endpointPositionFromTouch(touch)));
           return;
         }
         endpointDragMoved = true;
       }
-      const position = positionFromTouch(touch);
+      const position = endpointPositionFromTouch(touch);
       const client = clientFromTouch(touch);
       selectionState = moveTouchSelectionEndpoint(selectionState, position, client);
       selectCurrentTouchRange();
-      positionEndpointBubble(client);
+      positionEndpointBubble(cellClientCenter(position));
       renderLoupe(position, client);
     };
     const completeEndpointDrag = (event: TouchEvent) => {
@@ -601,9 +735,32 @@ export class GhosttyRenderer implements TerminalRenderer {
         terminal.textarea?.blur();
       }
     };
+    const completeSimpleTouchSelection = (event: TouchEvent) => {
+      preventTouchEvent(event);
+      suppressMouseEvents();
+      const selectedText =
+        simpleSelectionStart && simpleSelectionEnd
+          ? terminalSelectedTextFromViewportRange(terminal, simpleSelectionStart, simpleSelectionEnd)
+          : "";
+      stopSimpleTouchSelection();
+      terminal.textarea?.blur();
+      if (selectedText.trim() && this.#mobileTouchSelectionHandler) {
+        this.#mobileTouchSelectionHandler({ type: "selection", text: selectedText });
+        clearSelectionClearTimer();
+        selectionClearTimer = window.setTimeout(() => {
+          selectionClearTimer = null;
+          terminal.clearSelection();
+        }, TOUCH_SELECTION_CLEAR_DELAY_MS);
+      }
+    };
     const touchLinkText = (event: TouchEvent) => {
       const mouseTracking = this.#hasMouseTracking(terminal);
-      if (!this.#mobileTouchSelectionHandler || event.changedTouches.length === 0 || mouseTracking) {
+      if (
+        this.#mobileLongPressBehavior === "off" ||
+        !this.#mobileTouchSelectionHandler ||
+        event.changedTouches.length === 0 ||
+        mouseTracking
+      ) {
         return null;
       }
       const touch = event.changedTouches[0];
@@ -641,6 +798,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       clearSelectionTimer();
       if (selectionState.phase === "waiting-endpoint") {
         if (
+          this.#mobileLongPressBehavior === "loupe" &&
           event.touches.length === 1 &&
           endpointBubble &&
           event.target instanceof Node &&
@@ -654,7 +812,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       if (event.touches.length === 1) {
         const mouseTracking = this.#hasMouseTracking(terminal);
-        if (this.#mobileTouchSelectionEnabled && !mouseTracking) {
+        if (this.#mobileLongPressBehavior !== "off" && !mouseTracking) {
           preventTouchEvent(event);
           suppressMouseEvents(TOUCH_SELECTION_LONG_PRESS_MS + TOUCH_COMPAT_MOUSE_SUPPRESS_MS);
         }
@@ -664,7 +822,11 @@ export class GhosttyRenderer implements TerminalRenderer {
         lastTouchY = touch.clientY;
         touchMoved = false;
         touchScrolled = false;
-        if (this.#mobileTouchSelectionEnabled && !mouseTracking) {
+        selectingFromTouch = false;
+        simpleSelectionStart = null;
+        simpleSelectionEnd = null;
+        if (this.#mobileLongPressBehavior !== "off" && !mouseTracking) {
+          clearSelectionClearTimer();
           selectionTimer = window.setTimeout(startTouchSelection, TOUCH_SELECTION_LONG_PRESS_MS);
         }
       }
@@ -684,6 +846,11 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       if (selectionState.phase === "placing-start" && event.touches.length === 1) {
         updateStartPlacement(event.touches[0]);
+        preventTouchEvent(event);
+        return;
+      }
+      if (selectingFromTouch && event.touches.length === 1) {
+        updateSimpleTouchSelection(event.touches[0]);
         preventTouchEvent(event);
         return;
       }
@@ -729,6 +896,12 @@ export class GhosttyRenderer implements TerminalRenderer {
         if (selectionState.phase !== "idle") {
           resetTouchSelection(true);
         }
+        stopSimpleTouchSelection();
+        resetTouchTracking();
+        return;
+      }
+      if (selectingFromTouch) {
+        completeSimpleTouchSelection(event);
         resetTouchTracking();
         return;
       }
@@ -767,7 +940,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
     const onTouchCancel = () => {
       clearSelectionTimer();
-      if (selectionState.phase !== "idle") {
+      if (selectionState.phase !== "idle" || selectingFromTouch) {
         suppressMouseEvents();
       }
       resetTouchSelection(true);
@@ -805,7 +978,7 @@ export class GhosttyRenderer implements TerminalRenderer {
 
     container.addEventListener("touchstart", onTouchStart, {
       capture: true,
-      passive: !this.#mobileTouchSelectionEnabled,
+      passive: this.#mobileLongPressBehavior === "off",
     });
     container.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
     container.addEventListener("touchend", onTouchEnd, { capture: true });
@@ -816,6 +989,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     this.#touchCleanup = () => {
       resetTouchSelection(true);
       resetTouchTracking();
+      clearSelectionClearTimer();
       container.removeEventListener("touchstart", onTouchStart, { capture: true });
       container.removeEventListener("touchmove", onTouchMove, { capture: true });
       container.removeEventListener("touchend", onTouchEnd, { capture: true });
@@ -1216,6 +1390,11 @@ function clampInteger(value: number, min: number, max: number) {
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function cssColor(element: Element, property: string, fallback: string) {
+  const value = getComputedStyle(element).getPropertyValue(property).trim();
+  return value || fallback;
 }
 
 function normalizeWheelLines(event: WheelEvent, rows: number, sensitivity: number) {

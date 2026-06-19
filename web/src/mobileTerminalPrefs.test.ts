@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
   DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
-  DEFAULT_MOBILE_TOUCH_SELECTION,
+  DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
   DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
+  MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_OPTIONS_MS,
+  parseMobileLongPressBehavior,
   parseMobileKeyboardHideRefit,
-  parseMobileTouchSelection,
+  parseMobileTouchSelectionEndpointTimeoutMs,
   parseMobileTerminalTapTarget,
 } from "./mobileTerminalPrefs";
 
@@ -21,10 +24,27 @@ describe("mobile terminal preferences", () => {
     expect(parseMobileTerminalTapTarget(null)).toBe(DEFAULT_MOBILE_TERMINAL_TAP_TARGET);
   });
 
-  it("parses the mobile touch selection flag", () => {
-    expect(parseMobileTouchSelection(true)).toBe(true);
-    expect(parseMobileTouchSelection(false)).toBe(false);
-    expect(parseMobileTouchSelection("true")).toBe(DEFAULT_MOBILE_TOUCH_SELECTION);
+  it("parses supported long-press behaviors", () => {
+    expect(parseMobileLongPressBehavior("off")).toBe("off");
+    expect(parseMobileLongPressBehavior("copy")).toBe("copy");
+    expect(parseMobileLongPressBehavior("loupe")).toBe("loupe");
+  });
+
+  it("falls back for unknown long-press behaviors", () => {
+    expect(parseMobileLongPressBehavior(true)).toBe(DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR);
+    expect(parseMobileLongPressBehavior("selection")).toBe(DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR);
+  });
+
+  it("parses the mobile touch selection endpoint timeout", () => {
+    for (const timeoutMs of MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_OPTIONS_MS) {
+      expect(parseMobileTouchSelectionEndpointTimeoutMs(timeoutMs)).toBe(timeoutMs);
+    }
+    expect(parseMobileTouchSelectionEndpointTimeoutMs(1250)).toBe(
+      DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
+    );
+    expect(parseMobileTouchSelectionEndpointTimeoutMs("3000")).toBe(
+      DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
+    );
   });
 
   it("parses the keyboard-hide refit flag", () => {

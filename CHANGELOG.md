@@ -6,10 +6,12 @@
 
 ### Added
 
+- Added a Terminal font size setting.
+
 ### Changed
 
-- Changed mobile terminal long-press selection to use a two-stage loupe and endpoint flow; normal
-  selections copy immediately, selected URLs keep the action sheet, and tapped HTTP(S) URLs open
+- Added a Mobile setting for long-press behavior, with Off, Copy, and Loupe modes; Loupe uses a
+  two-stage endpoint flow, selected URLs keep the action sheet, and tapped HTTP(S) URLs open
   directly.
 
 ### Fixed

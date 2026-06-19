@@ -24,7 +24,13 @@ import {
 } from "./terminalInputTransport";
 import type { TerminalInputTransport } from "./terminalInputTransport";
 import { DEFAULT_TERMINAL_OUTPUT_COALESCE_MS } from "./terminalOutputCoalescing";
-import type { MobileTerminalTapTarget } from "./mobileTerminalPrefs";
+import { DEFAULT_TERMINAL_FONT_SIZE_PX } from "./terminalPrefs";
+import { DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS } from "./mobileTerminalPrefs";
+import type {
+  MobileLongPressBehavior,
+  MobileTerminalTapTarget,
+  MobileTouchSelectionEndpointTimeoutMs,
+} from "./mobileTerminalPrefs";
 import type { PaneInfo } from "./types";
 
 type Props = {
@@ -39,10 +45,14 @@ type Props = {
   scrollSensitivity?: number;
   /** Supplemental browser-native input controls for narrow touch screens. */
   mobileControls?: boolean;
+  /** Terminal renderer font size in CSS pixels. */
+  terminalFontSizePx?: number;
   /** Where terminal taps should send focus on mobile. */
   mobileTapTarget?: MobileTerminalTapTarget;
-  /** Enables long-press drag selection on touch terminals. */
-  mobileTouchSelection?: boolean;
+  /** Gesture behavior for long-presses on touch terminals. */
+  mobileLongPressBehavior?: MobileLongPressBehavior;
+  /** How long the loupe endpoint waits for a second drag. */
+  mobileTouchSelectionEndpointTimeoutMs?: MobileTouchSelectionEndpointTimeoutMs;
   /** Browser-to-bridge transport for terminal input payloads. */
   terminalInputTransport?: TerminalInputTransport;
   /** Delay for coalescing short terminal input payloads. Zero disables batching. */
@@ -87,8 +97,10 @@ export function TerminalView({
   autoFocus = true,
   scrollSensitivity = 1,
   mobileControls = false,
+  terminalFontSizePx = DEFAULT_TERMINAL_FONT_SIZE_PX,
   mobileTapTarget = "command-input",
-  mobileTouchSelection = false,
+  mobileLongPressBehavior = "off",
+  mobileTouchSelectionEndpointTimeoutMs = DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
   terminalInputTransport = "json",
   terminalInputBatchDelayMs = 0,
   terminalOutputCoalesceMs = DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
@@ -126,10 +138,16 @@ export function TerminalView({
   scrollSensitivityRef.current = scrollSensitivity;
   const mobileControlsRef = useRef(mobileControls);
   mobileControlsRef.current = mobileControls;
+  const terminalFontSizePxRef = useRef(terminalFontSizePx);
+  terminalFontSizePxRef.current = terminalFontSizePx;
   const mobileTapTargetRef = useRef(mobileTapTarget);
   mobileTapTargetRef.current = mobileTapTarget;
-  const mobileTouchSelectionRef = useRef(mobileTouchSelection);
-  mobileTouchSelectionRef.current = mobileTouchSelection;
+  const mobileLongPressBehaviorRef = useRef(mobileLongPressBehavior);
+  mobileLongPressBehaviorRef.current = mobileLongPressBehavior;
+  const mobileTouchSelectionEndpointTimeoutMsRef = useRef(
+    mobileTouchSelectionEndpointTimeoutMs,
+  );
+  mobileTouchSelectionEndpointTimeoutMsRef.current = mobileTouchSelectionEndpointTimeoutMs;
   const terminalInputTransportRef = useRef(terminalInputTransport);
   terminalInputTransportRef.current = terminalInputTransport;
   const terminalInputBatchDelayMsRef = useRef(terminalInputBatchDelayMs);
@@ -359,7 +377,7 @@ export function TerminalView({
     let connectTimer: number | null = null;
     let reconnectAttempts = 0;
     let lastCloseReason: string | null = null;
-    const renderer: TerminalRenderer = new GhosttyRenderer();
+    const renderer: TerminalRenderer = new GhosttyRenderer(terminalFontSizePxRef.current);
     rendererRef.current = renderer;
     setConnectionState("connecting");
 
@@ -386,8 +404,9 @@ export function TerminalView({
               : focusTerminalKeyboardInput,
         );
         renderer.setMobileTouchSelection(
-          mobileControlsRef.current && mobileTouchSelectionRef.current,
+          mobileControlsRef.current ? mobileLongPressBehaviorRef.current : "off",
           mobileControlsRef.current ? handleMobileTerminalTouch : null,
+          mobileTouchSelectionEndpointTimeoutMsRef.current,
         );
 
         disposeInput = renderer.onInput((data) => {
@@ -601,10 +620,23 @@ export function TerminalView({
 
   useEffect(() => {
     rendererRef.current?.setMobileTouchSelection(
-      mobileControls && mobileTouchSelection,
+      mobileControls ? mobileLongPressBehavior : "off",
       mobileControls ? handleMobileTerminalTouch : null,
+      mobileTouchSelectionEndpointTimeoutMs,
     );
-  }, [handleMobileTerminalTouch, mobileControls, mobileTouchSelection]);
+  }, [
+    handleMobileTerminalTouch,
+    mobileControls,
+    mobileLongPressBehavior,
+    mobileTouchSelectionEndpointTimeoutMs,
+  ]);
+
+  useEffect(() => {
+    const size = rendererRef.current?.setFontSize(terminalFontSizePx);
+    if (size) {
+      sendResizeRef.current(size);
+    }
+  }, [terminalFontSizePx]);
 
   useEffect(() => {
     setMobileSelectionAction(null);

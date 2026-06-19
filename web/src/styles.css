@@ -40,6 +40,7 @@
   --line-soft: #1d1d2b;
   --accent: var(--lavender);
   --accent-soft: rgba(180, 190, 254, 0.14);
+  --terminal-touch-marker: #c2caff;
 
   /* Status -> color (matches herdr TUI semantics) */
   --st-blocked: var(--red);
@@ -930,6 +931,7 @@ button {
 }
 
 .terminal-host {
+  position: relative;
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
@@ -1098,23 +1100,18 @@ button {
   left: 0;
   top: 0;
   z-index: 7;
-  display: grid;
-  width: 46px;
-  height: 46px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent) 72%, white);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 78%, var(--mantle));
-  box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
+  width: 72px;
+  height: 72px;
+  background: transparent;
   touch-action: none;
   will-change: transform;
 }
 
-.terminal-touch-endpoint::before {
+.terminal-touch-endpoint[data-hint]::before {
   content: attr(data-hint);
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 5px);
+  top: calc(100% + 2px);
   transform: translateX(-50%);
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1126,7 +1123,48 @@ button {
   white-space: nowrap;
 }
 
-.terminal-touch-endpoint::after {
+.terminal-touch-endpoint-line {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: 2px;
+  height: 18px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--terminal-touch-marker);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 26%);
+  pointer-events: none;
+}
+
+.terminal-touch-endpoint-line::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 10px;
+  height: 2px;
+  transform: translateX(-50%);
+  border-radius: inherit;
+  background: inherit;
+  box-shadow: inherit;
+}
+
+.terminal-touch-endpoint-knob {
+  position: absolute;
+  left: 13px;
+  top: 22px;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 72%, white);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 78%, var(--mantle));
+  box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
+  pointer-events: none;
+}
+
+.terminal-touch-endpoint-knob::after {
   content: "";
   width: 10px;
   height: 10px;
@@ -2389,7 +2427,7 @@ button {
 }
 
 .app[data-touch="true"] .terminal-stage:has(.terminal-mobile-controls) .terminal-upload-status {
-  bottom: calc(122px * var(--mobile-controls-scale));
+  bottom: calc(90px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"] .terminal-stage:has(.terminal-mobile-controls) .terminal-selection-sheet {
@@ -2405,7 +2443,7 @@ button {
 .app[data-touch="true"]
   .terminal-stage:has(.terminal-mobile-controls[data-expanded="true"])
   .terminal-upload-status {
-  bottom: calc(160px * var(--mobile-controls-scale));
+  bottom: calc(126px * var(--mobile-controls-scale));
 }
 
 .app[data-touch="true"]
