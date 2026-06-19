@@ -375,6 +375,8 @@ export class GhosttyRenderer implements TerminalRenderer {
     let selectionClearTimer: number | null = null;
     let endpointTimer: number | null = null;
     let loupeRenderFrame: number | null = null;
+    let mouseDownX: number | null = null;
+    let mouseDownY: number | null = null;
     let selectionState: TerminalTouchSelectionState = idleTouchSelectionState;
     let endpointBubble: HTMLDivElement | null = null;
     let loupe: { root: HTMLDivElement; canvas: HTMLCanvasElement } | null = null;
@@ -774,6 +776,14 @@ export class GhosttyRenderer implements TerminalRenderer {
       const position = positionFromTouch(touch);
       return terminalUrlTapTarget(terminalLinkAt(terminal, position), mouseTracking);
     };
+    const mouseLinkText = (event: MouseEvent) => {
+      const mouseTracking = this.#hasMouseTracking(terminal);
+      if (mouseTracking) {
+        return null;
+      }
+      const position = touchCellPosition(terminal, event.clientX, event.clientY);
+      return terminalUrlTapTarget(terminalLinkAt(terminal, position), mouseTracking);
+    };
     const redirectTapFocus = (event: TouchEvent | MouseEvent) => {
       const terminalHadFocusOrGrace =
         document.activeElement === terminal.textarea ||
@@ -966,6 +976,8 @@ export class GhosttyRenderer implements TerminalRenderer {
       return false;
     };
     const onMouseDown = (event: MouseEvent) => {
+      mouseDownX = event.clientX;
+      mouseDownY = event.clientY;
       if (this.#hasMouseTracking(terminal)) {
         return;
       }
@@ -980,7 +992,30 @@ export class GhosttyRenderer implements TerminalRenderer {
       suppressCompatMouseEvent(event);
     };
     const onClick = (event: MouseEvent) => {
-      suppressCompatMouseEvent(event);
+      if (suppressCompatMouseEvent(event)) {
+        return;
+      }
+      const moved =
+        mouseDownX !== null &&
+        mouseDownY !== null &&
+        Math.hypot(event.clientX - mouseDownX, event.clientY - mouseDownY) >
+          TOUCH_SELECTION_TOLERANCE_PX;
+      mouseDownX = null;
+      mouseDownY = null;
+      if (moved) {
+        return;
+      }
+      const linkText = mouseLinkText(event);
+      if (!linkText?.trim()) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      terminal.textarea?.blur();
+      window.open(linkText, "_blank", "noopener,noreferrer");
     };
 
     container.addEventListener("touchstart", onTouchStart, {
