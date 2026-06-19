@@ -10,6 +10,7 @@ import {
   parseBackendStore,
   parseCapabilities,
   probeBridgeBaseUrl,
+  SAME_ORIGIN_BRIDGE_ID,
 } from "./bridge";
 
 describe("bridge URL normalization", () => {
@@ -63,7 +64,7 @@ describe("bridge URL builders", () => {
 });
 
 describe("backend store parsing", () => {
-  it("keeps valid profiles and clears invalid active ids", () => {
+  it("migrates valid v1 profiles and clears invalid active ids", () => {
     expect(
       parseBackendStore({
         version: 1,
@@ -74,8 +75,54 @@ describe("backend store parsing", () => {
         ],
       }),
     ).toEqual({
-      version: 1,
-      activeBackendId: null,
+      version: 2,
+      enabledBridgeIds: [SAME_ORIGIN_BRIDGE_ID],
+      lastSelectedBridgeId: SAME_ORIGIN_BRIDGE_ID,
+      backends: [
+        {
+          id: "one",
+          name: "Home",
+          baseUrl: "http://192.168.1.20:4000",
+          lastConnectedAt: undefined,
+        },
+      ],
+    });
+  });
+
+  it("migrates a v1 active backend into the enabled bridge list", () => {
+    expect(
+      parseBackendStore({
+        version: 1,
+        activeBackendId: "one",
+        backends: [{ id: "one", name: "Home", baseUrl: "http://192.168.1.20:4000" }],
+      }),
+    ).toEqual({
+      version: 2,
+      enabledBridgeIds: ["one"],
+      lastSelectedBridgeId: "one",
+      backends: [
+        {
+          id: "one",
+          name: "Home",
+          baseUrl: "http://192.168.1.20:4000",
+          lastConnectedAt: undefined,
+        },
+      ],
+    });
+  });
+
+  it("keeps valid v2 enabled bridge ids only", () => {
+    expect(
+      parseBackendStore({
+        version: 2,
+        enabledBridgeIds: ["one", "missing", "one", SAME_ORIGIN_BRIDGE_ID],
+        lastSelectedBridgeId: "missing",
+        backends: [{ id: "one", name: "Home", baseUrl: "http://192.168.1.20:4000" }],
+      }),
+    ).toEqual({
+      version: 2,
+      enabledBridgeIds: ["one", SAME_ORIGIN_BRIDGE_ID],
+      lastSelectedBridgeId: "one",
       backends: [
         {
           id: "one",

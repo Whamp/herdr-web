@@ -12,6 +12,10 @@ import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 import { addNativeResumeHandler } from "./native";
 
+export const SAME_ORIGIN_BRIDGE_ID = "same-origin";
+
+export type BridgeId = string;
+
 export type BridgeBackendProfile = {
   id: string;
   name: string;
@@ -20,12 +24,13 @@ export type BridgeBackendProfile = {
 };
 
 export type BridgeBackendStore = {
-  version: 1;
-  activeBackendId: string | null;
+  version: 2;
+  enabledBridgeIds: BridgeId[];
+  lastSelectedBridgeId: BridgeId | null;
   backends: BridgeBackendProfile[];
 };
 
-export type BridgeMode = "same-origin" | "configured" | "disconnected";
+export type BridgeMode = "same-origin" | "configured";
 
 export type BridgeCapabilities = {
   commands: string[];
@@ -36,24 +41,44 @@ export type BridgeCapabilities = {
 
 export type CapabilityState = "idle" | "probing" | "ready" | "error";
 
+type BridgeProbeState = {
+  connectionKey: string;
+  capabilities: BridgeCapabilities | null;
+  capabilityState: CapabilityState;
+  capabilityError: string | null;
+  connectionBlocked: boolean;
+};
+
 export type BridgeRuntime = {
+  id: BridgeId;
   mode: BridgeMode;
-  store: BridgeBackendStore;
-  activeBackend: BridgeBackendProfile | null;
+  label: string;
+  backend: BridgeBackendProfile | null;
   connectionKey: string;
   resumeToken: number;
   capabilities: BridgeCapabilities | null;
   capabilityState: CapabilityState;
   capabilityError: string | null;
   canConnect: boolean;
-  sameOriginAvailable: boolean;
   httpUrl: (path: string, query?: URLSearchParams) => string;
   wsUrl: (path: string, query?: URLSearchParams) => string;
-  addBackend: (input: BackendInput, activate?: boolean) => Promise<BridgeBackendProfile>;
+};
+
+export type BridgeManager = {
+  store: BridgeBackendStore;
+  storeLoaded: boolean;
+  sameOriginAvailable: boolean;
+  availableRuntimes: BridgeRuntime[];
+  enabledRuntimes: BridgeRuntime[];
+  enabledBridgeIds: BridgeId[];
+  lastSelectedBridgeId: BridgeId | null;
+  getRuntime: (bridgeId: BridgeId | null | undefined) => BridgeRuntime | null;
+  setBridgeEnabled: (bridgeId: BridgeId, enabled: boolean) => void;
+  setLastSelectedBridgeId: (bridgeId: BridgeId | null) => void;
+  markBridgeUsed: (bridgeId: BridgeId) => void;
+  addBackend: (input: BackendInput, enable?: boolean) => Promise<BridgeBackendProfile>;
   updateBackend: (id: string, input: BackendInput) => Promise<BridgeBackendProfile>;
   deleteBackend: (id: string) => void;
-  setActiveBackend: (id: string) => void;
-  clearActiveBackend: () => void;
   probeBackend: (baseUrl: string) => Promise<BridgeCapabilities>;
 };
 
@@ -62,39 +87,21 @@ export type BackendInput = {
   baseUrl: string;
 };
 
-const STORE_KEY = "herdrWeb.bridgeBackends.v1";
-const STORE_VERSION = 1;
+const STORE_KEY = "herdrWeb.bridgeBackends.v2";
+const LEGACY_STORE_KEY = "herdrWeb.bridgeBackends.v1";
+const STORE_VERSION = 2;
 const APP_MIN_WEB_COMPAT = 1;
-const fallbackStore: BridgeBackendStore = {
-  version: STORE_VERSION,
-  activeBackendId: null,
-  backends: [],
-};
 
-const BridgeContext = createContext<BridgeRuntime | null>(null);
+const BridgeContext = createContext<BridgeManager | null>(null);
 
 export function BridgeProvider({ children }: { children: ReactNode }) {
-  const [store, setStore] = useState<BridgeBackendStore>(fallbackStore);
+  const [store, setStore] = useState<BridgeBackendStore>(() => fallbackStore());
   const [storeLoaded, setStoreLoaded] = useState(false);
-  const [capabilities, setCapabilities] = useState<BridgeCapabilities | null>(null);
-  const [capabilityState, setCapabilityState] = useState<CapabilityState>("idle");
-  const [capabilityError, setCapabilityError] = useState<string | null>(null);
-  const [connectionBlocked, setConnectionBlocked] = useState(false);
-  const [capabilityRetry, setCapabilityRetry] = useState(0);
+  const [probeStates, setProbeStates] = useState<Record<string, BridgeProbeState>>({});
   const [resumeToken, setResumeToken] = useState(0);
   const storeEditedRef = useRef(false);
 
-  const activeBackend = store.activeBackendId
-    ? (store.backends.find((backend) => backend.id === store.activeBackendId) ?? null)
-    : null;
-  const defaultMode = defaultBridgeMode();
-  const sameOriginAvailable = defaultMode === "same-origin";
-  const mode: BridgeMode = activeBackend ? "configured" : defaultMode;
-  const connectionKey = activeBackend
-    ? `configured:${activeBackend.id}:${activeBackend.baseUrl}`
-    : mode;
-  const canProbe = mode !== "disconnected";
-  const canConnect = canProbe && !connectionBlocked;
+  const sameOriginAvailable = defaultBridgeMode() === "same-origin";
 
   useEffect(() => {
     let cancelled = false;
@@ -121,57 +128,315 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
     }
   }, [store, storeLoaded]);
 
-  const httpUrl = useCallback(
-    (path: string, query?: URLSearchParams) => buildHttpUrl(activeBackend?.baseUrl ?? null, path, query),
-    [activeBackend?.baseUrl],
+  const availableRuntimes = useMemo(
+    () =>
+      buildAvailableRuntimes({
+        backends: store.backends,
+        probeStates,
+        resumeToken,
+        sameOriginAvailable,
+      }),
+    [probeStates, resumeToken, sameOriginAvailable, store.backends],
   );
 
-  const wsUrl = useCallback(
-    (path: string, query?: URLSearchParams) => buildWsUrl(activeBackend?.baseUrl ?? null, path, query),
-    [activeBackend?.baseUrl],
+  const availableRuntimeIds = useMemo(
+    () => new Set(availableRuntimes.map((runtime) => runtime.id)),
+    [availableRuntimes],
   );
+
+  const enabledBridgeIds = useMemo(
+    () => store.enabledBridgeIds.filter((bridgeId) => availableRuntimeIds.has(bridgeId)),
+    [availableRuntimeIds, store.enabledBridgeIds],
+  );
+
+  const enabledRuntimes = useMemo(
+    () => availableRuntimes.filter((runtime) => enabledBridgeIds.includes(runtime.id)),
+    [availableRuntimes, enabledBridgeIds],
+  );
+
+  useEffect(() => {
+    const availableIds = new Set(availableRuntimes.map((runtime) => runtime.id));
+    setProbeStates((current) => {
+      let changed = false;
+      const next: Record<string, BridgeProbeState> = {};
+      for (const [bridgeId, state] of Object.entries(current)) {
+        if (availableIds.has(bridgeId)) {
+          next[bridgeId] = state;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [availableRuntimes]);
+
+  const setBridgeEnabled = useCallback((bridgeId: BridgeId, enabled: boolean) => {
+    storeEditedRef.current = true;
+    setStore((current) => {
+      if (!isAvailableBridgeId(bridgeId, current.backends, defaultBridgeMode() === "same-origin")) {
+        return current;
+      }
+      const enabledIds = new Set(current.enabledBridgeIds);
+      if (enabled) {
+        enabledIds.add(bridgeId);
+      } else {
+        enabledIds.delete(bridgeId);
+      }
+      const enabledBridgeIds = normalizeEnabledBridgeIds(
+        [...enabledIds],
+        current.backends,
+        defaultBridgeMode() === "same-origin",
+      );
+      const lastSelectedBridgeId =
+        current.lastSelectedBridgeId && enabledBridgeIds.includes(current.lastSelectedBridgeId)
+          ? current.lastSelectedBridgeId
+          : enabledBridgeIds[0] ?? null;
+      return {
+        ...current,
+        enabledBridgeIds,
+        lastSelectedBridgeId,
+        backends: enabled
+          ? markBackendConnected(current.backends, bridgeId)
+          : current.backends,
+      };
+    });
+  }, []);
+
+  const setLastSelectedBridgeId = useCallback((bridgeId: BridgeId | null) => {
+    storeEditedRef.current = true;
+    setStore((current) => {
+      if (bridgeId === null) {
+        return { ...current, lastSelectedBridgeId: null };
+      }
+      if (!current.enabledBridgeIds.includes(bridgeId)) {
+        return current;
+      }
+      return {
+        ...current,
+        lastSelectedBridgeId: bridgeId,
+        backends: markBackendConnected(current.backends, bridgeId),
+      };
+    });
+  }, []);
+
+  const markBridgeUsed = useCallback((bridgeId: BridgeId) => {
+    storeEditedRef.current = true;
+    setStore((current) => {
+      if (!current.enabledBridgeIds.includes(bridgeId)) {
+        return current;
+      }
+      return {
+        ...current,
+        lastSelectedBridgeId: bridgeId,
+        backends: markBackendConnected(current.backends, bridgeId),
+      };
+    });
+  }, []);
+
+  const addBackend = useCallback(async (input: BackendInput, enable = true) => {
+    const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
+    let nextProfile: BridgeBackendProfile | null = null;
+    storeEditedRef.current = true;
+    setStore((current) => {
+      const profile: BridgeBackendProfile = {
+        id: createBackendId(),
+        name: backendDisplayName(input.name, baseUrl, current.backends),
+        baseUrl,
+        lastConnectedAt: enable ? new Date().toISOString() : undefined,
+      };
+      nextProfile = profile;
+      const enabledBridgeIds = enable
+        ? normalizeEnabledBridgeIds(
+            [...current.enabledBridgeIds, profile.id],
+            [...current.backends, profile],
+            defaultBridgeMode() === "same-origin",
+          )
+        : current.enabledBridgeIds;
+      return {
+        version: STORE_VERSION,
+        enabledBridgeIds,
+        lastSelectedBridgeId: enable ? profile.id : current.lastSelectedBridgeId,
+        backends: [...current.backends, profile],
+      };
+    });
+    if (!nextProfile) {
+      throw new Error("Backend could not be saved");
+    }
+    return nextProfile;
+  }, []);
+
+  const updateBackend = useCallback(async (id: string, input: BackendInput) => {
+    let nextProfile: BridgeBackendProfile | null = null;
+    storeEditedRef.current = true;
+    setStore((current) => {
+      const existing = current.backends.find((backend) => backend.id === id);
+      if (!existing) {
+        return current;
+      }
+      const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
+      const otherBackends = current.backends.filter((backend) => backend.id !== id);
+      const updated: BridgeBackendProfile = {
+        ...existing,
+        name: backendDisplayName(input.name, baseUrl, otherBackends),
+        baseUrl,
+        lastConnectedAt: current.enabledBridgeIds.includes(id)
+          ? new Date().toISOString()
+          : existing.lastConnectedAt,
+      };
+      nextProfile = updated;
+      return {
+        ...current,
+        backends: current.backends.map((backend) => (backend.id === id ? updated : backend)),
+      };
+    });
+    if (!nextProfile) {
+      throw new Error("Backend not found");
+    }
+    return nextProfile;
+  }, []);
+
+  const deleteBackend = useCallback((id: string) => {
+    storeEditedRef.current = true;
+    setStore((current) => {
+      const backends = current.backends.filter((backend) => backend.id !== id);
+      const enabledBridgeIds = current.enabledBridgeIds.filter((bridgeId) => bridgeId !== id);
+      const lastSelectedBridgeId =
+        current.lastSelectedBridgeId === id ? (enabledBridgeIds[0] ?? null) : current.lastSelectedBridgeId;
+      return {
+        version: STORE_VERSION,
+        enabledBridgeIds,
+        lastSelectedBridgeId,
+        backends,
+      };
+    });
+  }, []);
 
   const probeBackend = useCallback((baseUrl: string) => probeBridgeBaseUrl(baseUrl), []);
 
+  const getRuntime = useCallback(
+    (bridgeId: BridgeId | null | undefined) =>
+      bridgeId ? (availableRuntimes.find((runtime) => runtime.id === bridgeId) ?? null) : null,
+    [availableRuntimes],
+  );
+
+  const value = useMemo<BridgeManager>(
+    () => ({
+      store,
+      storeLoaded,
+      sameOriginAvailable,
+      availableRuntimes,
+      enabledRuntimes,
+      enabledBridgeIds,
+      lastSelectedBridgeId:
+        store.lastSelectedBridgeId && enabledBridgeIds.includes(store.lastSelectedBridgeId)
+          ? store.lastSelectedBridgeId
+          : (enabledBridgeIds[0] ?? null),
+      getRuntime,
+      setBridgeEnabled,
+      setLastSelectedBridgeId,
+      markBridgeUsed,
+      addBackend,
+      updateBackend,
+      deleteBackend,
+      probeBackend,
+    }),
+    [
+      addBackend,
+      availableRuntimes,
+      deleteBackend,
+      enabledBridgeIds,
+      enabledRuntimes,
+      getRuntime,
+      markBridgeUsed,
+      probeBackend,
+      sameOriginAvailable,
+      setBridgeEnabled,
+      setLastSelectedBridgeId,
+      store,
+      storeLoaded,
+      updateBackend,
+    ],
+  );
+
+  return (
+    <BridgeContext.Provider value={value}>
+      {children}
+      {enabledRuntimes.map((runtime) => (
+        <BridgeCapabilityProbe
+          key={`${runtime.connectionKey}:${runtime.resumeToken}`}
+          runtime={runtime}
+          onState={(state) =>
+            setProbeStates((current) => ({
+              ...current,
+              [runtime.id]: state,
+            }))
+          }
+        />
+      ))}
+    </BridgeContext.Provider>
+  );
+}
+
+function BridgeCapabilityProbe({
+  runtime,
+  onState,
+}: {
+  runtime: BridgeRuntime;
+  onState: (state: BridgeProbeState) => void;
+}) {
+  const [capabilityRetry, setCapabilityRetry] = useState(0);
+  const onStateRef = useRef(onState);
+  const httpUrlRef = useRef(runtime.httpUrl);
+
   useEffect(() => {
-    setCapabilityRetry(0);
-  }, [connectionKey, resumeToken]);
+    onStateRef.current = onState;
+  }, [onState]);
+
+  useEffect(() => {
+    httpUrlRef.current = runtime.httpUrl;
+  }, [runtime.httpUrl]);
 
   useEffect(() => {
     let cancelled = false;
     let retryTimer: number | null = null;
-    setCapabilities(null);
-    setCapabilityError(null);
-    setConnectionBlocked(false);
-    if (!canProbe) {
-      setCapabilityState("idle");
-      return;
-    }
-    setCapabilityState("probing");
-    void fetchCapabilities(httpUrl)
+    onStateRef.current({
+      connectionKey: runtime.connectionKey,
+      capabilities: null,
+      capabilityState: "probing",
+      capabilityError: null,
+      connectionBlocked: false,
+    });
+    void fetchCapabilities(httpUrlRef.current)
       .then((next) => {
         if (cancelled) {
           return;
         }
         const outcome = capabilityProbeSuccess(next);
-        setCapabilityError(outcome.error);
-        setCapabilities(outcome.capabilities);
-        setConnectionBlocked(outcome.blocked);
-        setCapabilityState(outcome.state);
+        onStateRef.current({
+          connectionKey: runtime.connectionKey,
+          capabilities: outcome.capabilities,
+          capabilityState: outcome.state,
+          capabilityError: outcome.error,
+          connectionBlocked: outcome.blocked,
+        });
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
-          const outcome = capabilityProbeFailure(error);
-          setCapabilityError(outcome.error);
-          setCapabilities(outcome.capabilities);
-          setConnectionBlocked(outcome.blocked);
-          setCapabilityState(outcome.state);
-          if (outcome.retry) {
-            const retryDelay = capabilityRetryDelayMs(capabilityRetry);
-            retryTimer = window.setTimeout(() => {
-              setCapabilityRetry((current) => current + 1);
-            }, retryDelay);
-          }
+        if (cancelled) {
+          return;
+        }
+        const outcome = capabilityProbeFailure(error);
+        onStateRef.current({
+          connectionKey: runtime.connectionKey,
+          capabilities: outcome.capabilities,
+          capabilityState: outcome.state,
+          capabilityError: outcome.error,
+          connectionBlocked: outcome.blocked,
+        });
+        if (outcome.retry) {
+          const retryDelay = capabilityRetryDelayMs(capabilityRetry);
+          retryTimer = window.setTimeout(() => {
+            setCapabilityRetry((current) => current + 1);
+          }, retryDelay);
         }
       });
     return () => {
@@ -180,123 +445,9 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
         window.clearTimeout(retryTimer);
       }
     };
-  }, [canProbe, capabilityRetry, connectionKey, httpUrl, resumeToken]);
+  }, [capabilityRetry, runtime.connectionKey]);
 
-  const addBackend = useCallback(async (input: BackendInput, activate = true) => {
-    const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
-    const profile: BridgeBackendProfile = {
-      id: createBackendId(),
-      name: backendDisplayName(input.name, baseUrl, store.backends),
-      baseUrl,
-      lastConnectedAt: activate ? new Date().toISOString() : undefined,
-    };
-    const nextProfile = { ...profile };
-    storeEditedRef.current = true;
-    setStore((current) => ({
-      version: STORE_VERSION,
-      activeBackendId: activate ? nextProfile.id : current.activeBackendId,
-      backends: [...current.backends, nextProfile],
-    }));
-    return nextProfile;
-  }, [store.backends]);
-
-  const updateBackend = useCallback(async (id: string, input: BackendInput) => {
-    const existing = store.backends.find((backend) => backend.id === id);
-    if (!existing) {
-      throw new Error("Backend not found");
-    }
-    const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
-    const otherBackends = store.backends.filter((backend) => backend.id !== id);
-    const updated: BridgeBackendProfile = {
-      ...existing,
-      name: backendDisplayName(input.name, baseUrl, otherBackends),
-      baseUrl,
-      lastConnectedAt:
-        store.activeBackendId === id ? new Date().toISOString() : existing.lastConnectedAt,
-    };
-    storeEditedRef.current = true;
-    setStore((current) => ({
-      version: STORE_VERSION,
-      activeBackendId: current.activeBackendId,
-      backends: current.backends.map((backend) => (backend.id === id ? updated : backend)),
-    }));
-    return updated;
-  }, [store.activeBackendId, store.backends]);
-
-  const deleteBackend = useCallback((id: string) => {
-    storeEditedRef.current = true;
-    setStore((current) => ({
-      version: STORE_VERSION,
-      activeBackendId: current.activeBackendId === id ? null : current.activeBackendId,
-      backends: current.backends.filter((backend) => backend.id !== id),
-    }));
-  }, []);
-
-  const setActiveBackend = useCallback((id: string) => {
-    storeEditedRef.current = true;
-    setStore((current) => {
-      if (!current.backends.some((backend) => backend.id === id)) {
-        return current;
-      }
-      return {
-        ...current,
-        activeBackendId: id,
-        backends: current.backends.map((backend) =>
-          backend.id === id ? { ...backend, lastConnectedAt: new Date().toISOString() } : backend,
-        ),
-      };
-    });
-  }, []);
-
-  const clearActiveBackend = useCallback(() => {
-    storeEditedRef.current = true;
-    setStore((current) => ({ ...current, activeBackendId: null }));
-  }, []);
-
-  const value = useMemo<BridgeRuntime>(
-    () => ({
-      mode,
-      store,
-      activeBackend,
-      connectionKey,
-      resumeToken,
-      capabilities,
-      capabilityState,
-      capabilityError,
-      canConnect,
-      sameOriginAvailable,
-      httpUrl,
-      wsUrl,
-      addBackend,
-      updateBackend,
-      deleteBackend,
-      setActiveBackend,
-      clearActiveBackend,
-      probeBackend,
-    }),
-    [
-      activeBackend,
-      addBackend,
-      canConnect,
-      capabilities,
-      capabilityError,
-      capabilityState,
-      clearActiveBackend,
-      connectionKey,
-      deleteBackend,
-      httpUrl,
-      mode,
-      probeBackend,
-      resumeToken,
-      setActiveBackend,
-      sameOriginAvailable,
-      store,
-      updateBackend,
-      wsUrl,
-    ],
-  );
-
-  return <BridgeContext.Provider value={value}>{children}</BridgeContext.Provider>;
+  return null;
 }
 
 export function useBridge() {
@@ -307,6 +458,84 @@ export function useBridge() {
   return value;
 }
 
+function buildAvailableRuntimes({
+  backends,
+  probeStates,
+  resumeToken,
+  sameOriginAvailable,
+}: {
+  backends: BridgeBackendProfile[];
+  probeStates: Record<string, BridgeProbeState>;
+  resumeToken: number;
+  sameOriginAvailable: boolean;
+}) {
+  const runtimes: BridgeRuntime[] = [];
+  if (sameOriginAvailable) {
+    runtimes.push(
+      createBridgeRuntime({
+        id: SAME_ORIGIN_BRIDGE_ID,
+        mode: "same-origin",
+        label: "Same origin",
+        backend: null,
+        baseUrl: null,
+        probeState: probeStates[SAME_ORIGIN_BRIDGE_ID],
+        resumeToken,
+      }),
+    );
+  }
+  for (const backend of backends) {
+    runtimes.push(
+      createBridgeRuntime({
+        id: backend.id,
+        mode: "configured",
+        label: backend.name,
+        backend,
+        baseUrl: backend.baseUrl,
+        probeState: probeStates[backend.id],
+        resumeToken,
+      }),
+    );
+  }
+  return runtimes;
+}
+
+function createBridgeRuntime({
+  id,
+  mode,
+  label,
+  backend,
+  baseUrl,
+  probeState,
+  resumeToken,
+}: {
+  id: BridgeId;
+  mode: BridgeMode;
+  label: string;
+  backend: BridgeBackendProfile | null;
+  baseUrl: string | null;
+  probeState: BridgeProbeState | undefined;
+  resumeToken: number;
+}): BridgeRuntime {
+  const connectionKey = mode === "same-origin" ? SAME_ORIGIN_BRIDGE_ID : `configured:${id}:${baseUrl}`;
+  const currentProbeState = probeState?.connectionKey === connectionKey ? probeState : undefined;
+  const httpUrl = (path: string, query?: URLSearchParams) => buildHttpUrl(baseUrl, path, query);
+  const wsUrl = (path: string, query?: URLSearchParams) => buildWsUrl(baseUrl, path, query);
+  return {
+    id,
+    mode,
+    label,
+    backend,
+    connectionKey,
+    resumeToken,
+    capabilities: currentProbeState?.capabilities ?? null,
+    capabilityState: currentProbeState?.capabilityState ?? "idle",
+    capabilityError: currentProbeState?.capabilityError ?? null,
+    canConnect: !currentProbeState?.connectionBlocked,
+    httpUrl,
+    wsUrl,
+  };
+}
+
 export async function loadBackendStore(): Promise<BridgeBackendStore> {
   if (isNativeApp()) {
     try {
@@ -314,27 +543,63 @@ export async function loadBackendStore(): Promise<BridgeBackendStore> {
       if (value) {
         return parseBackendStore(JSON.parse(value));
       }
-      const localStore = readBackendStore();
-      if (localStore.backends.length > 0 || localStore.activeBackendId) {
-        await Preferences.set({ key: STORE_KEY, value: JSON.stringify(localStore) });
-      }
-      return localStore;
     } catch {
-      return readBackendStore();
+      // Fall through to browser storage and legacy migration.
     }
   }
-  return readBackendStore();
+
+  const localStore = readBackendStoreKey(STORE_KEY);
+  if (localStore) {
+    if (isNativeApp()) {
+      await writeBackendStore(localStore);
+    }
+    return localStore;
+  }
+
+  const legacyStore = await loadLegacyBackendStore();
+  if (legacyStore) {
+    await writeBackendStore(legacyStore);
+    return legacyStore;
+  }
+
+  return fallbackStore();
 }
 
 export function readBackendStore(): BridgeBackendStore {
+  return readBackendStoreKey(STORE_KEY) ?? fallbackStore();
+}
+
+function readBackendStoreKey(key: string): BridgeBackendStore | null {
   try {
-    const raw = globalThis.localStorage?.getItem(STORE_KEY);
+    const raw = globalThis.localStorage?.getItem(key);
     if (!raw) {
-      return fallbackStore;
+      return null;
     }
     return parseBackendStore(JSON.parse(raw));
   } catch {
-    return fallbackStore;
+    return null;
+  }
+}
+
+async function loadLegacyBackendStore(): Promise<BridgeBackendStore | null> {
+  if (isNativeApp()) {
+    try {
+      const { value } = await Preferences.get({ key: LEGACY_STORE_KEY });
+      if (value) {
+        return parseBackendStore(JSON.parse(value));
+      }
+    } catch {
+      // Fall through to localStorage backup.
+    }
+  }
+  try {
+    const raw = globalThis.localStorage?.getItem(LEGACY_STORE_KEY);
+    if (!raw) {
+      return null;
+    }
+    return parseBackendStore(JSON.parse(raw));
+  } catch {
+    return null;
   }
 }
 
@@ -343,9 +608,8 @@ export async function writeBackendStore(store: BridgeBackendStore) {
   if (isNativeApp()) {
     try {
       await Preferences.set({ key: STORE_KEY, value });
-      return;
     } catch {
-      // Fall through so browser storage remains a best-effort backup.
+      // Browser storage below remains a best-effort backup.
     }
   }
   try {
@@ -356,10 +620,40 @@ export async function writeBackendStore(store: BridgeBackendStore) {
 }
 
 export function parseBackendStore(value: unknown): BridgeBackendStore {
-  if (!isRecord(value) || value.version !== STORE_VERSION || !Array.isArray(value.backends)) {
-    return fallbackStore;
+  if (!isRecord(value) || !Array.isArray(value.backends)) {
+    return fallbackStore();
   }
-  const backends = value.backends
+  if (value.version === STORE_VERSION) {
+    return parseBackendStoreV2(value);
+  }
+  if (value.version === 1) {
+    return migrateLegacyBackendStore(value);
+  }
+  return fallbackStore();
+}
+
+function parseBackendStoreV2(value: Record<string, unknown>): BridgeBackendStore {
+  const rawBackends = Array.isArray(value.backends) ? value.backends : [];
+  const backends = rawBackends
+    .map(parseBackendProfile)
+    .filter((backend): backend is BridgeBackendProfile => backend !== null);
+  const sameOriginAvailable = defaultBridgeMode() === "same-origin";
+  const enabledBridgeIds = normalizeEnabledBridgeIds(
+    Array.isArray(value.enabledBridgeIds) ? value.enabledBridgeIds : [],
+    backends,
+    sameOriginAvailable,
+  );
+  const lastSelectedBridgeId =
+    typeof value.lastSelectedBridgeId === "string" &&
+    enabledBridgeIds.includes(value.lastSelectedBridgeId)
+      ? value.lastSelectedBridgeId
+      : (enabledBridgeIds[0] ?? null);
+  return { version: STORE_VERSION, enabledBridgeIds, lastSelectedBridgeId, backends };
+}
+
+function migrateLegacyBackendStore(value: Record<string, unknown>): BridgeBackendStore {
+  const rawBackends = Array.isArray(value.backends) ? value.backends : [];
+  const backends = rawBackends
     .map(parseBackendProfile)
     .filter((backend): backend is BridgeBackendProfile => backend !== null);
   const activeBackendId =
@@ -367,7 +661,14 @@ export function parseBackendStore(value: unknown): BridgeBackendStore {
     backends.some((backend) => backend.id === value.activeBackendId)
       ? value.activeBackendId
       : null;
-  return { version: STORE_VERSION, activeBackendId, backends };
+  const sameOriginAvailable = defaultBridgeMode() === "same-origin";
+  const enabledBridgeIds = activeBackendId
+    ? [activeBackendId]
+    : sameOriginAvailable
+      ? [SAME_ORIGIN_BRIDGE_ID]
+      : [];
+  const lastSelectedBridgeId = enabledBridgeIds[0] ?? null;
+  return { version: STORE_VERSION, enabledBridgeIds, lastSelectedBridgeId, backends };
 }
 
 function parseBackendProfile(value: unknown): BridgeBackendProfile | null {
@@ -394,7 +695,59 @@ function parseBackendProfile(value: unknown): BridgeBackendProfile | null {
   }
 }
 
-function defaultBridgeMode(): BridgeMode {
+function fallbackStore(): BridgeBackendStore {
+  const enabledBridgeIds = defaultBridgeMode() === "same-origin" ? [SAME_ORIGIN_BRIDGE_ID] : [];
+  return {
+    version: STORE_VERSION,
+    enabledBridgeIds,
+    lastSelectedBridgeId: enabledBridgeIds[0] ?? null,
+    backends: [],
+  };
+}
+
+function normalizeEnabledBridgeIds(
+  ids: unknown[],
+  backends: readonly BridgeBackendProfile[],
+  sameOriginAvailable: boolean,
+) {
+  const result: BridgeId[] = [];
+  const availableIds = new Set(backends.map((backend) => backend.id));
+  if (sameOriginAvailable) {
+    availableIds.add(SAME_ORIGIN_BRIDGE_ID);
+  }
+  for (const id of ids) {
+    if (typeof id === "string" && availableIds.has(id) && !result.includes(id)) {
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+function isAvailableBridgeId(
+  bridgeId: BridgeId,
+  backends: readonly BridgeBackendProfile[],
+  sameOriginAvailable: boolean,
+) {
+  return (
+    (sameOriginAvailable && bridgeId === SAME_ORIGIN_BRIDGE_ID) ||
+    backends.some((backend) => backend.id === bridgeId)
+  );
+}
+
+function markBackendConnected(
+  backends: readonly BridgeBackendProfile[],
+  bridgeId: BridgeId,
+) {
+  if (bridgeId === SAME_ORIGIN_BRIDGE_ID) {
+    return [...backends];
+  }
+  const connectedAt = new Date().toISOString();
+  return backends.map((backend) =>
+    backend.id === bridgeId ? { ...backend, lastConnectedAt: connectedAt } : backend,
+  );
+}
+
+function defaultBridgeMode(): "same-origin" | "disconnected" {
   return isNativeApp() ? "disconnected" : "same-origin";
 }
 
@@ -441,6 +794,38 @@ function validateBridgeHost(hostname: string) {
   if (!isValidHostname(host)) {
     throw new Error("Bridge hostname is invalid");
   }
+}
+
+function stripIpv6Brackets(hostname: string) {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
+
+function parseIpv4(host: string) {
+  const parts = host.split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+  const bytes = parts.map((part) => {
+    if (!/^\d+$/u.test(part)) {
+      return Number.NaN;
+    }
+    const value = Number(part);
+    return value >= 0 && value <= 255 ? value : Number.NaN;
+  });
+  return bytes.every(Number.isFinite) ? bytes : null;
+}
+
+function isIpv6Literal(host: string) {
+  return host.includes(":");
+}
+
+function isValidHostname(host: string) {
+  if (host.length > 253) {
+    return false;
+  }
+  return host
+    .split(".")
+    .every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label));
 }
 
 export function buildHttpUrl(
@@ -616,45 +1001,6 @@ export function duplicateBackend(
   return (
     backends.find((backend) => backend.id !== ignoreId && backend.baseUrl === normalized) ?? null
   );
-}
-
-function parseIpv4(host: string): [number, number, number, number] | null {
-  const parts = host.split(".");
-  if (parts.length !== 4) {
-    return null;
-  }
-  const bytes = parts.map((part) => {
-    if (!/^\d{1,3}$/u.test(part)) {
-      return Number.NaN;
-    }
-    const value = Number(part);
-    return value >= 0 && value <= 255 ? value : Number.NaN;
-  });
-  return bytes.some(Number.isNaN) ? null : (bytes as [number, number, number, number]);
-}
-
-function stripIpv6Brackets(host: string) {
-  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-}
-
-function isIpv6Literal(host: string) {
-  return host.includes(":");
-}
-
-function isValidHostname(host: string) {
-  if (host === "localhost") {
-    return true;
-  }
-  if (host.length > 253 || host.endsWith(".")) {
-    return false;
-  }
-  return host.split(".").every((label) => {
-    return (
-      label.length > 0 &&
-      label.length <= 63 &&
-      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/iu.test(label)
-    );
-  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

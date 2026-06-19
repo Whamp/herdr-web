@@ -12,6 +12,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   duplicateBackend,
   normalizeBridgeBaseUrl,
+  SAME_ORIGIN_BRIDGE_ID,
   useBridge,
 } from "./bridge";
 import type { BridgeBackendProfile } from "./bridge";
@@ -102,18 +103,18 @@ export function BackendSettingsDialog({
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(
-    initialSelectionMode(bridge.activeBackend, bridge.sameOriginAvailable),
+    initialSelectionMode(bridge.lastSelectedBridgeId, bridge.sameOriginAvailable),
   );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<BridgeBackendProfile | null>(null);
   const [activeArea, setActiveArea] = useState<SettingsArea>("bridge");
 
-  const activeBackend = bridge.activeBackend;
   const selectedBackend = useMemo(
     () => bridge.store.backends.find((backend) => backend.id === form.id) ?? null,
     [bridge.store.backends, form.id],
   );
+  const sameOriginEnabled = bridge.store.enabledBridgeIds.includes(SAME_ORIGIN_BRIDGE_ID);
 
   useEffect(() => {
     if (activeArea !== "bridge") {
@@ -136,20 +137,18 @@ export function BackendSettingsDialog({
     if (selectionMode !== "backend" || form.id || bridge.store.backends.length === 0) {
       return;
     }
-    const backend = activeBackend ?? bridge.store.backends[0];
+    const lastBackend = bridge.lastSelectedBridgeId
+      ? bridge.store.backends.find((backend) => backend.id === bridge.lastSelectedBridgeId)
+      : undefined;
+    const backend = lastBackend ?? bridge.store.backends[0];
     setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
-  }, [activeBackend, bridge.store.backends, form.id, selectionMode]);
+  }, [bridge.lastSelectedBridgeId, bridge.store.backends, form.id, selectionMode]);
 
   const selectSameOrigin = () => {
     setSelectionMode("same-origin");
     setForm(emptyForm);
     setMessage(null);
     setDuplicate(null);
-  };
-
-  const useSameOrigin = () => {
-    bridge.clearActiveBackend();
-    onClose();
   };
 
   const startNew = () => {
@@ -217,15 +216,18 @@ export function BackendSettingsDialog({
       const profile = form.id
         ? await bridge.updateBackend(form.id, { name: form.name, baseUrl })
         : await bridge.addBackend({ name: form.name, baseUrl }, activate);
-      if (activate && form.id) {
-        bridge.setActiveBackend(profile.id);
+      if (activate) {
+        bridge.setBridgeEnabled(profile.id, true);
       }
       setSelectionMode("backend");
       setForm({ id: profile.id, name: profile.name, baseUrl: profile.baseUrl });
-      setMessage(probeWarning ? `Backend saved. ${probeWarning}` : "Backend saved.");
-      if (activate) {
-        onClose();
-      }
+      setMessage(
+        probeWarning
+          ? `Backend saved. ${probeWarning}`
+          : activate
+            ? "Backend saved and enabled."
+            : "Backend saved.",
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not save backend");
     } finally {
@@ -234,14 +236,14 @@ export function BackendSettingsDialog({
   };
 
   const deleteBackend = () => {
-    if (!form.id || bridge.activeBackend?.id === form.id) {
+    if (!form.id) {
       return;
     }
     bridge.deleteBackend(form.id);
     startNew();
   };
 
-  const canDelete = Boolean(form.id && bridge.activeBackend?.id !== form.id);
+  const canDelete = Boolean(form.id);
   const editingBackend = selectionMode !== "same-origin";
   const sameOriginUrl = sameOriginDisplayUrl();
   const showSameOrigin = bridge.sameOriginAvailable;
@@ -318,7 +320,7 @@ export function BackendSettingsDialog({
                         data-active={selectionMode === "same-origin" ? "true" : undefined}
                         onClick={selectSameOrigin}
                       >
-                        {!bridge.store.activeBackendId ? <Check size={14} /> : <span />}
+                        {sameOriginEnabled ? <Check size={14} /> : <span />}
                         <span>
                           <strong>Same origin</strong>
                           <small>{sameOriginUrl}</small>
@@ -333,7 +335,11 @@ export function BackendSettingsDialog({
                         data-active={backend.id === form.id ? "true" : undefined}
                         onClick={() => editBackend(backend)}
                       >
-                        {backend.id === bridge.store.activeBackendId ? <Check size={14} /> : <span />}
+                        {bridge.store.enabledBridgeIds.includes(backend.id) ? (
+                          <Check size={14} />
+                        ) : (
+                          <span />
+                        )}
                         <span>
                           <strong>{backend.name}</strong>
                           <small>{backend.baseUrl}</small>
@@ -357,7 +363,10 @@ export function BackendSettingsDialog({
                     {selectionMode === "same-origin" ? (
                       <div className="backend-static">
                         <strong>Same origin</strong>
-                        <span>Uses the server that delivered this web app.</span>
+                        <span>
+                          {sameOriginEnabled ? "Enabled" : "Disabled"}; uses the server that
+                          delivered this web app.
+                        </span>
                       </div>
                     ) : (
                       <>
@@ -395,9 +404,11 @@ export function BackendSettingsDialog({
                         ) : null}
                       </>
                     )}
-                    {selectionMode === "same-origin" && bridge.store.activeBackendId ? (
+                    {selectedBackend ? (
                       <div className="backend-note">
-                        Use switches back from the active saved bridge.
+                        {bridge.store.enabledBridgeIds.includes(selectedBackend.id)
+                          ? "Enabled"
+                          : "Disabled"}
                       </div>
                     ) : null}
                     {duplicate ? (
@@ -414,9 +425,13 @@ export function BackendSettingsDialog({
                       Delete
                     </button>
                   ) : null}
-                  {selectionMode === "same-origin" && bridge.store.activeBackendId ? (
-                    <button type="button" className="btn btn-primary" onClick={useSameOrigin}>
-                      Use
+                  {selectionMode === "same-origin" ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => bridge.setBridgeEnabled(SAME_ORIGIN_BRIDGE_ID, !sameOriginEnabled)}
+                    >
+                      {sameOriginEnabled ? "Disable" : "Enable"}
                     </button>
                   ) : null}
                   {editingBackend ? (
@@ -437,8 +452,25 @@ export function BackendSettingsDialog({
                       >
                         Save
                       </button>
+                      {form.id ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy}
+                          onClick={() =>
+                            form.id
+                              ? bridge.setBridgeEnabled(
+                                  form.id,
+                                  !bridge.store.enabledBridgeIds.includes(form.id),
+                                )
+                              : undefined
+                          }
+                        >
+                          {bridge.store.enabledBridgeIds.includes(form.id) ? "Disable" : "Enable"}
+                        </button>
+                      ) : null}
                       <button type="submit" className="btn btn-primary" disabled={busy || !form.baseUrl.trim()}>
-                        Save & use
+                        Save & enable
                       </button>
                     </>
                   ) : null}
@@ -807,10 +839,10 @@ function sameOriginDisplayUrl() {
 }
 
 function initialSelectionMode(
-  activeBackend: BridgeBackendProfile | null,
+  lastSelectedBridgeId: string | null,
   sameOriginAvailable: boolean,
 ): SelectionMode {
-  if (activeBackend) {
+  if (lastSelectedBridgeId && lastSelectedBridgeId !== SAME_ORIGIN_BRIDGE_ID) {
     return "backend";
   }
   return sameOriginAvailable ? "same-origin" : "new";

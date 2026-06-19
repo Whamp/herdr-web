@@ -14,12 +14,10 @@ import { applyActivityMessage, parseActivityEventData, replayActivityMessages } 
 import type { ActivityLogEntry } from "./activity";
 import { BackendSettingsDialog } from "./BackendSettingsDialog";
 import { useBridge } from "./bridge";
+import type { BridgeId, BridgeRuntime } from "./bridge";
 import { createCommands, createdPaneId } from "./commands";
 import type { LaunchSpec, PaneFocusDirection, SplitDirection } from "./commands";
-import {
-  currentConnectionSnapshot,
-  isConnectionResultCurrent,
-} from "./connectionState";
+import { isConnectionResultCurrent } from "./connectionState";
 import {
   DEFAULT_CONTENT_INSET_BOTTOM_PX,
   DEFAULT_CONTENT_INSET_TOP_PX,
@@ -88,8 +86,45 @@ type SidebarView = "agents" | "tabs";
 type AgentSort = "attention" | "status" | "workspace";
 type AgentGroup = "none" | "workspace";
 type MenuKind = "space" | "tab" | "pane";
+type ScopedPaneRef = {
+  bridgeId: BridgeId;
+  paneId: string;
+};
+type ScopedWorkspaceRef = {
+  bridgeId: BridgeId;
+  workspaceId: string;
+};
+type ScopedLaunchTarget = LaunchTarget & {
+  bridgeId: BridgeId;
+};
+type BridgeConnectionView = {
+  runtime: BridgeRuntime;
+  snapshot: Snapshot | null;
+  loadState: LoadState;
+};
+type BridgeConnectionState = {
+  connectionKey: string;
+  snapshot: Snapshot | null;
+  loadState: LoadState;
+};
+type BridgeConnectionRef = {
+  connectionKey: string;
+  snapshot: Snapshot | null;
+  activityGeneration: number;
+  resyncBarrierGeneration: number;
+  activityLog: ActivityLogEntry[];
+};
+type ScopedAgentPane = {
+  bridgeId: BridgeId;
+  bridgeLabel: string;
+  pane: PaneInfo;
+  snapshot: Snapshot;
+  workspace?: WorkspaceInfo;
+  tabLabel?: string;
+};
 type MenuState = {
   kind: MenuKind;
+  bridgeId: BridgeId;
   id: string;
   label: string;
   x: number;
@@ -99,6 +134,7 @@ type MenuState = {
 type DialogState = {
   mode: "rename" | "close";
   kind: MenuKind;
+  bridgeId: BridgeId;
   id: string;
   label: string;
   clearable?: boolean;
@@ -110,8 +146,11 @@ type DisplayPrefs = {
   agentGroup: AgentGroup;
   sidebarWidth: number;
   sidebarOpen: boolean;
-  activeSpaceId: string | null;
-  selectedPaneId: string | null;
+  selectedBridgeId: BridgeId | null;
+  selectedPane: ScopedPaneRef | null;
+  activeWorkspace: ScopedWorkspaceRef | null;
+  selectedPanesByBridgeId: Record<string, string>;
+  activeWorkspacesByBridgeId: Record<string, string>;
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
   terminalOutputCoalesceMs: number;
@@ -122,9 +161,14 @@ type DisplayPrefs = {
   mobileTouchSelection: boolean;
   mobileKeyboardHideRefit: boolean;
 };
+type LegacyDisplaySelectionPrefs = {
+  activeSpaceId: string | null;
+  selectedPaneId: string | null;
+};
 const COMPACT_LAYOUT_QUERY = "(max-width: 820px)";
 const TOUCH_INPUT_QUERY = "(hover: none) and (pointer: coarse)";
-const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
+const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v2";
+const LEGACY_DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
 const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
 const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
 const DEFAULT_SIDEBAR_WIDTH = 320;
@@ -139,8 +183,11 @@ function readDisplayPrefs(): DisplayPrefs {
     agentGroup: "none",
     sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     sidebarOpen: true,
-    activeSpaceId: null,
-    selectedPaneId: null,
+    selectedBridgeId: null,
+    selectedPane: null,
+    activeWorkspace: null,
+    selectedPanesByBridgeId: {},
+    activeWorkspacesByBridgeId: {},
     terminalInputTransport: DEFAULT_TERMINAL_INPUT_TRANSPORT,
     terminalInputBatchDelayMs: DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
     terminalOutputCoalesceMs: DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
@@ -154,7 +201,7 @@ function readDisplayPrefs(): DisplayPrefs {
   try {
     const raw = window.localStorage.getItem(DISPLAY_PREFS_KEY);
     if (!raw) {
-      return fallback;
+      return readLegacyDisplayPrefs(fallback);
     }
     const parsed = JSON.parse(raw) as Partial<DisplayPrefs>;
     return {
@@ -179,10 +226,12 @@ function readDisplayPrefs(): DisplayPrefs {
           : fallback.sidebarWidth,
       sidebarOpen:
         typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen,
-      activeSpaceId:
-        typeof parsed.activeSpaceId === "string" ? parsed.activeSpaceId : fallback.activeSpaceId,
-      selectedPaneId:
-        typeof parsed.selectedPaneId === "string" ? parsed.selectedPaneId : fallback.selectedPaneId,
+      selectedBridgeId:
+        typeof parsed.selectedBridgeId === "string" ? parsed.selectedBridgeId : fallback.selectedBridgeId,
+      selectedPane: parseScopedPaneRef(parsed.selectedPane),
+      activeWorkspace: parseScopedWorkspaceRef(parsed.activeWorkspace),
+      selectedPanesByBridgeId: parseStringRecord(parsed.selectedPanesByBridgeId),
+      activeWorkspacesByBridgeId: parseStringRecord(parsed.activeWorkspacesByBridgeId),
       terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
       terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
       terminalOutputCoalesceMs: parseTerminalOutputCoalesceMs(
@@ -200,6 +249,102 @@ function readDisplayPrefs(): DisplayPrefs {
   } catch {
     return fallback;
   }
+}
+
+function readLegacyDisplaySelectionPrefs(): LegacyDisplaySelectionPrefs {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_DISPLAY_PREFS_KEY);
+    if (!raw) {
+      return { activeSpaceId: null, selectedPaneId: null };
+    }
+    const parsed = JSON.parse(raw) as { activeSpaceId?: unknown; selectedPaneId?: unknown };
+    return {
+      activeSpaceId: typeof parsed.activeSpaceId === "string" ? parsed.activeSpaceId : null,
+      selectedPaneId: typeof parsed.selectedPaneId === "string" ? parsed.selectedPaneId : null,
+    };
+  } catch {
+    return { activeSpaceId: null, selectedPaneId: null };
+  }
+}
+
+function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_DISPLAY_PREFS_KEY);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw) as {
+      activeSpaceId?: unknown;
+      selectedPaneId?: unknown;
+    } & Partial<DisplayPrefs>;
+    return {
+      ...fallback,
+      scope: parsed.scope === "all" || parsed.scope === "space" ? parsed.scope : fallback.scope,
+      sidebarView:
+        parsed.sidebarView === "agents" || parsed.sidebarView === "tabs"
+          ? parsed.sidebarView
+          : fallback.sidebarView,
+      agentSort:
+        parsed.agentSort === "attention" ||
+        parsed.agentSort === "status" ||
+        parsed.agentSort === "workspace"
+          ? parsed.agentSort
+          : fallback.agentSort,
+      agentGroup:
+        parsed.agentGroup === "none" || parsed.agentGroup === "workspace"
+          ? parsed.agentGroup
+          : fallback.agentGroup,
+      sidebarWidth:
+        typeof parsed.sidebarWidth === "number"
+          ? clampSidebarWidth(parsed.sidebarWidth)
+          : fallback.sidebarWidth,
+      sidebarOpen:
+        typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen,
+      terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
+      terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
+      terminalOutputCoalesceMs: parseTerminalOutputCoalesceMs(
+        parsed.terminalOutputCoalesceMs,
+      ),
+      contentInsetTopPx: parseContentInsetTopPx(parsed.contentInsetTopPx),
+      contentInsetBottomPx: parseContentInsetBottomPx(parsed.contentInsetBottomPx),
+      mobileControlsScalePercent: parseMobileControlsScalePercent(
+        parsed.mobileControlsScalePercent,
+      ),
+      mobileTerminalTapTarget: parseMobileTerminalTapTarget(parsed.mobileTerminalTapTarget),
+      mobileTouchSelection: parseMobileTouchSelection(parsed.mobileTouchSelection),
+      mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function parseScopedPaneRef(value: unknown): ScopedPaneRef | null {
+  if (!isRecord(value) || typeof value.bridgeId !== "string" || typeof value.paneId !== "string") {
+    return null;
+  }
+  return { bridgeId: value.bridgeId, paneId: value.paneId };
+}
+
+function parseScopedWorkspaceRef(value: unknown): ScopedWorkspaceRef | null {
+  if (
+    !isRecord(value) ||
+    typeof value.bridgeId !== "string" ||
+    typeof value.workspaceId !== "string"
+  ) {
+    return null;
+  }
+  return { bridgeId: value.bridgeId, workspaceId: value.workspaceId };
+}
+
+function parseStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  return Object.fromEntries(entries);
 }
 
 function clampSidebarWidth(width: number) {
@@ -259,19 +404,29 @@ function stripMobileHistoryState(value: unknown) {
 
 export function App() {
   const bridge = useBridge();
-  const commands = useMemo(() => createCommands(bridge.httpUrl), [bridge.httpUrl]);
   const initialPrefs = useMemo(readDisplayPrefs, []);
-  const [snapshotState, setSnapshot] = useState<Snapshot | null>(null);
-  const [snapshotConnectionKey, setSnapshotConnectionKey] = useState(bridge.connectionKey);
-  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(initialPrefs.selectedPaneId);
-  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(initialPrefs.activeSpaceId);
+  const legacySelectionPrefs = useMemo(readLegacyDisplaySelectionPrefs, []);
+  const [connectionStates, setConnectionStates] = useState<Record<string, BridgeConnectionState>>({});
+  const [selectedBridgeId, setSelectedBridgeId] = useState<BridgeId | null>(
+    initialPrefs.selectedBridgeId,
+  );
+  const [selectedPaneRefState, setSelectedPaneRefState] = useState<ScopedPaneRef | null>(
+    initialPrefs.selectedPane,
+  );
+  const [activeWorkspaceRefState, setActiveWorkspaceRefState] =
+    useState<ScopedWorkspaceRef | null>(initialPrefs.activeWorkspace);
+  const [selectedPanesByBridgeId, setSelectedPanesByBridgeId] = useState<Record<string, string>>(
+    initialPrefs.selectedPanesByBridgeId,
+  );
+  const [activeWorkspacesByBridgeId, setActiveWorkspacesByBridgeId] = useState<Record<string, string>>(
+    initialPrefs.activeWorkspacesByBridgeId,
+  );
   const [scope, setScope] = useState<Scope>(initialPrefs.scope);
   const [sidebarView, setSidebarView] = useState<SidebarView>(initialPrefs.sidebarView);
   const [agentSort, setAgentSort] = useState<AgentSort>(initialPrefs.agentSort);
   const [agentGroup, setAgentGroup] = useState<AgentGroup>(initialPrefs.agentGroup);
   const [sidebarWidth, setSidebarWidth] = useState(initialPrefs.sidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
   const [sidebarOpen, setSidebarOpen] = useState(initialPrefs.sidebarOpen);
   const [showDetail, setShowDetail] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -302,7 +457,7 @@ export function App() {
   const [mobileKeyboardHideRefit, setMobileKeyboardHideRefit] = useState(
     initialPrefs.mobileKeyboardHideRefit,
   );
-  const [launchTarget, setLaunchTarget] = useState<LaunchTarget | null>(null);
+  const [launchTarget, setLaunchTarget] = useState<ScopedLaunchTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refitToken, setRefitToken] = useState(0);
@@ -310,15 +465,13 @@ export function App() {
   const isCompactLayout = useIsCompactLayout();
   const isTouchInput = useIsTouchInput();
   const showMobileKeyboardHideRefit = isNativeAndroid();
-  const snapshotRef = useRef<Snapshot | null>(null);
+  const connectionRefs = useRef<Record<string, BridgeConnectionRef>>({});
   const isCompactLayoutRef = useRef(isCompactLayout);
   const showDetailRef = useRef(showDetail);
-  const connectionKeyRef = useRef(bridge.connectionKey);
-  const activityGenerationRef = useRef(0);
-  const resyncBarrierGenerationRef = useRef(0);
-  const activityLogRef = useRef<ActivityLogEntry[]>([]);
+  const selectedBridgeIdRef = useRef(selectedBridgeId);
   const mobileSidebarHistoryRef = useRef(false);
   const mobileDetailHistoryRef = useRef(false);
+  const legacySelectionAppliedRef = useRef(false);
   const sidebarResizePressRef = useRef<{
     timer: number;
     pointerId: number;
@@ -349,17 +502,54 @@ export function App() {
     });
   }, [backendSettingsOpen, dialog, launchTarget, menu]);
 
-  const snapshot = currentConnectionSnapshot(
-    snapshotState,
-    snapshotConnectionKey,
-    bridge.connectionKey,
+  const bridgeViews = useMemo<BridgeConnectionView[]>(
+    () =>
+      bridge.enabledRuntimes.map((runtime) => {
+        const state = connectionStates[runtime.id];
+        const currentState = state?.connectionKey === runtime.connectionKey ? state : null;
+        return {
+          runtime,
+          snapshot: currentState?.snapshot ?? null,
+          loadState: currentState?.loadState ?? (runtime.canConnect ? "loading" : "ready"),
+        };
+      }),
+    [bridge.enabledRuntimes, connectionStates],
   );
-  const resolvedPaneId = chooseSelectedPane(snapshot, selectedPaneId);
-  const supportedCommands = bridge.capabilities?.commands ?? [];
+  const selectedRuntime = useMemo(
+    () =>
+      selectedBridgeId
+        ? (bridge.enabledRuntimes.find((runtime) => runtime.id === selectedBridgeId) ?? null)
+        : null,
+    [bridge.enabledRuntimes, selectedBridgeId],
+  );
+  const selectedConnectionState =
+    selectedRuntime && connectionStates[selectedRuntime.id]?.connectionKey === selectedRuntime.connectionKey
+      ? connectionStates[selectedRuntime.id]
+      : null;
+  const snapshot = selectedConnectionState?.snapshot ?? null;
+  const loadState: LoadState = selectedConnectionState?.loadState ?? (selectedRuntime ? "loading" : "ready");
+  const selectedRawPaneId =
+    selectedRuntime && selectedPaneRefState?.bridgeId === selectedRuntime.id
+      ? selectedPaneRefState.paneId
+      : selectedRuntime
+        ? (selectedPanesByBridgeId[selectedRuntime.id] ?? null)
+        : null;
+  const activeWorkspaceId =
+    selectedRuntime && activeWorkspaceRefState?.bridgeId === selectedRuntime.id
+      ? activeWorkspaceRefState.workspaceId
+      : selectedRuntime
+        ? (activeWorkspacesByBridgeId[selectedRuntime.id] ?? null)
+        : null;
+  const resolvedPaneId = chooseSelectedPane(snapshot, selectedRawPaneId);
+  const supportedCommands =
+    selectedRuntime?.capabilityState === "ready" ? (selectedRuntime.capabilities?.commands ?? []) : [];
   const splitSupported = supportedCommands.includes("pane.split");
   const paneFocusSupported = supportedCommands.includes("pane.focus_direction");
   const paneMoveSupported = supportedCommands.includes("pane.move");
-
+  const selectedCommands = useMemo(
+    () => (selectedRuntime ? createCommands(selectedRuntime.httpUrl) : null),
+    [selectedRuntime],
+  );
   const ensureMobileSidebarHistory = () => {
     if (!isCompactLayoutRef.current || isMobileDetailHistoryState(window.history.state)) {
       return;
@@ -377,8 +567,67 @@ export function App() {
   };
 
   useEffect(() => {
-    snapshotRef.current = snapshot;
-  }, [snapshot]);
+    selectedBridgeIdRef.current = selectedBridgeId;
+  }, [selectedBridgeId]);
+
+  useEffect(() => {
+    if (!bridge.storeLoaded) {
+      return;
+    }
+    const enabledIds = bridge.enabledBridgeIds;
+    setSelectedBridgeId((current) => {
+      if (current && enabledIds.includes(current)) {
+        return current;
+      }
+      return bridge.lastSelectedBridgeId ?? enabledIds[0] ?? null;
+    });
+  }, [bridge.enabledBridgeIds, bridge.lastSelectedBridgeId, bridge.storeLoaded]);
+
+  useEffect(() => {
+    if (
+      legacySelectionAppliedRef.current ||
+      !bridge.storeLoaded ||
+      !selectedRuntime ||
+      (!legacySelectionPrefs.selectedPaneId && !legacySelectionPrefs.activeSpaceId)
+    ) {
+      return;
+    }
+    legacySelectionAppliedRef.current = true;
+    if (selectedPaneRefState || activeWorkspaceRefState) {
+      return;
+    }
+    if (legacySelectionPrefs.selectedPaneId) {
+      const paneId = legacySelectionPrefs.selectedPaneId;
+      setSelectedPaneRefState({
+        bridgeId: selectedRuntime.id,
+        paneId,
+      });
+      setSelectedPanesByBridgeId((current) =>
+        current[selectedRuntime.id]
+          ? current
+          : { ...current, [selectedRuntime.id]: paneId },
+      );
+    }
+    if (legacySelectionPrefs.activeSpaceId) {
+      const workspaceId = legacySelectionPrefs.activeSpaceId;
+      setActiveWorkspaceRefState({
+        bridgeId: selectedRuntime.id,
+        workspaceId,
+      });
+      setActiveWorkspacesByBridgeId((current) =>
+        current[selectedRuntime.id]
+          ? current
+          : { ...current, [selectedRuntime.id]: workspaceId },
+      );
+    }
+  }, [
+    activeWorkspaceRefState,
+    bridge.storeLoaded,
+    legacySelectionPrefs.activeSpaceId,
+    legacySelectionPrefs.selectedPaneId,
+    selectedPaneRefState,
+    selectedRuntime,
+  ]);
 
   useEffect(() => {
     isCompactLayoutRef.current = isCompactLayout;
@@ -401,8 +650,48 @@ export function App() {
   }, [showDetail]);
 
   useEffect(() => {
-    setSelectedPaneId((current) => chooseSelectedPane(snapshot, current));
-  }, [snapshot]);
+    if (!selectedRuntime) {
+      setSelectedPaneRefState(null);
+      setActiveWorkspaceRefState(null);
+      return;
+    }
+    bridge.setLastSelectedBridgeId(selectedRuntime.id);
+    const restoredPaneId = selectedPanesByBridgeId[selectedRuntime.id] ?? null;
+    const nextPaneId = chooseSelectedPane(snapshot, restoredPaneId);
+    setSelectedPaneRefState(nextPaneId ? { bridgeId: selectedRuntime.id, paneId: nextPaneId } : null);
+    if (nextPaneId) {
+      setSelectedPanesByBridgeId((current) =>
+        current[selectedRuntime.id] === nextPaneId
+          ? current
+          : { ...current, [selectedRuntime.id]: nextPaneId },
+      );
+      const pane = snapshot?.panes.find((item) => item.pane_id === nextPaneId);
+      if (pane) {
+        setActiveWorkspaceRefState({
+          bridgeId: selectedRuntime.id,
+          workspaceId: pane.workspace_id,
+        });
+        setActiveWorkspacesByBridgeId((current) =>
+          current[selectedRuntime.id] === pane.workspace_id
+            ? current
+            : { ...current, [selectedRuntime.id]: pane.workspace_id },
+        );
+      }
+      return;
+    }
+    const restoredWorkspaceId = activeWorkspacesByBridgeId[selectedRuntime.id];
+    setActiveWorkspaceRefState(
+      restoredWorkspaceId
+        ? { bridgeId: selectedRuntime.id, workspaceId: restoredWorkspaceId }
+        : null,
+    );
+  }, [
+    activeWorkspacesByBridgeId,
+    bridge.setLastSelectedBridgeId,
+    selectedPanesByBridgeId,
+    selectedRuntime?.id,
+    snapshot,
+  ]);
 
   useEffect(() => {
     writeDisplayPrefs({
@@ -412,8 +701,11 @@ export function App() {
       agentGroup,
       sidebarWidth,
       sidebarOpen,
-      activeSpaceId,
-      selectedPaneId,
+      selectedBridgeId,
+      selectedPane: selectedPaneRefState,
+      activeWorkspace: activeWorkspaceRefState,
+      selectedPanesByBridgeId,
+      activeWorkspacesByBridgeId,
       terminalInputTransport,
       terminalInputBatchDelayMs,
       terminalOutputCoalesceMs,
@@ -431,8 +723,11 @@ export function App() {
     agentGroup,
     sidebarWidth,
     sidebarOpen,
-    activeSpaceId,
-    selectedPaneId,
+    selectedBridgeId,
+    selectedPaneRefState,
+    activeWorkspaceRefState,
+    selectedPanesByBridgeId,
+    activeWorkspacesByBridgeId,
     terminalInputTransport,
     terminalInputBatchDelayMs,
     terminalOutputCoalesceMs,
@@ -517,108 +812,216 @@ export function App() {
     [],
   );
 
+  function rememberPaneSelection(
+    bridgeId: BridgeId,
+    paneId: string,
+    workspaceId?: string,
+  ) {
+    setSelectedPanesByBridgeId((current) =>
+      current[bridgeId] === paneId ? current : { ...current, [bridgeId]: paneId },
+    );
+    if (workspaceId) {
+      setActiveWorkspacesByBridgeId((current) =>
+        current[bridgeId] === workspaceId ? current : { ...current, [bridgeId]: workspaceId },
+      );
+    }
+    if (selectedBridgeIdRef.current !== bridgeId) {
+      return;
+    }
+    setSelectedPaneRefState((current) =>
+      current?.bridgeId === bridgeId && current.paneId === paneId
+        ? current
+        : { bridgeId, paneId },
+    );
+    if (workspaceId) {
+      setActiveWorkspaceRefState((current) =>
+        current?.bridgeId === bridgeId && current.workspaceId === workspaceId
+          ? current
+          : { bridgeId, workspaceId },
+      );
+    }
+  }
+
   useEffect(() => {
     let disposed = false;
-    if (connectionKeyRef.current !== bridge.connectionKey) {
-      connectionKeyRef.current = bridge.connectionKey;
-      activityGenerationRef.current += 1;
-      resyncBarrierGenerationRef.current = activityGenerationRef.current;
-      activityLogRef.current = [];
-      snapshotRef.current = null;
-      setSnapshot(null);
-      setSnapshotConnectionKey(bridge.connectionKey);
-      setSelectedPaneId(null);
-      setActiveSpaceId(null);
+    const cleanups: (() => void)[] = [];
+    const activeBridgeIds = new Set(bridge.enabledRuntimes.map((runtime) => runtime.id));
+
+    for (const bridgeId of Object.keys(connectionRefs.current)) {
+      if (!activeBridgeIds.has(bridgeId)) {
+        delete connectionRefs.current[bridgeId];
+      }
     }
-    if (!bridge.canConnect) {
-      snapshotRef.current = null;
-      setSnapshot(null);
-      setSnapshotConnectionKey(bridge.connectionKey);
-      setSelectedPaneId(null);
-      setActiveSpaceId(null);
-      setLoadState("ready");
-      return () => {
-        disposed = true;
-      };
-    }
-    const requestConnectionKey = bridge.connectionKey;
-    const isCurrentConnection = () =>
-      !disposed && isConnectionResultCurrent(connectionKeyRef.current, requestConnectionKey);
-    const refreshController = createSnapshotRefreshController({
-      fetchSnapshot: () => fetchSnapshot(bridge.httpUrl),
-      getGeneration: () => activityGenerationRef.current,
-      getBarrierGeneration: () => resyncBarrierGenerationRef.current,
-      isCurrent: isCurrentConnection,
-      onError: () => setLoadState("error"),
-      applySnapshot: (next, refreshGeneration) => {
-        const patched = replayActivityMessages(next, activityLogRef.current, refreshGeneration);
-        snapshotRef.current = patched;
-        setSnapshot(patched);
-        setSnapshotConnectionKey(requestConnectionKey);
-        setLoadState("ready");
-      },
+    setConnectionStates((current) => {
+      let changed = false;
+      const next: Record<string, BridgeConnectionState> = {};
+      for (const [bridgeId, state] of Object.entries(current)) {
+        if (activeBridgeIds.has(bridgeId)) {
+          next[bridgeId] = state;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
     });
-    const refresh = () => refreshController.request();
-    const requestActivityResync = () => {
-      activityGenerationRef.current += 1;
-      resyncBarrierGenerationRef.current = activityGenerationRef.current;
+
+    for (const runtime of bridge.enabledRuntimes) {
+      const existing = connectionRefs.current[runtime.id];
+      if (!existing || existing.connectionKey !== runtime.connectionKey) {
+        connectionRefs.current[runtime.id] = {
+          connectionKey: runtime.connectionKey,
+          snapshot: null,
+          activityGeneration: 0,
+          resyncBarrierGeneration: 0,
+          activityLog: [],
+        };
+        setConnectionStates((current) => ({
+          ...current,
+          [runtime.id]: {
+            connectionKey: runtime.connectionKey,
+            snapshot: null,
+            loadState: runtime.canConnect ? "loading" : "ready",
+          },
+        }));
+      }
+
+      if (!runtime.canConnect) {
+        connectionRefs.current[runtime.id].snapshot = null;
+        setConnectionStates((current) => ({
+          ...current,
+          [runtime.id]: {
+            connectionKey: runtime.connectionKey,
+            snapshot: null,
+            loadState: "ready",
+          },
+        }));
+        continue;
+      }
+
+      const requestConnectionKey = runtime.connectionKey;
+      const isCurrentConnection = () =>
+        !disposed &&
+        isConnectionResultCurrent(
+          connectionRefs.current[runtime.id]?.connectionKey ?? "",
+          requestConnectionKey,
+        );
+      const refreshController = createSnapshotRefreshController({
+        fetchSnapshot: () => fetchSnapshot(runtime.httpUrl),
+        getGeneration: () => connectionRefs.current[runtime.id]?.activityGeneration ?? 0,
+        getBarrierGeneration: () =>
+          connectionRefs.current[runtime.id]?.resyncBarrierGeneration ?? 0,
+        isCurrent: isCurrentConnection,
+        onError: () =>
+          setConnectionStates((current) => ({
+            ...current,
+            [runtime.id]: {
+              connectionKey: requestConnectionKey,
+              snapshot:
+                current[runtime.id]?.connectionKey === requestConnectionKey
+                  ? current[runtime.id]?.snapshot ?? null
+                  : null,
+              loadState: "error",
+            },
+          })),
+        applySnapshot: (next, refreshGeneration) => {
+          const ref = connectionRefs.current[runtime.id];
+          if (!ref || ref.connectionKey !== requestConnectionKey) {
+            return;
+          }
+          const patched = replayActivityMessages(next, ref.activityLog, refreshGeneration);
+          ref.snapshot = patched;
+          setConnectionStates((current) => ({
+            ...current,
+            [runtime.id]: {
+              connectionKey: requestConnectionKey,
+              snapshot: patched,
+              loadState: "ready",
+            },
+          }));
+        },
+      });
+      const refresh = () => refreshController.request();
+      const requestActivityResync = () => {
+        const ref = connectionRefs.current[runtime.id];
+        if (!ref) {
+          return;
+        }
+        ref.activityGeneration += 1;
+        ref.resyncBarrierGeneration = ref.activityGeneration;
+        refresh();
+      };
       refresh();
-    };
-    refresh();
-    const interval = window.setInterval(refresh, 10000);
-    const events = openEventsSocket(bridge.wsUrl, "/ws/events", refresh);
-    const activity = openEventsSocket(
-      bridge.wsUrl,
-      "/ws/activity",
-      (event) => {
+      const interval = window.setInterval(refresh, 10000);
+      const events = openEventsSocket(runtime.wsUrl, "/ws/events", refresh);
+      const activity = openEventsSocket(
+        runtime.wsUrl,
+        "/ws/activity",
+        (event) => {
+          if (!isCurrentConnection()) {
+            return;
+          }
+          const ref = connectionRefs.current[runtime.id];
+          if (!ref) {
+            return;
+          }
+          const parsed = parseActivityEventData(event.data);
+          if (parsed.status === "ignored") {
+            return;
+          }
+          if (parsed.status === "invalid_known") {
+            requestActivityResync();
+            return;
+          }
+          const result = applyActivityMessage(ref.snapshot, parsed.message);
+          if (result.status === "applied") {
+            ref.activityGeneration += 1;
+            ref.activityLog = [
+              ...ref.activityLog,
+              { generation: ref.activityGeneration, message: parsed.message },
+            ].slice(-100);
+            ref.snapshot = result.snapshot;
+            setConnectionStates((current) => ({
+              ...current,
+              [runtime.id]: {
+                connectionKey: requestConnectionKey,
+                snapshot: result.snapshot,
+                loadState: "ready",
+              },
+            }));
+          } else if (result.status === "resync") {
+            requestActivityResync();
+          }
+        },
+        { onOpen: refresh },
+      );
+      const uiEvents = openEventsSocket(runtime.wsUrl, "/ws/ui-events", (event) => {
         if (!isCurrentConnection()) {
           return;
         }
-        const parsed = parseActivityEventData(event.data);
-        if (parsed.status === "ignored") {
-          return;
+        const paneId = selectionPaneId(event);
+        if (paneId) {
+          const pane = connectionRefs.current[runtime.id]?.snapshot?.panes.find(
+            (item) => item.pane_id === paneId,
+          );
+          rememberPaneSelection(runtime.id, paneId, pane?.workspace_id);
         }
-        if (parsed.status === "invalid_known") {
-          requestActivityResync();
-          return;
-        }
-        const result = applyActivityMessage(snapshotRef.current, parsed.message);
-        if (result.status === "applied") {
-          activityGenerationRef.current += 1;
-          activityLogRef.current = [
-            ...activityLogRef.current,
-            { generation: activityGenerationRef.current, message: parsed.message },
-          ].slice(-100);
-          snapshotRef.current = result.snapshot;
-          setSnapshot(result.snapshot);
-        } else if (result.status === "resync") {
-          requestActivityResync();
-        }
-      },
-      { onOpen: refresh },
-    );
-    const uiEvents = openEventsSocket(bridge.wsUrl, "/ws/ui-events", (event) => {
-      if (!isCurrentConnection()) {
-        return;
-      }
-      const paneId = selectionPaneId(event);
-      if (paneId) {
-        setSelectedPaneId(paneId);
-        const pane = snapshotRef.current?.panes.find((item) => item.pane_id === paneId);
-        if (pane) {
-          setActiveSpaceId(pane.workspace_id);
-        }
-      }
-      refresh();
-    });
+        refresh();
+      });
+      cleanups.push(() => {
+        events?.close();
+        activity?.close();
+        uiEvents?.close();
+        window.clearInterval(interval);
+      });
+    }
+
     return () => {
       disposed = true;
-      events?.close();
-      activity?.close();
-      uiEvents?.close();
-      window.clearInterval(interval);
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
     };
-  }, [bridge.canConnect, bridge.connectionKey, bridge.httpUrl, bridge.resumeToken, bridge.wsUrl]);
+  }, [bridge.enabledRuntimes]);
 
   useEffect(() => {
     if (!error) {
@@ -665,9 +1068,10 @@ export function App() {
     [snapshot, resolvedPaneId],
   );
   const selectedPaneMenuPress = useLongPress((x, y) => {
-    if (selectedPane) {
+    if (selectedPane && selectedRuntime) {
       setMenu({
         kind: "pane",
+        bridgeId: selectedRuntime.id,
         id: selectedPane.pane_id,
         label: paneTitle(selectedPane),
         x,
@@ -689,8 +1093,8 @@ export function App() {
       return null;
     }
     return (
-      (activeSpaceId &&
-        snapshot.workspaces.find((workspace) => workspace.workspace_id === activeSpaceId)) ||
+      (activeWorkspaceId &&
+        snapshot.workspaces.find((workspace) => workspace.workspace_id === activeWorkspaceId)) ||
       (selectedPane &&
         snapshot.workspaces.find(
           (workspace) => workspace.workspace_id === selectedPane.workspace_id,
@@ -699,7 +1103,7 @@ export function App() {
       snapshot.workspaces[0] ||
       null
     );
-  }, [snapshot, activeSpaceId, selectedPane]);
+  }, [snapshot, activeWorkspaceId, selectedPane]);
 
   // The active tab's split layout, normalized to fractions of the tab area so we
   // can reproduce the herdr split geometry in the browser. Null when the tab has
@@ -742,7 +1146,11 @@ export function App() {
   // Mirror browser navigation to the herdr session so `active_tab_id` tracks
   // what we're viewing here. `tab.focus` also activates the tab's workspace, so
   // a workspace-only focus is just the fallback for a space with no panes yet.
-  const pushFocus = (tabId?: string, workspaceId?: string) => {
+  const pushFocus = (runtime: BridgeRuntime | null, tabId?: string, workspaceId?: string) => {
+    if (!runtime || runtime.capabilityState !== "ready") {
+      return;
+    }
+    const commands = createCommands(runtime.httpUrl);
     if (tabId) {
       void commands.focusTab(tabId).catch(() => {});
     } else if (workspaceId) {
@@ -774,11 +1182,18 @@ export function App() {
     setShowDetail(false);
   };
 
-  const openPane = (pane: PaneInfo) => {
-    setSelectedPaneId(pane.pane_id);
-    setActiveSpaceId(pane.workspace_id);
-    void syncSelectedPane(bridge.httpUrl, pane.pane_id).catch(() => {});
-    pushFocus(pane.tab_id, pane.workspace_id);
+  const openPane = (bridgeId: BridgeId, pane: PaneInfo) => {
+    const runtime = bridge.getRuntime(bridgeId);
+    if (!runtime) {
+      return;
+    }
+    setSelectedBridgeId(bridgeId);
+    bridge.markBridgeUsed(bridgeId);
+    rememberPaneSelection(bridgeId, pane.pane_id, pane.workspace_id);
+    if (runtime.capabilityState === "ready") {
+      void syncSelectedPane(runtime.httpUrl, pane.pane_id).catch(() => {});
+    }
+    pushFocus(runtime, pane.tab_id, pane.workspace_id);
     if (isCompactLayout) {
       openMobileDetail();
     }
@@ -786,23 +1201,34 @@ export function App() {
 
   const requestTerminalFocus = () => setTerminalFocusToken((token) => token + 1);
 
-  const selectSpace = (workspaceId: string) => {
-    setActiveSpaceId(workspaceId);
+  const selectSpace = (bridgeId: BridgeId, workspaceId: string) => {
+    const runtime = bridge.getRuntime(bridgeId);
+    if (!runtime) {
+      return;
+    }
+    setSelectedBridgeId(bridgeId);
+    bridge.markBridgeUsed(bridgeId);
+    setActiveWorkspaceRefState({ bridgeId, workspaceId });
+    setActiveWorkspacesByBridgeId((current) =>
+      current[bridgeId] === workspaceId ? current : { ...current, [bridgeId]: workspaceId },
+    );
     if (!isCompactLayout && snapshot) {
       const paneId = choosePaneForWorkspace(snapshot, workspaceId);
       if (paneId) {
-        setSelectedPaneId(paneId);
         const pane = snapshot.panes.find((item) => item.pane_id === paneId);
-        void syncSelectedPane(bridge.httpUrl, paneId).catch(() => {});
-        pushFocus(pane?.tab_id, workspaceId);
+        rememberPaneSelection(bridgeId, paneId, pane?.workspace_id ?? workspaceId);
+        if (runtime.capabilityState === "ready") {
+          void syncSelectedPane(runtime.httpUrl, paneId).catch(() => {});
+        }
+        pushFocus(runtime, pane?.tab_id, workspaceId);
         return;
       }
-      setSelectedPaneId(null);
+      setSelectedPaneRefState(null);
     }
-    pushFocus(undefined, workspaceId);
+    pushFocus(runtime, undefined, workspaceId);
   };
 
-  const selectTab = (tabId: string) => {
+  const selectTab = (bridgeId: BridgeId, tabId: string) => {
     if (!snapshot) {
       return;
     }
@@ -810,18 +1236,18 @@ export function App() {
     if (paneId) {
       const pane = snapshot.panes.find((item) => item.pane_id === paneId);
       if (pane) {
-        openPane(pane);
+        openPane(bridgeId, pane);
       }
     }
   };
 
-  const focusTab = (tabId: string) => {
-    selectTab(tabId);
+  const focusTab = (bridgeId: BridgeId, tabId: string) => {
+    selectTab(bridgeId, tabId);
     requestTerminalFocus();
   };
 
-  const focusPane = (pane: PaneInfo) => {
-    openPane(pane);
+  const focusPane = (bridgeId: BridgeId, pane: PaneInfo) => {
+    openPane(bridgeId, pane);
     requestTerminalFocus();
   };
 
@@ -842,6 +1268,7 @@ export function App() {
           paneCycleStep === 0) ||
         isShortcutTextEntryTarget(event.target) ||
         !snapshot ||
+        !selectedRuntime ||
         busy ||
         menu ||
         dialog ||
@@ -852,13 +1279,14 @@ export function App() {
       }
 
       if (paneFocusDirection) {
-        if (!selectedPane) {
+        if (!selectedPane || !selectedCommands) {
           return;
         }
         event.preventDefault();
         event.stopPropagation();
         void exec(
-          () => commands.focusPaneDirection(selectedPane.pane_id, paneFocusDirection),
+          selectedRuntime,
+          () => selectedCommands.focusPaneDirection(selectedPane.pane_id, paneFocusDirection),
           true,
         ).then((ok) => ok && requestTerminalFocus());
         return;
@@ -879,19 +1307,23 @@ export function App() {
           currentIndex === -1
             ? fallbackIndex
             : (currentIndex + paneCycleStep + panes.length) % panes.length;
-        focusPane(panes[nextIndex]);
+        if (selectedRuntime) {
+          focusPane(selectedRuntime.id, panes[nextIndex]);
+        }
         return;
       }
 
       if (splitDirection) {
-        if (!selectedPane) {
+        if (!selectedPane || !selectedCommands) {
           return;
         }
         event.preventDefault();
         event.stopPropagation();
-        void exec(() => commands.splitPane(selectedPane.pane_id, splitDirection), true).then(
-          (ok) => ok && requestTerminalFocus(),
-        );
+        void exec(
+          selectedRuntime,
+          () => selectedCommands.splitPane(selectedPane.pane_id, splitDirection),
+          true,
+        ).then((ok) => ok && requestTerminalFocus());
         return;
       }
 
@@ -901,7 +1333,13 @@ export function App() {
         }
         event.preventDefault();
         event.stopPropagation();
-        setLaunchTarget({ mode: "tab", workspaceId: activeSpace.workspace_id });
+        if (selectedRuntime) {
+          setLaunchTarget({
+            mode: "tab",
+            workspaceId: activeSpace.workspace_id,
+            bridgeId: selectedRuntime.id,
+          });
+        }
         return;
       }
 
@@ -917,6 +1355,7 @@ export function App() {
           setDialog({
             mode: "close",
             kind: "pane",
+            bridgeId: selectedRuntime.id,
             id: selectedPane.pane_id,
             label: paneTitle(selectedPane),
           });
@@ -925,6 +1364,7 @@ export function App() {
         setDialog({
           mode: "close",
           kind: "tab",
+          bridgeId: selectedRuntime.id,
           id: tab.tab_id,
           label: displayTabLabel(tab, snapshot.panes),
         });
@@ -953,7 +1393,9 @@ export function App() {
           currentIndex === -1
             ? fallbackIndex
             : (currentIndex + step + agentPanes.length) % agentPanes.length;
-        focusPane(agentPanes[nextIndex]);
+        if (selectedRuntime) {
+          focusPane(selectedRuntime.id, agentPanes[nextIndex]);
+        }
         return;
       }
 
@@ -976,7 +1418,9 @@ export function App() {
       const fallbackIndex = step > 0 ? 0 : tabs.length - 1;
       const nextIndex =
         currentIndex === -1 ? fallbackIndex : (currentIndex + step + tabs.length) % tabs.length;
-      focusTab(tabs[nextIndex].tab_id);
+      if (selectedRuntime) {
+        focusTab(selectedRuntime.id, tabs[nextIndex].tab_id);
+      }
     };
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
@@ -993,66 +1437,123 @@ export function App() {
     paneFocusSupported,
     scope,
     selectedPane,
+    selectedRuntime,
+    selectedCommands,
     splitSupported,
     snapshot,
   ]);
 
   const refreshNow = () => {
-    if (!bridge.canConnect) {
+    if (!selectedRuntime) {
       setBackendSettingsOpen(true);
       return;
     }
-    const requestConnectionKey = bridge.connectionKey;
-    const refreshGeneration = activityGenerationRef.current;
-    setLoadState("loading");
-    void fetchSnapshot(bridge.httpUrl)
-      .then((next) => {
-        if (!isConnectionResultCurrent(connectionKeyRef.current, requestConnectionKey)) {
-          return;
-        }
-        if (resyncBarrierGenerationRef.current > refreshGeneration) {
-          refreshNow();
-          return;
-        }
-        const patched = replayActivityMessages(next, activityLogRef.current, refreshGeneration);
-        snapshotRef.current = patched;
-        setSnapshot(patched);
-        setSnapshotConnectionKey(requestConnectionKey);
-        setLoadState("ready");
-      })
-      .catch(() => {
-        if (connectionKeyRef.current === requestConnectionKey) {
-          setLoadState("error");
-        }
-      });
+    if (!selectedRuntime.canConnect) {
+      setBackendSettingsOpen(true);
+      return;
+    }
+    void refreshBridgeSnapshot(selectedRuntime, true);
   };
 
-  async function exec(action: () => Promise<{ [key: string]: unknown }>, selectCreated = false) {
-    const requestConnectionKey = bridge.connectionKey;
+  async function refreshBridgeSnapshot(runtime: BridgeRuntime, setLoading: boolean) {
+    const ref = ensureConnectionRef(runtime);
+    const requestConnectionKey = runtime.connectionKey;
+    const refreshGeneration = ref.activityGeneration;
+    if (setLoading) {
+      setConnectionStates((current) => ({
+        ...current,
+        [runtime.id]: {
+          connectionKey: requestConnectionKey,
+          snapshot: current[runtime.id]?.snapshot ?? null,
+          loadState: "loading",
+        },
+      }));
+    }
+    try {
+      const next = await fetchSnapshot(runtime.httpUrl);
+      const currentRef = connectionRefs.current[runtime.id];
+      if (
+        !currentRef ||
+        !isConnectionResultCurrent(currentRef.connectionKey, requestConnectionKey)
+      ) {
+        return null;
+      }
+      if (currentRef.resyncBarrierGeneration > refreshGeneration) {
+        return refreshBridgeSnapshot(runtime, false);
+      }
+      const patched = replayActivityMessages(next, currentRef.activityLog, refreshGeneration);
+      currentRef.snapshot = patched;
+      setConnectionStates((current) => ({
+        ...current,
+        [runtime.id]: {
+          connectionKey: requestConnectionKey,
+          snapshot: patched,
+          loadState: "ready",
+        },
+      }));
+      return patched;
+    } catch {
+      const currentRef = connectionRefs.current[runtime.id];
+      if (currentRef?.connectionKey === requestConnectionKey) {
+        setConnectionStates((current) => ({
+          ...current,
+          [runtime.id]: {
+            connectionKey: requestConnectionKey,
+            snapshot: current[runtime.id]?.snapshot ?? null,
+            loadState: "error",
+          },
+        }));
+      }
+      return null;
+    }
+  }
+
+  async function exec(
+    runtime: BridgeRuntime | null,
+    action: () => Promise<{ [key: string]: unknown }>,
+    selectCreated = false,
+  ) {
+    if (
+      !runtime ||
+      runtime.capabilityState !== "ready" ||
+      !runtime.canConnect ||
+      !connectionRefs.current[runtime.id]?.snapshot
+    ) {
+      setError("Bridge is not ready");
+      return false;
+    }
+    const requestConnectionKey = runtime.connectionKey;
     setBusy(true);
     try {
       const result = await action();
-      let refreshGeneration = activityGenerationRef.current;
-      let next = await fetchSnapshot(bridge.httpUrl);
-      while (resyncBarrierGenerationRef.current > refreshGeneration) {
-        refreshGeneration = activityGenerationRef.current;
-        next = await fetchSnapshot(bridge.httpUrl);
+      let ref = connectionRefs.current[runtime.id];
+      let refreshGeneration = ref?.activityGeneration ?? 0;
+      let next = await fetchSnapshot(runtime.httpUrl);
+      while (ref && ref.resyncBarrierGeneration > refreshGeneration) {
+        refreshGeneration = ref.activityGeneration;
+        next = await fetchSnapshot(runtime.httpUrl);
+        ref = connectionRefs.current[runtime.id];
       }
-      if (!isConnectionResultCurrent(connectionKeyRef.current, requestConnectionKey)) {
+      if (!ref || !isConnectionResultCurrent(ref.connectionKey, requestConnectionKey)) {
         return false;
       }
-      const patched = replayActivityMessages(next, activityLogRef.current, refreshGeneration);
-      snapshotRef.current = patched;
-      setSnapshot(patched);
-      setSnapshotConnectionKey(requestConnectionKey);
-      setLoadState("ready");
+      const patched = replayActivityMessages(next, ref.activityLog, refreshGeneration);
+      ref.snapshot = patched;
+      setConnectionStates((current) => ({
+        ...current,
+        [runtime.id]: {
+          connectionKey: requestConnectionKey,
+          snapshot: patched,
+          loadState: "ready",
+        },
+      }));
       if (selectCreated) {
         const paneId = createdPaneId(result);
         const created = paneId ? patched.panes.find((pane) => pane.pane_id === paneId) : undefined;
         if (created) {
-          setSelectedPaneId(created.pane_id);
-          setActiveSpaceId(created.workspace_id);
-          void syncSelectedPane(bridge.httpUrl, created.pane_id).catch(() => {});
+          setSelectedBridgeId(runtime.id);
+          rememberPaneSelection(runtime.id, created.pane_id, created.workspace_id);
+          void syncSelectedPane(runtime.httpUrl, created.pane_id).catch(() => {});
           if (isCompactLayout) {
             openMobileDetail();
           }
@@ -1068,28 +1569,56 @@ export function App() {
     }
   }
 
+  function ensureConnectionRef(runtime: BridgeRuntime) {
+    const existing = connectionRefs.current[runtime.id];
+    if (existing?.connectionKey === runtime.connectionKey) {
+      return existing;
+    }
+    const next: BridgeConnectionRef = {
+      connectionKey: runtime.connectionKey,
+      snapshot: null,
+      activityGeneration: 0,
+      resyncBarrierGeneration: 0,
+      activityLog: [],
+    };
+    connectionRefs.current[runtime.id] = next;
+    return next;
+  }
+
   const onMenuPick = (key: string) => {
     if (!menu) {
       return;
     }
-    const { kind, id, label, clearable } = menu;
+    const { kind, bridgeId, id, label, clearable } = menu;
+    const runtime = bridge.getRuntime(bridgeId);
+    const commands = runtime ? createCommands(runtime.httpUrl) : null;
     setMenu(null);
     if (key === "rename") {
-      setDialog({ mode: "rename", kind, id, label, clearable });
+      setDialog({ mode: "rename", kind, bridgeId, id, label, clearable });
     } else if (key === "close") {
-      setDialog({ mode: "close", kind, id, label });
+      setDialog({ mode: "close", kind, bridgeId, id, label });
     } else if (key === "newtab") {
-      setActiveSpaceId(id);
-      setLaunchTarget({ mode: "tab", workspaceId: id });
+      setSelectedBridgeId(bridgeId);
+      setActiveWorkspaceRefState({ bridgeId, workspaceId: id });
+      setActiveWorkspacesByBridgeId((current) =>
+        current[bridgeId] === id ? current : { ...current, [bridgeId]: id },
+      );
+      setLaunchTarget({ mode: "tab", workspaceId: id, bridgeId });
     } else if (key === "move_new_tab" && kind === "pane") {
-      const pane = snapshotRef.current?.panes.find((item) => item.pane_id === id);
-      if (!pane) {
+      const pane = connectionRefs.current[bridgeId]?.snapshot?.panes.find(
+        (item) => item.pane_id === id,
+      );
+      if (!pane || !commands) {
         setError("Pane not found");
         return;
       }
-      void exec(() => commands.movePaneToNewTab(id, pane.workspace_id, label), true);
+      void exec(runtime, () => commands.movePaneToNewTab(id, pane.workspace_id, label), true);
     } else if (key === "move_new_space" && kind === "pane") {
-      void exec(() => commands.movePaneToNewWorkspace(id, label), true);
+      if (!commands) {
+        setError("Bridge is not ready");
+        return;
+      }
+      void exec(runtime, () => commands.movePaneToNewWorkspace(id, label), true);
     }
   };
 
@@ -1097,47 +1626,74 @@ export function App() {
     if (!dialog) {
       return;
     }
-    const { kind, id } = dialog;
+    const { kind, bridgeId, id } = dialog;
+    const runtime = bridge.getRuntime(bridgeId);
+    const commands = runtime ? createCommands(runtime.httpUrl) : null;
+    if (!commands) {
+      setError("Bridge is not ready");
+      return;
+    }
     const action =
       kind === "space"
         ? () => commands.renameWorkspace(id, value)
         : kind === "tab"
           ? () => commands.renameTab(id, value)
           : () => commands.renamePane(id, value);
-    void exec(action).then((ok) => ok && setDialog(null));
+    void exec(runtime, action).then((ok) => ok && setDialog(null));
   };
 
   const clearRename = () => {
     if (!dialog || dialog.kind === "pane") {
       return;
     }
-    const { kind, id } = dialog;
+    const { kind, bridgeId, id } = dialog;
+    const runtime = bridge.getRuntime(bridgeId);
+    const commands = runtime ? createCommands(runtime.httpUrl) : null;
+    if (!commands) {
+      setError("Bridge is not ready");
+      return;
+    }
     const action =
       kind === "space"
         ? () => commands.renameWorkspace(id, null)
         : () => commands.renameTab(id, null);
-    void exec(action).then((ok) => ok && setDialog(null));
+    void exec(runtime, action).then((ok) => ok && setDialog(null));
   };
 
   const confirmClose = () => {
     if (!dialog) {
       return;
     }
-    const { kind, id } = dialog;
+    const { kind, bridgeId, id } = dialog;
+    const runtime = bridge.getRuntime(bridgeId);
+    const commands = runtime ? createCommands(runtime.httpUrl) : null;
+    if (!commands) {
+      setError("Bridge is not ready");
+      return;
+    }
     const action =
       kind === "space"
         ? () => commands.closeWorkspace(id)
         : kind === "tab"
           ? () => commands.closeTab(id)
           : () => commands.closePane(id);
-    void exec(action).then((ok) => ok && setDialog(null));
+    void exec(runtime, action).then((ok) => ok && setDialog(null));
   };
 
   const submitLaunch = (spec: LaunchSpec) => {
     if (!launchTarget) {
       return;
     }
-    const resolvedSpec = resolveLaunchSpec(spec, snapshot?.panes ?? []);
+    const runtime = bridge.getRuntime(launchTarget.bridgeId);
+    const commands = runtime ? createCommands(runtime.httpUrl) : null;
+    if (!runtime || !commands) {
+      setError("Bridge is not ready");
+      return;
+    }
+    const launchSnapshot =
+      connectionRefs.current[launchTarget.bridgeId]?.snapshot ??
+      (launchTarget.bridgeId === selectedRuntime?.id ? snapshot : null);
+    const resolvedSpec = resolveLaunchSpec(spec, launchSnapshot?.panes ?? []);
     const action =
       launchTarget.mode === "tab"
         ? () => commands.createLaunchTab(launchTarget.workspaceId, resolvedSpec)
@@ -1148,7 +1704,7 @@ export function App() {
               launchTarget.direction,
               resolvedSpec,
             );
-    void exec(action, true).then((ok) => ok && setLaunchTarget(null));
+    void exec(runtime, action, true).then((ok) => ok && setLaunchTarget(null));
   };
 
   const renderTerminal = !isCompactLayout || showDetail;
@@ -1178,13 +1734,15 @@ export function App() {
     >
       <aside className="sidebar" aria-label="Switcher">
         <Switcher
+          bridgeViews={bridgeViews}
+          selectedBridgeId={selectedRuntime?.id ?? null}
           snapshot={snapshot}
           loadState={loadState}
-          bridgeCanConnect={bridge.canConnect}
-          bridgeError={bridge.capabilityError}
-          bridgeLabel={bridge.activeBackend?.name ?? "same-origin"}
-          bridgeMode={bridge.mode}
-          capabilityState={bridge.capabilityState}
+          bridgeCanConnect={selectedRuntime?.canConnect ?? false}
+          bridgeError={selectedRuntime?.capabilityError ?? null}
+          bridgeLabel={selectedRuntime?.label ?? "No bridge"}
+          bridgeMode={selectedRuntime?.mode ?? "configured"}
+          capabilityState={selectedRuntime?.capabilityState ?? "idle"}
           scope={scope}
           sidebarView={sidebarView}
           agentSort={agentSort}
@@ -1195,15 +1753,27 @@ export function App() {
           onSidebarView={setSidebarView}
           onAgentSort={setAgentSort}
           onAgentGroup={setAgentGroup}
+          onSelectBridge={setSelectedBridgeId}
           onSelectSpace={selectSpace}
           onSelectTab={selectTab}
           onSelectPane={openPane}
           onRefresh={refreshNow}
           onBackendSettings={() => setBackendSettingsOpen(true)}
-          onCreateSpace={() => void exec(() => commands.createWorkspace(), true)}
-          onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
+          onCreateSpace={() =>
+            selectedRuntime && selectedCommands
+              ? void exec(selectedRuntime, () => selectedCommands.createWorkspace(), true)
+              : setError("Bridge is not ready")
+          }
+          onCreateTab={(bridgeId, workspaceId) =>
+            setLaunchTarget({ mode: "tab", workspaceId, bridgeId })
+          }
           onMenu={(kind, id, label, x, y, clearable) =>
-            setMenu({ kind, id, label, x, y, clearable })
+            selectedRuntime
+              ? setMenu({ kind, bridgeId: selectedRuntime.id, id, label, x, y, clearable })
+              : undefined
+          }
+          onScopedMenu={(kind, bridgeId, id, label, x, y, clearable) =>
+            setMenu({ kind, bridgeId, id, label, x, y, clearable })
           }
         />
         <div
@@ -1277,10 +1847,14 @@ export function App() {
           snapshot={snapshot}
           activeSpace={activeSpace}
           selectedPane={selectedPane}
-          onSelectTab={selectTab}
-          onCreateTab={(workspaceId) => setLaunchTarget({ mode: "tab", workspaceId })}
+          onSelectTab={(tabId) => selectedRuntime && selectTab(selectedRuntime.id, tabId)}
+          onCreateTab={(workspaceId) =>
+            selectedRuntime &&
+            setLaunchTarget({ mode: "tab", workspaceId, bridgeId: selectedRuntime.id })
+          }
           onMenu={(kind, id, label, x, y, clearable) =>
-            setMenu({ kind, id, label, x, y, clearable })
+            selectedRuntime &&
+            setMenu({ kind, bridgeId: selectedRuntime.id, id, label, x, y, clearable })
           }
         />
         <header className="stage-bar">
@@ -1296,7 +1870,7 @@ export function App() {
           <div className="stage-id" {...selectedPaneMenuPress}>
             <span className="stage-title">{selectedPane ? paneTitle(selectedPane) : "herdr-web"}</span>
             <span className="stage-sub mono">
-              {stageBreadcrumb(snapshot, selectedPane, loadState, bridge.canConnect)}
+              {stageBreadcrumb(snapshot, selectedPane, loadState, selectedRuntime?.canConnect ?? false)}
             </span>
           </div>
           {splitSupported && selectedPane && !isCompactLayout ? (
@@ -1308,7 +1882,14 @@ export function App() {
                 title="Split right"
                 disabled={busy}
                 onClick={() =>
-                  setLaunchTarget({ mode: "split", pane: selectedPane, direction: "right" })
+                  selectedRuntime
+                    ? setLaunchTarget({
+                        mode: "split",
+                        pane: selectedPane,
+                        direction: "right",
+                        bridgeId: selectedRuntime.id,
+                      })
+                    : undefined
                 }
               >
                 <SplitSquareHorizontal size={18} />
@@ -1320,7 +1901,14 @@ export function App() {
                 title="Split down"
                 disabled={busy}
                 onClick={() =>
-                  setLaunchTarget({ mode: "split", pane: selectedPane, direction: "down" })
+                  selectedRuntime
+                    ? setLaunchTarget({
+                        mode: "split",
+                        pane: selectedPane,
+                        direction: "down",
+                        bridgeId: selectedRuntime.id,
+                      })
+                    : undefined
                 }
               >
                 <SplitSquareVertical size={18} />
@@ -1345,7 +1933,9 @@ export function App() {
             cells={splitCells}
             selectedPaneId={selectedPane?.pane_id ?? null}
             onSelectPane={(pane) => {
-              openPane(pane);
+              if (selectedRuntime) {
+                openPane(selectedRuntime.id, pane);
+              }
               if (isTouchInput) {
                 requestTerminalFocus();
               }
@@ -1358,18 +1948,18 @@ export function App() {
             terminalInputTransport={terminalInputTransport}
             terminalInputBatchDelayMs={terminalInputBatchDelayMs}
             terminalOutputCoalesceMs={terminalOutputCoalesceMs}
-            connectionKey={bridge.connectionKey}
-            resumeToken={bridge.resumeToken}
-            httpUrl={bridge.httpUrl}
-            wsUrl={bridge.wsUrl}
+            connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
+            resumeToken={selectedRuntime?.resumeToken ?? 0}
+            httpUrl={selectedRuntime?.httpUrl ?? disconnectedHttpUrl}
+            wsUrl={selectedRuntime?.wsUrl ?? disconnectedWsUrl}
           />
         ) : renderTerminal ? (
           <TerminalView
             pane={selectedPane}
-            connectionKey={bridge.connectionKey}
-            resumeToken={bridge.resumeToken}
-            httpUrl={bridge.httpUrl}
-            wsUrl={bridge.wsUrl}
+            connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
+            resumeToken={selectedRuntime?.resumeToken ?? 0}
+            httpUrl={selectedRuntime?.httpUrl ?? disconnectedHttpUrl}
+            wsUrl={selectedRuntime?.wsUrl ?? disconnectedWsUrl}
             autoFocus={!isTouchInput}
             scrollSensitivity={isTouchInput ? 2 : 0.4}
             mobileControls={isTouchInput}
@@ -1738,6 +2328,8 @@ function TabBar({
 }
 
 function Switcher({
+  bridgeViews,
+  selectedBridgeId,
   snapshot,
   loadState,
   bridgeCanConnect,
@@ -1755,6 +2347,7 @@ function Switcher({
   onSidebarView,
   onAgentSort,
   onAgentGroup,
+  onSelectBridge,
   onSelectSpace,
   onSelectTab,
   onSelectPane,
@@ -1763,7 +2356,10 @@ function Switcher({
   onCreateSpace,
   onCreateTab,
   onMenu,
+  onScopedMenu,
 }: {
+  bridgeViews: BridgeConnectionView[];
+  selectedBridgeId: BridgeId | null;
   snapshot: Snapshot | null;
   loadState: LoadState;
   bridgeCanConnect: boolean;
@@ -1781,13 +2377,14 @@ function Switcher({
   onSidebarView: (view: SidebarView) => void;
   onAgentSort: (sort: AgentSort) => void;
   onAgentGroup: (group: AgentGroup) => void;
-  onSelectSpace: (workspaceId: string) => void;
-  onSelectTab: (tabId: string) => void;
-  onSelectPane: (pane: PaneInfo) => void;
+  onSelectBridge: (bridgeId: BridgeId) => void;
+  onSelectSpace: (bridgeId: BridgeId, workspaceId: string) => void;
+  onSelectTab: (bridgeId: BridgeId, tabId: string) => void;
+  onSelectPane: (bridgeId: BridgeId, pane: PaneInfo) => void;
   onRefresh: () => void;
   onBackendSettings: () => void;
   onCreateSpace: () => void;
-  onCreateTab: (workspaceId: string) => void;
+  onCreateTab: (bridgeId: BridgeId, workspaceId: string) => void;
   onMenu: (
     kind: MenuKind,
     id: string,
@@ -1796,40 +2393,95 @@ function Switcher({
     y: number,
     clearable?: boolean,
   ) => void;
+  onScopedMenu: (
+    kind: MenuKind,
+    bridgeId: BridgeId,
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    clearable?: boolean,
+  ) => void;
 }) {
-  const panes = snapshot?.panes ?? [];
+  const allPanes = bridgeViews.flatMap((view) => view.snapshot?.panes ?? []);
+  const panes = scope === "all" && sidebarView === "agents" ? allPanes : (snapshot?.panes ?? []);
   const roll = aggregateStatus(panes);
   const headerSummary = summary(panes);
-  const bridgeBlocked = !bridgeCanConnect;
+  const bridgeBlocked = !bridgeCanConnect || bridgeViews.length === 0;
+  const showingAgentOverview = sidebarView === "agents" && scope === "all";
+  const hasListSnapshot = showingAgentOverview
+    ? bridgeViews.some((view) => view.snapshot)
+    : Boolean(snapshot);
 
-  const agentPanes = useMemo(() => {
-    if (!snapshot) {
+  const agentPanes = useMemo<ScopedAgentPane[]>(() => {
+    if (scope === "all") {
+      return sortScopedAgentPanes(
+        bridgeViews.flatMap((view) => {
+          const viewSnapshot = view.snapshot;
+          if (!viewSnapshot) {
+            return [];
+          }
+          const sorted = sortAgentPanes(
+            viewSnapshot.panes.filter(isAgentPane),
+            agentSort,
+            viewSnapshot,
+          );
+          return sorted.map((pane) => {
+            const workspace = viewSnapshot.workspaces.find(
+              (item) => item.workspace_id === pane.workspace_id,
+            );
+            const tab = viewSnapshot.tabs.find((item) => item.tab_id === pane.tab_id);
+            return {
+              bridgeId: view.runtime.id,
+              bridgeLabel: view.runtime.label,
+              pane,
+              snapshot: viewSnapshot,
+              workspace,
+              tabLabel: tab ? displayTabLabel(tab, viewSnapshot.panes) : undefined,
+            };
+          });
+        }),
+        agentSort,
+      );
+    }
+    if (!snapshot || !selectedBridgeId) {
       return [];
     }
-    const scoped =
-      scope === "all"
-        ? snapshot.panes
-        : snapshot.panes.filter((pane) => pane.workspace_id === activeSpace?.workspace_id);
-    return sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
-  }, [snapshot, scope, activeSpace?.workspace_id, agentSort]);
+    const scoped = snapshot.panes.filter(
+      (pane) => pane.workspace_id === activeSpace?.workspace_id,
+    );
+    return sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot).map((pane) => {
+      const workspace = snapshot.workspaces.find((item) => item.workspace_id === pane.workspace_id);
+      const tab = snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
+      return {
+        bridgeId: selectedBridgeId,
+        bridgeLabel: bridgeLabel,
+        pane,
+        snapshot,
+        workspace,
+        tabLabel: tab ? displayTabLabel(tab, snapshot.panes) : undefined,
+      };
+    });
+  }, [activeSpace?.workspace_id, agentSort, bridgeLabel, bridgeViews, scope, selectedBridgeId, snapshot]);
 
   const agentGroups = useMemo(() => {
-    if (!snapshot || agentGroup !== "workspace") {
+    if (agentGroup !== "workspace") {
       return [];
     }
-    const paneBuckets = new Map<string, PaneInfo[]>();
-    for (const pane of agentPanes) {
-      const panesForWorkspace = paneBuckets.get(pane.workspace_id) ?? [];
-      panesForWorkspace.push(pane);
-      paneBuckets.set(pane.workspace_id, panesForWorkspace);
+    const paneBuckets = new Map<string, ScopedAgentPane[]>();
+    for (const entry of agentPanes) {
+      const key = `${entry.bridgeId}:${entry.pane.workspace_id}`;
+      const panesForWorkspace = paneBuckets.get(key) ?? [];
+      panesForWorkspace.push(entry);
+      paneBuckets.set(key, panesForWorkspace);
     }
-    return snapshot.workspaces
-      .filter((workspace) => paneBuckets.has(workspace.workspace_id))
-      .map((workspace) => ({
-        workspace,
-        panes: paneBuckets.get(workspace.workspace_id) ?? [],
-      }));
-  }, [snapshot, agentGroup, agentPanes]);
+    return [...paneBuckets.entries()].map(([key, entries]) => ({
+      key,
+      bridgeLabel: entries[0]?.bridgeLabel ?? "",
+      workspace: entries[0]?.workspace,
+      panes: entries,
+    }));
+  }, [agentGroup, agentPanes]);
 
   const spaceGroups = useMemo(() => {
     if (!snapshot) {
@@ -1893,6 +2545,33 @@ function Switcher({
         </button>
       </header>
 
+      <div className="sidebar-scope" role="group" aria-label="Bridge">
+        {bridgeViews.map((view) => (
+          <button
+            key={view.runtime.id}
+            type="button"
+            data-on={selectedBridgeId === view.runtime.id}
+            aria-pressed={selectedBridgeId === view.runtime.id}
+            onClick={() => onSelectBridge(view.runtime.id)}
+          >
+            {view.runtime.label}
+          </button>
+        ))}
+        {bridgeViews.length > 1 ? (
+          <button
+            type="button"
+            data-on={scope === "all" && sidebarView === "agents"}
+            aria-pressed={scope === "all" && sidebarView === "agents"}
+            onClick={() => {
+              onSidebarView("agents");
+              onScope("all");
+            }}
+          >
+            All agents
+          </button>
+        ) : null}
+      </div>
+
       <div className="sidebar-mode" role="group" aria-label="Sidebar view">
         <button
           type="button"
@@ -1931,17 +2610,21 @@ function Switcher({
       </div>
 
       <div className="list">
-        {!snapshot ? (
+        {!hasListSnapshot ? (
           <div className="empty">
             <strong>
-              {bridgeBlocked
+              {bridgeViews.length === 0
+                ? "No bridges enabled"
+                : bridgeBlocked
                 ? "Bridge disconnected"
                 : loadState === "error"
                   ? "Bridge unavailable"
                   : "Connecting…"}
             </strong>
             <span>
-              {bridgeBlocked
+              {bridgeViews.length === 0
+                ? "Enable one or more bridges in settings."
+                : bridgeBlocked
                 ? bridgeError || "Choose a usable bridge backend."
                 : loadState === "error"
                   ? "Could not reach the herdr bridge."
@@ -1956,7 +2639,7 @@ function Switcher({
         ) : (
           <>
             {/* SPACES ---------------------------------------------------- */}
-            {scope === "space" ? (
+            {scope === "space" && snapshot && selectedBridgeId ? (
             <section className="sec">
               <div className="sec-head">
                 <span className="sec-label">spaces</span>
@@ -1987,7 +2670,7 @@ function Switcher({
                     attention={countAttention(
                       snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id),
                     )}
-                    onSelect={() => onSelectSpace(workspace.workspace_id)}
+                    onSelect={() => onSelectSpace(selectedBridgeId, workspace.workspace_id)}
                     onMenu={(x, y) =>
                       onMenu(
                         "space",
@@ -2005,7 +2688,7 @@ function Switcher({
             ) : null}
 
             {/* PANES ----------------------------------------------------- */}
-            {snapshot.workspaces.length > 0 ? (
+            {(showingAgentOverview || (snapshot && snapshot.workspaces.length > 0)) ? (
             <section className="sec">
               <div className="sec-head">
                 <span className="sec-label">
@@ -2048,7 +2731,9 @@ function Switcher({
                     type="button"
                     aria-label="New tab"
                     title="New tab"
-                    onClick={() => onCreateTab(activeSpace.workspace_id)}
+                    onClick={() =>
+                      selectedBridgeId ? onCreateTab(selectedBridgeId, activeSpace.workspace_id) : undefined
+                    }
                   >
                     <Plus size={14} />
                   </button>
@@ -2063,49 +2748,71 @@ function Switcher({
                   </div>
                 ) : agentGroup === "workspace" ? (
                   agentGroups.map((group) => (
-                    <Fragment key={group.workspace.workspace_id}>
+                    <Fragment key={group.key}>
                       <div className="grp-space">
-                        <span className="dot" data-status={group.workspace.agent_status} />
-                        <span className="grp-space-name">{group.workspace.label}</span>
+                        <span className="dot" data-status={group.workspace?.agent_status ?? "unknown"} />
+                        <span className="grp-space-name">
+                          {scope === "all" && group.bridgeLabel
+                            ? `${group.bridgeLabel} / ${group.workspace?.label ?? "workspace"}`
+                            : (group.workspace?.label ?? "workspace")}
+                        </span>
                         <span className="grp-space-line" />
                       </div>
-                      {group.panes.map((pane) => {
-                        const tab = snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
-                        return (
-                          <AgentRow
-                            key={pane.pane_id}
-                            index={agentPaneIndex++}
-                            pane={pane}
-                            workspace={group.workspace}
-                            tabLabel={tab ? displayTabLabel(tab, snapshot.panes) : undefined}
-                            active={pane.pane_id === selectedPane?.pane_id}
-                            onSelect={() => onSelectPane(pane)}
-                            onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
-                          />
-                        );
-                      })}
+                      {group.panes.map((entry) => (
+                        <AgentRow
+                          key={`${entry.bridgeId}:${entry.pane.pane_id}`}
+                          index={agentPaneIndex++}
+                          pane={entry.pane}
+                          workspace={entry.workspace}
+                          tabLabel={entry.tabLabel}
+                          bridgeLabel={scope === "all" ? entry.bridgeLabel : undefined}
+                          active={
+                            entry.bridgeId === selectedBridgeId &&
+                            entry.pane.pane_id === selectedPane?.pane_id
+                          }
+                          onSelect={() => onSelectPane(entry.bridgeId, entry.pane)}
+                          onMenu={(x, y) =>
+                            onScopedMenu(
+                              "pane",
+                              entry.bridgeId,
+                              entry.pane.pane_id,
+                              paneTitle(entry.pane),
+                              x,
+                              y,
+                            )
+                          }
+                        />
+                      ))}
                     </Fragment>
                   ))
                 ) : (
-                  agentPanes.map((pane, index) => {
-                    const tab = snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
-                    return (
-                      <AgentRow
-                        key={pane.pane_id}
-                        index={index}
-                        pane={pane}
-                        workspace={snapshot.workspaces.find(
-                          (workspace) => workspace.workspace_id === pane.workspace_id,
-                        )}
-                        tabLabel={tab ? displayTabLabel(tab, snapshot.panes) : undefined}
-                        active={pane.pane_id === selectedPane?.pane_id}
-                        onSelect={() => onSelectPane(pane)}
-                        onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
-                      />
-                    );
-                  })
+                  agentPanes.map((entry, index) => (
+                    <AgentRow
+                      key={`${entry.bridgeId}:${entry.pane.pane_id}`}
+                      index={index}
+                      pane={entry.pane}
+                      workspace={entry.workspace}
+                      tabLabel={entry.tabLabel}
+                      bridgeLabel={scope === "all" ? entry.bridgeLabel : undefined}
+                      active={
+                        entry.bridgeId === selectedBridgeId &&
+                        entry.pane.pane_id === selectedPane?.pane_id
+                      }
+                      onSelect={() => onSelectPane(entry.bridgeId, entry.pane)}
+                      onMenu={(x, y) =>
+                        onScopedMenu(
+                          "pane",
+                          entry.bridgeId,
+                          entry.pane.pane_id,
+                          paneTitle(entry.pane),
+                          x,
+                          y,
+                        )
+                      }
+                    />
+                  ))
                 )
-              ) : spaceGroups.every((group) => group.tabs.length === 0) ? (
+              ) : !snapshot || spaceGroups.every((group) => group.tabs.length === 0) ? (
                 <div className="empty">
                   <strong>No panes</strong>
                   <span>This space has no panes yet.</span>
@@ -2128,7 +2835,9 @@ function Switcher({
                             <TabDivider
                               label={label}
                               count={tabPanes.length}
-                              onSelect={() => onSelectTab(tab.tab_id)}
+                              onSelect={() =>
+                                selectedBridgeId ? onSelectTab(selectedBridgeId, tab.tab_id) : undefined
+                              }
                               onMenu={(x, y) =>
                                 onMenu("tab", tab.tab_id, label, x, y, canClearTabName(tab))
                               }
@@ -2140,7 +2849,9 @@ function Switcher({
                               index={paneIndex++}
                               pane={pane}
                               active={pane.pane_id === selectedPane?.pane_id}
-                              onSelect={() => onSelectPane(pane)}
+                              onSelect={() =>
+                                selectedBridgeId ? onSelectPane(selectedBridgeId, pane) : undefined
+                              }
                               onMenu={(x, y) => onMenu("pane", pane.pane_id, paneTitle(pane), x, y)}
                             />
                           ))}
@@ -2263,6 +2974,7 @@ function AgentRow({
   pane,
   workspace,
   tabLabel,
+  bridgeLabel,
   active,
   index,
   onSelect,
@@ -2271,6 +2983,7 @@ function AgentRow({
   pane: PaneInfo;
   workspace?: WorkspaceInfo;
   tabLabel?: string;
+  bridgeLabel?: string;
   active: boolean;
   index: number;
   onSelect: () => void;
@@ -2293,7 +3006,7 @@ function AgentRow({
           {iconKind ? <AgentIcon kind={iconKind} /> : null}
           <span className="agent-title-text">{agentTitle(pane)}</span>
         </span>
-        <span className="pane-meta mono">{agentSubtitle(pane, workspace, tabLabel)}</span>
+        <span className="pane-meta mono">{agentSubtitle(pane, workspace, tabLabel, bridgeLabel)}</span>
       </span>
       {isLoud(pane.agent_status) ? (
         <span className="pane-word" data-status={pane.agent_status}>
@@ -2376,17 +3089,74 @@ function sortAgentPanes(panes: PaneInfo[], sort: AgentSort, snapshot: Snapshot) 
   });
 }
 
+function sortScopedAgentPanes(entries: ScopedAgentPane[], sort: AgentSort) {
+  const statusOrder: Record<AgentStatus, number> = {
+    blocked: 0,
+    working: 1,
+    done: 2,
+    idle: 3,
+    unknown: 4,
+  };
+  const attentionOrder: Record<AgentStatus, number> = {
+    blocked: 0,
+    done: 1,
+    working: 2,
+    idle: 3,
+    unknown: 4,
+  };
+
+  return [...entries].sort((a, b) => {
+    if (sort === "attention") {
+      const attention =
+        Number(isAttention(b.pane.agent_status)) - Number(isAttention(a.pane.agent_status));
+      if (attention !== 0) {
+        return attention;
+      }
+      const status = attentionOrder[a.pane.agent_status] - attentionOrder[b.pane.agent_status];
+      if (status !== 0) {
+        return status;
+      }
+    } else if (sort === "status") {
+      const status = statusOrder[a.pane.agent_status] - statusOrder[b.pane.agent_status];
+      if (status !== 0) {
+        return status;
+      }
+    }
+
+    const bridge = a.bridgeLabel.localeCompare(b.bridgeLabel, undefined, { numeric: true });
+    if (bridge !== 0) {
+      return bridge;
+    }
+    const workspace =
+      (a.workspace?.number ?? Number.MAX_SAFE_INTEGER) -
+      (b.workspace?.number ?? Number.MAX_SAFE_INTEGER);
+    if (workspace !== 0) {
+      return workspace;
+    }
+    return `${a.bridgeId}:${a.pane.pane_id}`.localeCompare(
+      `${b.bridgeId}:${b.pane.pane_id}`,
+      undefined,
+      { numeric: true },
+    );
+  });
+}
+
 function agentTitle(pane: PaneInfo) {
   return pane.display_agent || pane.label || pane.agent || pane.title || paneTitle(pane);
 }
 
-function agentSubtitle(pane: PaneInfo, workspace?: WorkspaceInfo, tabLabel?: string) {
+function agentSubtitle(
+  pane: PaneInfo,
+  workspace?: WorkspaceInfo,
+  tabLabel?: string,
+  bridgeLabel?: string,
+) {
   const stateText =
     pane.custom_status ||
     pane.state_labels?.[statusLabel(pane.agent_status)] ||
     statusLabel(pane.agent_status);
   const dir = basename(pane.foreground_cwd || pane.cwd);
-  return [stateText, workspace?.label, tabLabel, dir].filter(Boolean).join(" · ");
+  return [stateText, bridgeLabel, workspace?.label, tabLabel, dir].filter(Boolean).join(" · ");
 }
 
 function basename(path?: string) {
@@ -2559,6 +3329,14 @@ async function fetchSnapshot(httpUrl: (path: string, query?: URLSearchParams) =>
     throw new Error(`snapshot failed: ${response.status}`);
   }
   return (await response.json()) as Snapshot;
+}
+
+function disconnectedHttpUrl(): string {
+  throw new Error("Bridge is not connected");
+}
+
+function disconnectedWsUrl(): string {
+  throw new Error("Bridge is not connected");
 }
 
 async function syncSelectedPane(
