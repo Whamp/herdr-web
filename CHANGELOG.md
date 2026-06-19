@@ -6,13 +6,16 @@
 
 ### Added
 
-- Added a Terminal font size setting.
+- Added a Terminal font size setting. [PR #16](https://github.com/kcosr/herdr-web/pull/16)
+- Added desktop click-to-open support for detected HTTP(S) terminal URLs.
+  [PR #16](https://github.com/kcosr/herdr-web/pull/16)
 
 ### Changed
 
 - Added a Mobile setting for long-press behavior, with Off, Copy, and Loupe modes; Loupe uses a
   two-stage endpoint flow, selected URLs keep the action sheet, and tapped HTTP(S) URLs open
-  directly.
+  directly; original mobile selection work contributed by Will Hampson.
+  [PR #16](https://github.com/kcosr/herdr-web/pull/16)
 
 ### Fixed
 
