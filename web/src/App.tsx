@@ -2752,7 +2752,9 @@ function Switcher({
         {bridgeViews.map((view) => (
           <button
             key={view.runtime.id}
+            className="bridge-chip"
             type="button"
+            style={{ "--bridge-color": view.runtime.color } as CSSProperties}
             data-on={
               selectedBridgeId === view.runtime.id && !(scope === "all" && sidebarView === "agents")
             }
@@ -2764,7 +2766,8 @@ function Switcher({
               onScope("space");
             }}
           >
-            {view.runtime.label}
+            <span className="bridge-chip-dot" aria-hidden="true" />
+            <span className="bridge-chip-label">{view.runtime.label}</span>
           </button>
         ))}
         {bridgeViews.length > 1 ? (

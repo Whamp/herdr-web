@@ -11,8 +11,10 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   duplicateBackend,
+  fallbackBackendColor,
   normalizeBridgeBaseUrl,
   SAME_ORIGIN_BRIDGE_ID,
+  suggestBackendColor,
   useBridge,
 } from "./bridge";
 import type { BridgeBackendProfile } from "./bridge";
@@ -63,16 +65,11 @@ type FormState = {
   id: string | null;
   name: string;
   baseUrl: string;
+  color: string;
 };
 
 type SelectionMode = "same-origin" | "new" | "backend";
 type SettingsArea = "bridge" | "display" | "terminal" | "mobile";
-
-const emptyForm: FormState = {
-  id: null,
-  name: "",
-  baseUrl: "",
-};
 
 export function BackendSettingsDialog({
   showMobileTerminalSettings,
@@ -101,7 +98,7 @@ export function BackendSettingsDialog({
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm);
+  const [form, setForm] = useState<FormState>(() => newBackendForm(bridge.store.backends));
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(
     initialSelectionMode(bridge.lastSelectedBridgeId, bridge.sameOriginAvailable),
   );
@@ -141,26 +138,26 @@ export function BackendSettingsDialog({
       ? bridge.store.backends.find((backend) => backend.id === bridge.lastSelectedBridgeId)
       : undefined;
     const backend = lastBackend ?? bridge.store.backends[0];
-    setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
+    setForm(backendFormFromProfile(backend));
   }, [bridge.lastSelectedBridgeId, bridge.store.backends, form.id, selectionMode]);
 
   const selectSameOrigin = () => {
     setSelectionMode("same-origin");
-    setForm(emptyForm);
+    setForm(newBackendForm(bridge.store.backends));
     setMessage(null);
     setDuplicate(null);
   };
 
   const startNew = () => {
     setSelectionMode("new");
-    setForm(emptyForm);
+    setForm(newBackendForm(bridge.store.backends));
     setMessage(null);
     setDuplicate(null);
   };
 
   const editBackend = (backend: BridgeBackendProfile) => {
     setSelectionMode("backend");
-    setForm({ id: backend.id, name: backend.name, baseUrl: backend.baseUrl });
+    setForm(backendFormFromProfile(backend));
     setMessage(null);
     setDuplicate(null);
   };
@@ -214,13 +211,13 @@ export function BackendSettingsDialog({
         probeWarning = error instanceof Error ? error.message : "Backend could not be reached.";
       }
       const profile = form.id
-        ? await bridge.updateBackend(form.id, { name: form.name, baseUrl })
-        : await bridge.addBackend({ name: form.name, baseUrl }, activate);
+        ? await bridge.updateBackend(form.id, { name: form.name, baseUrl, color: form.color })
+        : await bridge.addBackend({ name: form.name, baseUrl, color: form.color }, activate);
       if (activate) {
         bridge.setBridgeEnabled(profile.id, true);
       }
       setSelectionMode("backend");
-      setForm({ id: profile.id, name: profile.name, baseUrl: profile.baseUrl });
+      setForm(backendFormFromProfile(profile));
       setMessage(
         probeWarning
           ? `Backend saved. ${probeWarning}`
@@ -396,6 +393,21 @@ export function BackendSettingsDialog({
                               setForm((current) => ({ ...current, baseUrl: event.target.value }))
                             }
                           />
+                        </label>
+                        <label className="field-label">
+                          <span>Bridge color</span>
+                          <div className="backend-color-control">
+                            <input
+                              className="backend-color-picker"
+                              type="color"
+                              value={form.color}
+                              aria-label="Bridge color"
+                              onChange={(event) =>
+                                setForm((current) => ({ ...current, color: event.target.value }))
+                              }
+                            />
+                            <span className="backend-color-value mono">{form.color.toUpperCase()}</span>
+                          </div>
                         </label>
                         {selectedBackend?.lastConnectedAt ? (
                           <div className="backend-note">
@@ -828,6 +840,24 @@ function ResetSettingButton({
       <RotateCcw size={13} />
     </button>
   );
+}
+
+function newBackendForm(backends: readonly BridgeBackendProfile[]): FormState {
+  return {
+    id: null,
+    name: "",
+    baseUrl: "",
+    color: suggestBackendColor(backends),
+  };
+}
+
+function backendFormFromProfile(backend: BridgeBackendProfile): FormState {
+  return {
+    id: backend.id,
+    name: backend.name,
+    baseUrl: backend.baseUrl,
+    color: backend.color ?? fallbackBackendColor(backend.id),
+  };
 }
 
 function sameOriginDisplayUrl() {

@@ -20,6 +20,7 @@ export type BridgeBackendProfile = {
   id: string;
   name: string;
   baseUrl: string;
+  color?: string;
   lastConnectedAt?: string;
 };
 
@@ -53,6 +54,7 @@ export type BridgeRuntime = {
   id: BridgeId;
   mode: BridgeMode;
   label: string;
+  color: string;
   backend: BridgeBackendProfile | null;
   connectionKey: string;
   resumeToken: number;
@@ -86,12 +88,24 @@ export type BridgeManager = {
 export type BackendInput = {
   name?: string;
   baseUrl: string;
+  color?: string;
 };
 
 const STORE_KEY = "herdrWeb.bridgeBackends.v2";
 const LEGACY_STORE_KEY = "herdrWeb.bridgeBackends.v1";
 const STORE_VERSION = 2;
 const APP_MIN_WEB_COMPAT = 1;
+const SAME_ORIGIN_BRIDGE_COLOR = "#b4befe";
+const BACKEND_COLOR_PALETTE = [
+  "#89b4fa",
+  "#a6e3a1",
+  "#f9e2af",
+  "#fab387",
+  "#94e2d5",
+  "#f38ba8",
+  "#cba6f7",
+  "#74c7ec",
+] as const;
 
 const BridgeContext = createContext<BridgeManager | null>(null);
 
@@ -260,10 +274,12 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
 
   const addBackend = useCallback(async (input: BackendInput, enable = true) => {
     const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
+    const id = createBackendId();
     const profile: BridgeBackendProfile = {
-      id: createBackendId(),
+      id,
       name: backendDisplayName(input.name, baseUrl, store.backends),
       baseUrl,
+      color: normalizeBackendColor(input.color) ?? suggestBackendColor(store.backends, id),
       lastConnectedAt: undefined,
     };
     storeEditedRef.current = true;
@@ -297,6 +313,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
       ...existing,
       name: backendDisplayName(input.name, baseUrl, otherBackends),
       baseUrl,
+      color: normalizeBackendColor(input.color) ?? existing.color,
       lastConnectedAt: existing.lastConnectedAt,
     };
     setStore((current) => {
@@ -551,10 +568,13 @@ function createBridgeRuntime({
   const currentProbeState = probeState?.connectionKey === connectionKey ? probeState : undefined;
   const httpUrl = (path: string, query?: URLSearchParams) => buildHttpUrl(baseUrl, path, query);
   const wsUrl = (path: string, query?: URLSearchParams) => buildWsUrl(baseUrl, path, query);
+  const color =
+    backend?.color ?? (mode === "same-origin" ? SAME_ORIGIN_BRIDGE_COLOR : fallbackBackendColor(id));
   return {
     id,
     mode,
     label,
+    color,
     backend,
     connectionKey,
     resumeToken,
@@ -736,6 +756,7 @@ function parseBackendProfile(value: unknown): BridgeBackendProfile | null {
       id: value.id,
       name: value.name.trim() || displayNameFromUrl(baseUrl),
       baseUrl,
+      color: normalizeBackendColor(value.color) ?? undefined,
       lastConnectedAt: typeof value.lastConnectedAt === "string" ? value.lastConnectedAt : undefined,
     };
   } catch {
@@ -1041,6 +1062,31 @@ function createBackendId() {
       : `backend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   } while (id === SAME_ORIGIN_BRIDGE_ID);
   return id;
+}
+
+export function normalizeBackendColor(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return /^#[0-9a-f]{6}$/iu.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+export function fallbackBackendColor(seed: string) {
+  let hash = 0;
+  for (const char of seed) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+  return BACKEND_COLOR_PALETTE[hash % BACKEND_COLOR_PALETTE.length] ?? SAME_ORIGIN_BRIDGE_COLOR;
+}
+
+export function suggestBackendColor(
+  backends: readonly BridgeBackendProfile[],
+  seed = `${Date.now()}`,
+) {
+  const used = new Set(backends.map((backend) => normalizeBackendColor(backend.color)).filter(Boolean));
+  const unused = BACKEND_COLOR_PALETTE.find((color) => !used.has(color));
+  return unused ?? fallbackBackendColor(seed);
 }
 
 export function duplicateBackend(

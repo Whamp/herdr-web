@@ -336,6 +336,30 @@ button {
   background: var(--accent);
 }
 
+.sidebar-scope .bridge-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.bridge-chip-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--bridge-color) 75%, var(--crust));
+  border-radius: 50%;
+  background: var(--bridge-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bridge-color) 16%, transparent);
+}
+
+.bridge-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ----------------------------------------------------------------- list */
 
 .list {
@@ -1775,6 +1799,52 @@ button {
 .field:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.backend-color-control {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.backend-color-picker {
+  width: 44px;
+  height: 36px;
+  padding: 2px;
+  border: 1px solid var(--surface1);
+  border-radius: var(--r-sm);
+  background: var(--crust);
+  cursor: pointer;
+}
+
+.backend-color-picker:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.backend-color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.backend-color-picker::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+}
+
+.backend-color-picker::-moz-color-swatch {
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+}
+
+.backend-color-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--subtext0);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-actions {

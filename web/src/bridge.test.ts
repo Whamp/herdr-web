@@ -8,6 +8,7 @@ import {
   duplicateBackend,
   loadBackendStore,
   normalizeBridgeBaseUrl,
+  normalizeBackendColor,
   parseBackendStore,
   parseCapabilities,
   probeBridgeBaseUrl,
@@ -43,6 +44,15 @@ describe("bridge URL normalization", () => {
     expect(() => normalizeBridgeBaseUrl("http://192.168.1.20:4000/api")).toThrow(
       /path/iu,
     );
+  });
+});
+
+describe("backend colors", () => {
+  it("normalizes six-digit hex colors", () => {
+    expect(normalizeBackendColor("#A1b2C3")).toBe("#a1b2c3");
+    expect(normalizeBackendColor(" #89B4FA ")).toBe("#89b4fa");
+    expect(normalizeBackendColor("#fff")).toBeNull();
+    expect(normalizeBackendColor("red")).toBeNull();
   });
 });
 
@@ -137,6 +147,44 @@ describe("backend store parsing", () => {
         },
       ],
     });
+  });
+
+  it("keeps valid backend colors and drops invalid colors", () => {
+    expect(
+      parseBackendStore({
+        version: 2,
+        enabledBridgeIds: ["one", "two"],
+        lastSelectedBridgeId: "one",
+        backends: [
+          {
+            id: "one",
+            name: "Home",
+            baseUrl: "http://192.168.1.20:4000",
+            color: "#A1b2C3",
+          },
+          {
+            id: "two",
+            name: "Work",
+            baseUrl: "http://192.168.1.21:4000",
+            color: "red",
+          },
+        ],
+      }).backends,
+    ).toEqual([
+      {
+        id: "one",
+        name: "Home",
+        baseUrl: "http://192.168.1.20:4000",
+        color: "#a1b2c3",
+        lastConnectedAt: undefined,
+      },
+      {
+        id: "two",
+        name: "Work",
+        baseUrl: "http://192.168.1.21:4000",
+        lastConnectedAt: undefined,
+      },
+    ]);
   });
 
   it("drops saved backend profiles that use the reserved same-origin id", () => {
