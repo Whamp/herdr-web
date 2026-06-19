@@ -176,6 +176,9 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
       if (!isAvailableBridgeId(bridgeId, current.backends, defaultBridgeMode() === "same-origin")) {
         return current;
       }
+      if (current.enabledBridgeIds.includes(bridgeId) === enabled) {
+        return current;
+      }
       const enabledIds = new Set(current.enabledBridgeIds);
       if (enabled) {
         enabledIds.add(bridgeId);
@@ -206,15 +209,16 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
     storeEditedRef.current = true;
     setStore((current) => {
       if (bridgeId === null) {
-        return { ...current, lastSelectedBridgeId: null };
+        return current.lastSelectedBridgeId === null
+          ? current
+          : { ...current, lastSelectedBridgeId: null };
       }
-      if (!current.enabledBridgeIds.includes(bridgeId)) {
+      if (!current.enabledBridgeIds.includes(bridgeId) || current.lastSelectedBridgeId === bridgeId) {
         return current;
       }
       return {
         ...current,
         lastSelectedBridgeId: bridgeId,
-        backends: markBackendConnected(current.backends, bridgeId),
       };
     });
   }, []);
@@ -222,29 +226,26 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
   const markBridgeUsed = useCallback((bridgeId: BridgeId) => {
     storeEditedRef.current = true;
     setStore((current) => {
-      if (!current.enabledBridgeIds.includes(bridgeId)) {
+      if (!current.enabledBridgeIds.includes(bridgeId) || current.lastSelectedBridgeId === bridgeId) {
         return current;
       }
       return {
         ...current,
         lastSelectedBridgeId: bridgeId,
-        backends: markBackendConnected(current.backends, bridgeId),
       };
     });
   }, []);
 
   const addBackend = useCallback(async (input: BackendInput, enable = true) => {
     const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
-    let nextProfile: BridgeBackendProfile | null = null;
+    const profile: BridgeBackendProfile = {
+      id: createBackendId(),
+      name: backendDisplayName(input.name, baseUrl, store.backends),
+      baseUrl,
+      lastConnectedAt: enable ? new Date().toISOString() : undefined,
+    };
     storeEditedRef.current = true;
     setStore((current) => {
-      const profile: BridgeBackendProfile = {
-        id: createBackendId(),
-        name: backendDisplayName(input.name, baseUrl, current.backends),
-        baseUrl,
-        lastConnectedAt: enable ? new Date().toISOString() : undefined,
-      };
-      nextProfile = profile;
       const enabledBridgeIds = enable
         ? normalizeEnabledBridgeIds(
             [...current.enabledBridgeIds, profile.id],
@@ -259,41 +260,36 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
         backends: [...current.backends, profile],
       };
     });
-    if (!nextProfile) {
-      throw new Error("Backend could not be saved");
-    }
-    return nextProfile;
-  }, []);
+    return profile;
+  }, [store.backends]);
 
   const updateBackend = useCallback(async (id: string, input: BackendInput) => {
-    let nextProfile: BridgeBackendProfile | null = null;
+    const existing = store.backends.find((backend) => backend.id === id);
+    if (!existing) {
+      throw new Error("Backend not found");
+    }
     storeEditedRef.current = true;
+    const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
+    const otherBackends = store.backends.filter((backend) => backend.id !== id);
+    const updated: BridgeBackendProfile = {
+      ...existing,
+      name: backendDisplayName(input.name, baseUrl, otherBackends),
+      baseUrl,
+      lastConnectedAt: store.enabledBridgeIds.includes(id)
+        ? new Date().toISOString()
+        : existing.lastConnectedAt,
+    };
     setStore((current) => {
-      const existing = current.backends.find((backend) => backend.id === id);
-      if (!existing) {
+      if (!current.backends.some((backend) => backend.id === id)) {
         return current;
       }
-      const baseUrl = normalizeBridgeBaseUrl(input.baseUrl);
-      const otherBackends = current.backends.filter((backend) => backend.id !== id);
-      const updated: BridgeBackendProfile = {
-        ...existing,
-        name: backendDisplayName(input.name, baseUrl, otherBackends),
-        baseUrl,
-        lastConnectedAt: current.enabledBridgeIds.includes(id)
-          ? new Date().toISOString()
-          : existing.lastConnectedAt,
-      };
-      nextProfile = updated;
       return {
         ...current,
         backends: current.backends.map((backend) => (backend.id === id ? updated : backend)),
       };
     });
-    if (!nextProfile) {
-      throw new Error("Backend not found");
-    }
-    return nextProfile;
-  }, []);
+    return updated;
+  }, [store.backends, store.enabledBridgeIds]);
 
   const deleteBackend = useCallback((id: string) => {
     storeEditedRef.current = true;
@@ -677,6 +673,7 @@ function parseBackendProfile(value: unknown): BridgeBackendProfile | null {
   }
   if (
     typeof value.id !== "string" ||
+    value.id === SAME_ORIGIN_BRIDGE_ID ||
     typeof value.name !== "string" ||
     typeof value.baseUrl !== "string"
   ) {
@@ -737,7 +734,7 @@ function isAvailableBridgeId(
 function markBackendConnected(
   backends: readonly BridgeBackendProfile[],
   bridgeId: BridgeId,
-) {
+): BridgeBackendProfile[] {
   if (bridgeId === SAME_ORIGIN_BRIDGE_ID) {
     return [...backends];
   }
@@ -985,11 +982,14 @@ function displayNameFromUrl(baseUrl: string) {
 }
 
 function createBackendId() {
-  const cryptoApi = globalThis.crypto;
-  if (cryptoApi?.randomUUID) {
-    return cryptoApi.randomUUID();
-  }
-  return `backend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  let id: string;
+  do {
+    const cryptoApi = globalThis.crypto;
+    id = cryptoApi?.randomUUID
+      ? cryptoApi.randomUUID()
+      : `backend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  } while (id === SAME_ORIGIN_BRIDGE_ID);
+  return id;
 }
 
 export function duplicateBackend(

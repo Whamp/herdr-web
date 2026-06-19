@@ -143,7 +143,7 @@ for HTTP/cleartext behavior, Android SDK setup, and APK verification notes.
 
 Settings are grouped by area:
 
-- Bridge: same-origin or saved bridge profiles, reachability testing, and the active backend.
+- Bridge: same-origin and saved bridge profiles, reachability testing, and bridge enablement.
 - Terminal: browser-to-bridge terminal input transport and input batching delay.
 - Mobile: touch-specific terminal behavior when running on a coarse pointer device.
 

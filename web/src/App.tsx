@@ -545,11 +545,22 @@ export function App() {
     selectedRuntime?.capabilityState === "ready" ? (selectedRuntime.capabilities?.commands ?? []) : [];
   const splitSupported = supportedCommands.includes("pane.split");
   const paneFocusSupported = supportedCommands.includes("pane.focus_direction");
-  const paneMoveSupported = supportedCommands.includes("pane.move");
   const selectedCommands = useMemo(
     () => (selectedRuntime ? createCommands(selectedRuntime.httpUrl) : null),
     [selectedRuntime],
   );
+  const menuRuntime = menu ? bridge.getRuntime(menu.bridgeId) : null;
+  const menuCommandsReady = Boolean(menuRuntime?.canConnect && menuRuntime.capabilityState === "ready");
+  const menuSupportedCommands = menuCommandsReady ? (menuRuntime?.capabilities?.commands ?? []) : [];
+  const menuPaneMoveSupported = menuSupportedCommands.includes("pane.move");
+  const activeMenuItems = menu ? menuItems(menu.kind, menuPaneMoveSupported, menuCommandsReady) : [];
+
+  useEffect(() => {
+    if (menu && activeMenuItems.length === 0) {
+      setMenu(null);
+    }
+  }, [activeMenuItems.length, menu]);
+
   const ensureMobileSidebarHistory = () => {
     if (!isCompactLayoutRef.current || isMobileDetailHistoryState(window.history.state)) {
       return;
@@ -582,6 +593,13 @@ export function App() {
       return bridge.lastSelectedBridgeId ?? enabledIds[0] ?? null;
     });
   }, [bridge.enabledBridgeIds, bridge.lastSelectedBridgeId, bridge.storeLoaded]);
+
+  useEffect(() => {
+    if (!bridge.storeLoaded) {
+      return;
+    }
+    bridge.setLastSelectedBridgeId(selectedRuntime?.id ?? null);
+  }, [bridge.setLastSelectedBridgeId, bridge.storeLoaded, selectedRuntime?.id]);
 
   useEffect(() => {
     if (
@@ -655,7 +673,6 @@ export function App() {
       setActiveWorkspaceRefState(null);
       return;
     }
-    bridge.setLastSelectedBridgeId(selectedRuntime.id);
     const restoredPaneId = selectedPanesByBridgeId[selectedRuntime.id] ?? null;
     const nextPaneId = chooseSelectedPane(snapshot, restoredPaneId);
     setSelectedPaneRefState(nextPaneId ? { bridgeId: selectedRuntime.id, paneId: nextPaneId } : null);
@@ -687,7 +704,6 @@ export function App() {
     );
   }, [
     activeWorkspacesByBridgeId,
-    bridge.setLastSelectedBridgeId,
     selectedPanesByBridgeId,
     selectedRuntime?.id,
     snapshot,
@@ -1976,12 +1992,12 @@ export function App() {
         )}
       </section>
 
-      {menu ? (
+      {menu && activeMenuItems.length > 0 ? (
         <ActionMenu
           x={menu.x}
           y={menu.y}
           title={menu.label}
-          items={menuItems(menu.kind, paneMoveSupported)}
+          items={activeMenuItems}
           onPick={onMenuPick}
           onClose={() => setMenu(null)}
         />
@@ -3187,7 +3203,10 @@ function SplitGlyph() {
   );
 }
 
-function menuItems(kind: MenuKind, paneMoveSupported: boolean): MenuItem[] {
+function menuItems(kind: MenuKind, paneMoveSupported: boolean, commandsReady: boolean): MenuItem[] {
+  if (!commandsReady) {
+    return [];
+  }
   if (kind === "space") {
     return [
       { key: "rename", label: "Rename" },

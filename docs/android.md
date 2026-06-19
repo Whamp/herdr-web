@@ -184,7 +184,7 @@ On a trusted LAN:
 4. Open Settings and select the Bridge area.
 5. Add a backend such as `http://192.168.1.20:4000`.
 6. Use `Test` and confirm it reports reachable.
-7. Use `Save & use`.
+7. Use `Save & enable` and confirm the bridge chip appears in the sidebar.
 8. Confirm snapshot, event updates, terminal attach, text input, stage-only input, uploads, and pane controls work.
 9. Open the Terminal area, change input transport and batching delay, and confirm terminal input
    still works.

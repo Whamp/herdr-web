@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildHttpUrl,
   buildWsUrl,
@@ -6,12 +6,17 @@ import {
   capabilityProbeSuccess,
   capabilityRetryDelayMs,
   duplicateBackend,
+  loadBackendStore,
   normalizeBridgeBaseUrl,
   parseBackendStore,
   parseCapabilities,
   probeBridgeBaseUrl,
   SAME_ORIGIN_BRIDGE_ID,
 } from "./bridge";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("bridge URL normalization", () => {
   it("normalizes origin-only bridge URLs", () => {
@@ -132,6 +137,62 @@ describe("backend store parsing", () => {
         },
       ],
     });
+  });
+
+  it("drops saved backend profiles that use the reserved same-origin id", () => {
+    expect(
+      parseBackendStore({
+        version: 2,
+        enabledBridgeIds: [SAME_ORIGIN_BRIDGE_ID],
+        lastSelectedBridgeId: SAME_ORIGIN_BRIDGE_ID,
+        backends: [
+          {
+            id: SAME_ORIGIN_BRIDGE_ID,
+            name: "Impostor",
+            baseUrl: "http://192.168.1.20:4000",
+          },
+        ],
+      }),
+    ).toEqual({
+      version: 2,
+      enabledBridgeIds: [SAME_ORIGIN_BRIDGE_ID],
+      lastSelectedBridgeId: SAME_ORIGIN_BRIDGE_ID,
+      backends: [],
+    });
+  });
+
+  it("migrates the legacy browser store into the v2 browser key", async () => {
+    const legacyStore = {
+      version: 1,
+      activeBackendId: "one",
+      backends: [{ id: "one", name: "Home", baseUrl: "http://192.168.1.20:4000" }],
+    };
+    const setItem = vi.fn();
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn((key: string) =>
+        key === "herdrWeb.bridgeBackends.v1" ? JSON.stringify(legacyStore) : null,
+      ),
+      setItem,
+    });
+
+    const migrated = await loadBackendStore();
+
+    expect(migrated).toEqual({
+      version: 2,
+      enabledBridgeIds: ["one"],
+      lastSelectedBridgeId: "one",
+      backends: [
+        {
+          id: "one",
+          name: "Home",
+          baseUrl: "http://192.168.1.20:4000",
+          lastConnectedAt: undefined,
+        },
+      ],
+    });
+    expect(setItem).toHaveBeenCalledWith("herdrWeb.bridgeBackends.v2", JSON.stringify(migrated));
+
+    vi.unstubAllGlobals();
   });
 
   it("detects duplicate normalized backend URLs", () => {

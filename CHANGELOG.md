@@ -6,6 +6,9 @@
 
 ### Added
 
+- Added multi-bridge connections, allowing multiple saved bridges to stay enabled at once with
+  server chips and an all-agents sidebar overview.
+
 ### Changed
 
 ### Fixed
