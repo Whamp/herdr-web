@@ -37,13 +37,28 @@ import {
   parseContentInsetTopPx,
   parseMobileControlsScalePercent,
 } from "./displayPrefs";
-import type { MobileTerminalTapTarget } from "./mobileTerminalPrefs";
+import {
+  DEFAULT_TERMINAL_FONT_SIZE_PX,
+  MAX_TERMINAL_FONT_SIZE_PX,
+  MIN_TERMINAL_FONT_SIZE_PX,
+  parseTerminalFontSizePx,
+} from "./terminalPrefs";
+import {
+  MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_OPTIONS_MS,
+} from "./mobileTerminalPrefs";
+import type {
+  MobileLongPressBehavior,
+  MobileTerminalTapTarget,
+  MobileTouchSelectionEndpointTimeoutMs,
+} from "./mobileTerminalPrefs";
 import { TERMINAL_INPUT_BATCH_DELAY_OPTIONS_MS } from "./terminalInputTransport";
 import type { TerminalInputTransport } from "./terminalInputTransport";
 import { TERMINAL_OUTPUT_COALESCE_OPTIONS_MS } from "./terminalOutputCoalescing";
 
 type Props = {
   showMobileTerminalSettings: boolean;
+  terminalFontSizePx: number;
+  onTerminalFontSizePx: (value: number) => void;
   terminalInputTransport: TerminalInputTransport;
   onTerminalInputTransport: (transport: TerminalInputTransport) => void;
   terminalInputBatchDelayMs: number;
@@ -58,8 +73,12 @@ type Props = {
   onMobileControlsScalePercent: (value: number) => void;
   mobileTerminalTapTarget: MobileTerminalTapTarget;
   onMobileTerminalTapTarget: (target: MobileTerminalTapTarget) => void;
-  mobileTouchSelection: boolean;
-  onMobileTouchSelection: (enabled: boolean) => void;
+  mobileLongPressBehavior: MobileLongPressBehavior;
+  onMobileLongPressBehavior: (behavior: MobileLongPressBehavior) => void;
+  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
+  onMobileTouchSelectionEndpointTimeoutMs: (
+    timeoutMs: MobileTouchSelectionEndpointTimeoutMs,
+  ) => void;
   showMobileKeyboardHideRefit: boolean;
   mobileKeyboardHideRefit: boolean;
   onMobileKeyboardHideRefit: (enabled: boolean) => void;
@@ -78,6 +97,8 @@ type SettingsArea = "bridge" | "display" | "terminal" | "mobile";
 
 export function BackendSettingsDialog({
   showMobileTerminalSettings,
+  terminalFontSizePx,
+  onTerminalFontSizePx,
   terminalInputTransport,
   onTerminalInputTransport,
   terminalInputBatchDelayMs,
@@ -92,8 +113,10 @@ export function BackendSettingsDialog({
   onMobileControlsScalePercent,
   mobileTerminalTapTarget,
   onMobileTerminalTapTarget,
-  mobileTouchSelection,
-  onMobileTouchSelection,
+  mobileLongPressBehavior,
+  onMobileLongPressBehavior,
+  mobileTouchSelectionEndpointTimeoutMs,
+  onMobileTouchSelectionEndpointTimeoutMs,
   showMobileKeyboardHideRefit,
   mobileKeyboardHideRefit,
   onMobileKeyboardHideRefit,
@@ -493,6 +516,19 @@ export function BackendSettingsDialog({
 
             {activeArea === "terminal" ? (
               <div className="settings-section settings-section-flat">
+                <div className="settings-label">Terminal appearance</div>
+                <div className="settings-row">
+                  <span>Font size</span>
+                  <NumberSettingControl
+                    ariaLabel="Terminal font size"
+                    value={terminalFontSizePx}
+                    min={MIN_TERMINAL_FONT_SIZE_PX}
+                    max={MAX_TERMINAL_FONT_SIZE_PX}
+                    unit="px"
+                    defaultValue={DEFAULT_TERMINAL_FONT_SIZE_PX}
+                    onChange={(value) => onTerminalFontSizePx(parseTerminalFontSizePx(value))}
+                  />
+                </div>
                 <div className="settings-label">Terminal transport</div>
                 <div className="settings-row">
                   <span>Input payloads</span>
@@ -575,26 +611,56 @@ export function BackendSettingsDialog({
                   </div>
                 </div>
                 <div className="settings-row">
-                  <span>Long-press selection</span>
-                  <div className="segmented-control" role="group" aria-label="Long-press selection">
+                  <span>Long-press behavior</span>
+                  <div className="segmented-control" role="group" aria-label="Long-press behavior">
                     <button
                       type="button"
-                      data-on={!mobileTouchSelection}
-                      aria-pressed={!mobileTouchSelection}
-                      onClick={() => onMobileTouchSelection(false)}
+                      data-on={mobileLongPressBehavior === "off"}
+                      aria-pressed={mobileLongPressBehavior === "off"}
+                      onClick={() => onMobileLongPressBehavior("off")}
                     >
                       Off
                     </button>
                     <button
                       type="button"
-                      data-on={mobileTouchSelection}
-                      aria-pressed={mobileTouchSelection}
-                      onClick={() => onMobileTouchSelection(true)}
+                      data-on={mobileLongPressBehavior === "copy"}
+                      aria-pressed={mobileLongPressBehavior === "copy"}
+                      onClick={() => onMobileLongPressBehavior("copy")}
                     >
-                      On
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      data-on={mobileLongPressBehavior === "loupe"}
+                      aria-pressed={mobileLongPressBehavior === "loupe"}
+                      onClick={() => onMobileLongPressBehavior("loupe")}
+                    >
+                      Loupe
                     </button>
                   </div>
                 </div>
+                {mobileLongPressBehavior === "loupe" ? (
+                  <div className="settings-row">
+                    <span>Loupe wait (ms)</span>
+                    <div
+                      className="segmented-control"
+                      role="group"
+                      aria-label="Loupe endpoint wait"
+                    >
+                      {MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_OPTIONS_MS.map((timeoutMs) => (
+                        <button
+                          key={timeoutMs}
+                          type="button"
+                          data-on={mobileTouchSelectionEndpointTimeoutMs === timeoutMs}
+                          aria-pressed={mobileTouchSelectionEndpointTimeoutMs === timeoutMs}
+                          onClick={() => onMobileTouchSelectionEndpointTimeoutMs(timeoutMs)}
+                        >
+                          {timeoutMs}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {showMobileKeyboardHideRefit ? (
                   <div className="settings-row">
                     <span>Resize after keyboard closes</span>
@@ -663,14 +729,14 @@ function BackendColorControl({
     if (!open) {
       return;
     }
-    const handlePointerDown = (event: PointerEvent) => {
+    const handleClick = (event: MouseEvent) => {
       if (rootRef.current?.contains(event.target as Node)) {
         return;
       }
       setOpen(false);
     };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
   }, [open]);
 
   const setColor = (nextColor: string) => {

@@ -34,13 +34,19 @@ import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
 import {
   DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
-  DEFAULT_MOBILE_TOUCH_SELECTION,
+  DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
+  DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
   DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
   parseMobileKeyboardHideRefit,
-  parseMobileTouchSelection,
+  parseMobileLongPressBehavior,
+  parseMobileTouchSelectionEndpointTimeoutMs,
   parseMobileTerminalTapTarget,
 } from "./mobileTerminalPrefs";
-import type { MobileTerminalTapTarget } from "./mobileTerminalPrefs";
+import type {
+  MobileLongPressBehavior,
+  MobileTerminalTapTarget,
+  MobileTouchSelectionEndpointTimeoutMs,
+} from "./mobileTerminalPrefs";
 import { addNativeBackHandler, addNativeKeyboardHideHandler, isNativeAndroid } from "./native";
 import { ActionMenu, ConfirmDialog, RenameDialog, useLongPress } from "./overlays";
 import type { MenuItem } from "./overlays";
@@ -57,6 +63,10 @@ import {
   DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
   parseTerminalOutputCoalesceMs,
 } from "./terminalOutputCoalescing";
+import {
+  DEFAULT_TERMINAL_FONT_SIZE_PX,
+  parseTerminalFontSizePx,
+} from "./terminalPrefs";
 import {
   aggregateStatus,
   canClearTabName,
@@ -178,6 +188,7 @@ type DisplayPrefs = {
   activeWorkspace: ScopedWorkspaceRef | null;
   selectedPanesByBridgeId: Record<string, string>;
   activeWorkspacesByBridgeId: Record<string, string>;
+  terminalFontSizePx: number;
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
   terminalOutputCoalesceMs: number;
@@ -185,7 +196,8 @@ type DisplayPrefs = {
   contentInsetBottomPx: number;
   mobileControlsScalePercent: number;
   mobileTerminalTapTarget: MobileTerminalTapTarget;
-  mobileTouchSelection: boolean;
+  mobileLongPressBehavior: MobileLongPressBehavior;
+  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
   mobileKeyboardHideRefit: boolean;
 };
 type LegacyDisplaySelectionPrefs = {
@@ -216,6 +228,7 @@ function readDisplayPrefs(): DisplayPrefs {
     activeWorkspace: null,
     selectedPanesByBridgeId: {},
     activeWorkspacesByBridgeId: {},
+    terminalFontSizePx: DEFAULT_TERMINAL_FONT_SIZE_PX,
     terminalInputTransport: DEFAULT_TERMINAL_INPUT_TRANSPORT,
     terminalInputBatchDelayMs: DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
     terminalOutputCoalesceMs: DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
@@ -223,7 +236,8 @@ function readDisplayPrefs(): DisplayPrefs {
     contentInsetBottomPx: DEFAULT_CONTENT_INSET_BOTTOM_PX,
     mobileControlsScalePercent: DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
     mobileTerminalTapTarget: DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
-    mobileTouchSelection: DEFAULT_MOBILE_TOUCH_SELECTION,
+    mobileLongPressBehavior: DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
+    mobileTouchSelectionEndpointTimeoutMs: DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
     mobileKeyboardHideRefit: DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
   };
   try {
@@ -231,7 +245,9 @@ function readDisplayPrefs(): DisplayPrefs {
     if (!raw) {
       return readLegacyDisplayPrefs(fallback);
     }
-    const parsed = JSON.parse(raw) as Partial<DisplayPrefs>;
+    const parsed = JSON.parse(raw) as Partial<DisplayPrefs> & {
+      mobileTouchSelection?: unknown;
+    };
     return parseDisplayPrefsValue(parsed, fallback);
   } catch {
     return fallback;
@@ -255,7 +271,7 @@ async function loadDisplayPrefs(): Promise<DisplayPrefs> {
 }
 
 function parseDisplayPrefsValue(
-  parsed: Partial<DisplayPrefs>,
+  parsed: Partial<DisplayPrefs> & { mobileTouchSelection?: unknown },
   fallback: DisplayPrefs,
 ): DisplayPrefs {
   return {
@@ -293,6 +309,7 @@ function parseDisplayPrefsValue(
     activeWorkspace: parseScopedWorkspaceRef(parsed.activeWorkspace),
     selectedPanesByBridgeId: parseStringRecord(parsed.selectedPanesByBridgeId),
     activeWorkspacesByBridgeId: parseStringRecord(parsed.activeWorkspacesByBridgeId),
+    terminalFontSizePx: parseTerminalFontSizePx(parsed.terminalFontSizePx),
     terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
     terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
     terminalOutputCoalesceMs: parseTerminalOutputCoalesceMs(
@@ -304,7 +321,10 @@ function parseDisplayPrefsValue(
       parsed.mobileControlsScalePercent,
     ),
     mobileTerminalTapTarget: parseMobileTerminalTapTarget(parsed.mobileTerminalTapTarget),
-    mobileTouchSelection: parseMobileTouchSelection(parsed.mobileTouchSelection),
+    mobileLongPressBehavior: parseStoredMobileLongPressBehavior(parsed),
+    mobileTouchSelectionEndpointTimeoutMs: parseMobileTouchSelectionEndpointTimeoutMs(
+      parsed.mobileTouchSelectionEndpointTimeoutMs,
+    ),
     mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
   };
 }
@@ -334,6 +354,7 @@ function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
     const parsed = JSON.parse(raw) as {
       activeSpaceId?: unknown;
       selectedPaneId?: unknown;
+      mobileTouchSelection?: unknown;
     } & Partial<DisplayPrefs>;
     return {
       ...fallback,
@@ -365,6 +386,7 @@ function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
           : fallback.sidebarWidth,
       sidebarOpen:
         typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen,
+      terminalFontSizePx: parseTerminalFontSizePx(parsed.terminalFontSizePx),
       terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
       terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
       terminalOutputCoalesceMs: parseTerminalOutputCoalesceMs(
@@ -376,7 +398,10 @@ function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
         parsed.mobileControlsScalePercent,
       ),
       mobileTerminalTapTarget: parseMobileTerminalTapTarget(parsed.mobileTerminalTapTarget),
-      mobileTouchSelection: parseMobileTouchSelection(parsed.mobileTouchSelection),
+      mobileLongPressBehavior: parseStoredMobileLongPressBehavior(parsed),
+      mobileTouchSelectionEndpointTimeoutMs: parseMobileTouchSelectionEndpointTimeoutMs(
+        parsed.mobileTouchSelectionEndpointTimeoutMs,
+      ),
       mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
     };
   } catch {
@@ -439,6 +464,21 @@ async function writeDisplayPrefs(prefs: DisplayPrefs) {
 
 function isNativeApp() {
   return Capacitor.isNativePlatform();
+}
+
+function parseStoredMobileLongPressBehavior(
+  parsed: Partial<DisplayPrefs> & { mobileTouchSelection?: unknown },
+): MobileLongPressBehavior {
+  if (parsed.mobileLongPressBehavior !== undefined) {
+    return parseMobileLongPressBehavior(parsed.mobileLongPressBehavior);
+  }
+  if (parsed.mobileTouchSelection === true) {
+    return "copy";
+  }
+  if (parsed.mobileTouchSelection === false) {
+    return "off";
+  }
+  return DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -512,6 +552,9 @@ export function App() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [backendSettingsOpen, setBackendSettingsOpen] = useState(false);
+  const [terminalFontSizePx, setTerminalFontSizePx] = useState(
+    initialPrefs.terminalFontSizePx,
+  );
   const [terminalInputTransport, setTerminalInputTransport] = useState(
     initialPrefs.terminalInputTransport,
   );
@@ -531,9 +574,13 @@ export function App() {
   const [mobileTerminalTapTarget, setMobileTerminalTapTarget] = useState(
     initialPrefs.mobileTerminalTapTarget,
   );
-  const [mobileTouchSelection, setMobileTouchSelection] = useState(
-    initialPrefs.mobileTouchSelection,
+  const [mobileLongPressBehavior, setMobileLongPressBehavior] = useState(
+    initialPrefs.mobileLongPressBehavior,
   );
+  const [
+    mobileTouchSelectionEndpointTimeoutMs,
+    setMobileTouchSelectionEndpointTimeoutMs,
+  ] = useState(initialPrefs.mobileTouchSelectionEndpointTimeoutMs);
   const [mobileKeyboardHideRefit, setMobileKeyboardHideRefit] = useState(
     initialPrefs.mobileKeyboardHideRefit,
   );
@@ -581,6 +628,7 @@ export function App() {
       setActiveWorkspaceRefState(prefs.activeWorkspace);
       setSelectedPanesByBridgeId(prefs.selectedPanesByBridgeId);
       setActiveWorkspacesByBridgeId(prefs.activeWorkspacesByBridgeId);
+      setTerminalFontSizePx(prefs.terminalFontSizePx);
       setTerminalInputTransport(prefs.terminalInputTransport);
       setTerminalInputBatchDelayMs(prefs.terminalInputBatchDelayMs);
       setTerminalOutputCoalesceMs(prefs.terminalOutputCoalesceMs);
@@ -588,7 +636,8 @@ export function App() {
       setContentInsetBottomPx(prefs.contentInsetBottomPx);
       setMobileControlsScalePercent(prefs.mobileControlsScalePercent);
       setMobileTerminalTapTarget(prefs.mobileTerminalTapTarget);
-      setMobileTouchSelection(prefs.mobileTouchSelection);
+      setMobileLongPressBehavior(prefs.mobileLongPressBehavior);
+      setMobileTouchSelectionEndpointTimeoutMs(prefs.mobileTouchSelectionEndpointTimeoutMs);
       setMobileKeyboardHideRefit(prefs.mobileKeyboardHideRefit);
       setDisplayPrefsLoaded(true);
     });
@@ -863,6 +912,7 @@ export function App() {
       activeWorkspace: activeWorkspaceRefState,
       selectedPanesByBridgeId,
       activeWorkspacesByBridgeId,
+      terminalFontSizePx,
       terminalInputTransport,
       terminalInputBatchDelayMs,
       terminalOutputCoalesceMs,
@@ -870,7 +920,8 @@ export function App() {
       contentInsetBottomPx,
       mobileControlsScalePercent,
       mobileTerminalTapTarget,
-      mobileTouchSelection,
+      mobileLongPressBehavior,
+      mobileTouchSelectionEndpointTimeoutMs,
       mobileKeyboardHideRefit,
     });
   }, [
@@ -887,6 +938,7 @@ export function App() {
     activeWorkspaceRefState,
     selectedPanesByBridgeId,
     activeWorkspacesByBridgeId,
+    terminalFontSizePx,
     terminalInputTransport,
     terminalInputBatchDelayMs,
     terminalOutputCoalesceMs,
@@ -894,7 +946,8 @@ export function App() {
     contentInsetBottomPx,
     mobileControlsScalePercent,
     mobileTerminalTapTarget,
-    mobileTouchSelection,
+    mobileLongPressBehavior,
+    mobileTouchSelectionEndpointTimeoutMs,
     mobileKeyboardHideRefit,
   ]);
 
@@ -1960,8 +2013,10 @@ export function App() {
             refitToken={refitToken}
             focusToken={terminalFocusToken}
             touchInput={isTouchInput}
+            terminalFontSizePx={terminalFontSizePx}
             mobileTapTarget={mobileTerminalTapTarget}
-            mobileTouchSelection={mobileTouchSelection}
+            mobileLongPressBehavior={mobileLongPressBehavior}
+            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
             terminalInputTransport={terminalInputTransport}
             terminalInputBatchDelayMs={terminalInputBatchDelayMs}
             terminalOutputCoalesceMs={terminalOutputCoalesceMs}
@@ -1980,8 +2035,10 @@ export function App() {
             autoFocus={!isTouchInput}
             scrollSensitivity={isTouchInput ? 2 : 0.4}
             mobileControls={isTouchInput}
+            terminalFontSizePx={terminalFontSizePx}
             mobileTapTarget={mobileTerminalTapTarget}
-            mobileTouchSelection={mobileTouchSelection}
+            mobileLongPressBehavior={mobileLongPressBehavior}
+            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
             terminalInputTransport={terminalInputTransport}
             terminalInputBatchDelayMs={terminalInputBatchDelayMs}
             terminalOutputCoalesceMs={terminalOutputCoalesceMs}
@@ -2039,6 +2096,8 @@ export function App() {
       {backendSettingsOpen ? (
         <BackendSettingsDialog
           showMobileTerminalSettings={isTouchInput}
+          terminalFontSizePx={terminalFontSizePx}
+          onTerminalFontSizePx={setTerminalFontSizePx}
           terminalInputTransport={terminalInputTransport}
           onTerminalInputTransport={setTerminalInputTransport}
           terminalInputBatchDelayMs={terminalInputBatchDelayMs}
@@ -2053,8 +2112,12 @@ export function App() {
           onMobileControlsScalePercent={setMobileControlsScalePercent}
           mobileTerminalTapTarget={mobileTerminalTapTarget}
           onMobileTerminalTapTarget={setMobileTerminalTapTarget}
-          mobileTouchSelection={mobileTouchSelection}
-          onMobileTouchSelection={setMobileTouchSelection}
+          mobileLongPressBehavior={mobileLongPressBehavior}
+          onMobileLongPressBehavior={setMobileLongPressBehavior}
+          mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
+          onMobileTouchSelectionEndpointTimeoutMs={
+            setMobileTouchSelectionEndpointTimeoutMs
+          }
           showMobileKeyboardHideRefit={showMobileKeyboardHideRefit}
           mobileKeyboardHideRefit={mobileKeyboardHideRefit}
           onMobileKeyboardHideRefit={setMobileKeyboardHideRefit}
@@ -2461,8 +2524,10 @@ function SplitGrid({
   refitToken,
   focusToken,
   touchInput,
+  terminalFontSizePx,
   mobileTapTarget,
-  mobileTouchSelection,
+  mobileLongPressBehavior,
+  mobileTouchSelectionEndpointTimeoutMs,
   terminalInputTransport,
   terminalInputBatchDelayMs,
   terminalOutputCoalesceMs,
@@ -2477,8 +2542,10 @@ function SplitGrid({
   refitToken: number;
   focusToken: number;
   touchInput: boolean;
+  terminalFontSizePx: number;
   mobileTapTarget: MobileTerminalTapTarget;
-  mobileTouchSelection: boolean;
+  mobileLongPressBehavior: MobileLongPressBehavior;
+  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
   terminalOutputCoalesceMs: number;
@@ -2508,8 +2575,10 @@ function SplitGrid({
               autoFocus={selected && !touchInput}
               scrollSensitivity={touchInput ? 2 : 0.4}
               mobileControls={selected && touchInput}
+              terminalFontSizePx={terminalFontSizePx}
               mobileTapTarget={mobileTapTarget}
-              mobileTouchSelection={mobileTouchSelection}
+              mobileLongPressBehavior={mobileLongPressBehavior}
+              mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
               terminalInputTransport={terminalInputTransport}
               terminalInputBatchDelayMs={terminalInputBatchDelayMs}
               terminalOutputCoalesceMs={terminalOutputCoalesceMs}
