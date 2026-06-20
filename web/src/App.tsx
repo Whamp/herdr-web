@@ -111,7 +111,7 @@ type ScopedWorkspaceRef = {
 type ScopedLaunchTarget = LaunchTarget & {
   bridgeId: BridgeId;
 };
-type BridgeConnectionView = {
+export type BridgeConnectionView = {
   runtime: BridgeRuntime;
   snapshot: Snapshot | null;
   loadState: LoadState;
@@ -149,6 +149,10 @@ type ScopedWorkspace = {
 };
 type ScopedTabWorkspace = ScopedWorkspace & {
   tabs: { tab: TabInfo; panes: PaneInfo[] }[];
+};
+export type ScopedTabEntry = ScopedWorkspace & {
+  tab: TabInfo;
+  panes: PaneInfo[];
 };
 type ScopedAgentGroup = {
   key: string;
@@ -1335,8 +1339,6 @@ export function App() {
           !paneFocusDirection &&
           paneCycleStep === 0) ||
         isShortcutTextEntryTarget(event.target) ||
-        !snapshot ||
-        !selectedRuntime ||
         busy ||
         menu ||
         dialog ||
@@ -1361,6 +1363,9 @@ export function App() {
       }
 
       if (paneCycleStep !== 0) {
+        if (!snapshot || !selectedRuntime) {
+          return;
+        }
         const panes = orderedShortcutTabPanes(snapshot, activeSpace, selectedPane);
         if (panes.length === 0) {
           return;
@@ -1396,6 +1401,9 @@ export function App() {
       }
 
       if (newTabShortcut) {
+        if (!selectedRuntime) {
+          return;
+        }
         if (!activeSpace) {
           return;
         }
@@ -1412,6 +1420,9 @@ export function App() {
       }
 
       if (closeTabShortcut) {
+        if (!snapshot || !selectedRuntime) {
+          return;
+        }
         const tab = activeShortcutTab(snapshot, activeSpace, selectedPane);
         if (!tab) {
           return;
@@ -1440,65 +1451,91 @@ export function App() {
       }
 
       if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        const agentPanes = orderedShortcutAgentPanes(
-          snapshot,
-          scope,
-          activeSpace?.workspace_id,
-          agentSort,
+        const agentEntries = buildVisibleAgentPaneEntries(
+          buildVisibleScopedWorkspaces(
+            bridgeViews,
+            selectedRuntime?.id ?? null,
+            hostScope,
+            scope,
+            activeSpace,
+            activeWorkspacesByBridgeId,
+          ),
+          bridgeViews,
+          hostScope,
           agentGroup,
+          agentSort,
         );
-        if (agentPanes.length === 0) {
+        if (agentEntries.length === 0) {
           return;
         }
         event.preventDefault();
         event.stopPropagation();
-        const currentIndex = selectedPane
-          ? agentPanes.findIndex((pane) => pane.pane_id === selectedPane.pane_id)
-          : -1;
+        const selectedBridgeIdForShortcut = selectedRuntime?.id ?? null;
+        const currentIndex =
+          selectedBridgeIdForShortcut && selectedPane
+            ? agentEntries.findIndex(
+                (entry) =>
+                  entry.bridgeId === selectedBridgeIdForShortcut &&
+                  entry.pane.pane_id === selectedPane.pane_id,
+              )
+            : -1;
         const step = event.key === "ArrowDown" ? 1 : -1;
-        const fallbackIndex = step > 0 ? 0 : agentPanes.length - 1;
-        const nextIndex =
-          currentIndex === -1
-            ? fallbackIndex
-            : (currentIndex + step + agentPanes.length) % agentPanes.length;
-        if (selectedRuntime) {
-          focusPane(selectedRuntime.id, agentPanes[nextIndex]);
-        }
+        const next = nextVisibleAgentPaneEntry(agentEntries, currentIndex, step);
+        focusPane(next.bridgeId, next.pane);
         return;
       }
 
-      const workspace = activeSpace;
-      if (!workspace || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
         return;
       }
-      const tabs = sortTabsForWorkspace(snapshot.tabs, workspace.workspace_id);
+      const tabEntries = buildVisibleTabEntries(
+        buildVisibleScopedWorkspaces(
+          bridgeViews,
+          selectedRuntime?.id ?? null,
+          hostScope,
+          scope,
+          activeSpace,
+          activeWorkspacesByBridgeId,
+        ),
+        bridgeViews,
+        hostScope,
+        agentGroup,
+      );
+      const tabs = tabEntries;
       if (tabs.length === 0) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      const activeTabId =
-        selectedPane && selectedPane.workspace_id === workspace.workspace_id
-          ? selectedPane.tab_id
-          : workspace.active_tab_id;
-      const currentIndex = tabs.findIndex((tab) => tab.tab_id === activeTabId);
+      const selectedBridgeIdForShortcut = selectedRuntime?.id ?? null;
+      const currentIndex = tabs.findIndex((entry) => {
+        if (!selectedBridgeIdForShortcut || entry.bridgeId !== selectedBridgeIdForShortcut) {
+          return false;
+        }
+        if (selectedPane) {
+          return entry.tab.tab_id === selectedPane.tab_id;
+        }
+        return (
+          activeSpace?.workspace_id === entry.workspace.workspace_id &&
+          entry.tab.tab_id === activeSpace.active_tab_id
+        );
+      });
       const step = event.key === "ArrowRight" ? 1 : -1;
-      const fallbackIndex = step > 0 ? 0 : tabs.length - 1;
-      const nextIndex =
-        currentIndex === -1 ? fallbackIndex : (currentIndex + step + tabs.length) % tabs.length;
-      if (selectedRuntime) {
-        focusTab(selectedRuntime.id, tabs[nextIndex].tab_id);
-      }
+      const next = nextVisibleTabEntry(tabs, currentIndex, step);
+      focusTab(next.bridgeId, next.tab.tab_id);
     };
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [
     activeSpace,
+    activeWorkspacesByBridgeId,
     agentGroup,
     agentSort,
+    bridgeViews,
     busy,
     dialog,
+    hostScope,
     isCompactLayout,
     launchTarget,
     menu,
@@ -2382,30 +2419,221 @@ function ensureBridgeConnectionRef(
   return next;
 }
 
-function orderedShortcutAgentPanes(
-  snapshot: Snapshot,
-  scope: Scope,
-  activeWorkspaceId: string | undefined,
-  agentSort: AgentSort,
-  agentGroup: AgentGroup,
+export function visibleHostBridgeViews(
+  bridgeViews: BridgeConnectionView[],
+  selectedBridgeId: BridgeId | null,
+  hostScope: HostScope,
 ) {
-  const scoped =
-    scope === "all"
-      ? snapshot.panes
-      : snapshot.panes.filter((pane) => pane.workspace_id === activeWorkspaceId);
-  const agentPanes = sortAgentPanes(scoped.filter(isAgentPane), agentSort, snapshot);
-  if (agentGroup !== "workspace" && agentGroup !== "hostWorkspace") {
+  if (hostScope === "all") {
+    return bridgeViews;
+  }
+  const selectedBridgeView = selectedBridgeId
+    ? (bridgeViews.find((view) => view.runtime.id === selectedBridgeId) ?? null)
+    : null;
+  return selectedBridgeView ? [selectedBridgeView] : [];
+}
+
+export function activeWorkspaceForBridgeView(
+  view: BridgeConnectionView,
+  selectedBridgeId: BridgeId | null,
+  activeSpace: WorkspaceInfo | null,
+  activeWorkspacesByBridgeId: Record<string, string>,
+) {
+  const viewSnapshot = view.snapshot;
+  if (!viewSnapshot || viewSnapshot.workspaces.length === 0) {
+    return null;
+  }
+  const preferredWorkspaceId =
+    view.runtime.id === selectedBridgeId
+      ? (activeSpace?.workspace_id ?? activeWorkspacesByBridgeId[view.runtime.id])
+      : activeWorkspacesByBridgeId[view.runtime.id];
+  return (
+    (preferredWorkspaceId &&
+      viewSnapshot.workspaces.find((workspace) => workspace.workspace_id === preferredWorkspaceId)) ||
+    viewSnapshot.workspaces.find((workspace) => workspace.focused) ||
+    viewSnapshot.workspaces[0] ||
+    null
+  );
+}
+
+export function buildVisibleScopedWorkspaces(
+  bridgeViews: BridgeConnectionView[],
+  selectedBridgeId: BridgeId | null,
+  hostScope: HostScope,
+  scope: Scope,
+  activeSpace: WorkspaceInfo | null,
+  activeWorkspacesByBridgeId: Record<string, string>,
+): ScopedWorkspace[] {
+  const hostBridgeViews = visibleHostBridgeViews(bridgeViews, selectedBridgeId, hostScope);
+  return hostBridgeViews.flatMap((view) => {
+    const viewSnapshot = view.snapshot;
+    if (!viewSnapshot) {
+      return [];
+    }
+    const bridgeIndex = Math.max(
+      0,
+      bridgeViews.findIndex((candidate) => candidate.runtime.id === view.runtime.id),
+    );
+    const workspaces =
+      scope === "all"
+        ? viewSnapshot.workspaces
+        : [
+            activeWorkspaceForBridgeView(
+              view,
+              selectedBridgeId,
+              activeSpace,
+              activeWorkspacesByBridgeId,
+            ),
+          ].filter((workspace): workspace is WorkspaceInfo => workspace !== null);
+    return workspaces.map((workspace) => ({
+      bridgeId: view.runtime.id,
+      bridgeIndex,
+      bridgeLabel: view.runtime.label,
+      bridgeColor: view.runtime.color,
+      snapshot: viewSnapshot,
+      workspace,
+    }));
+  });
+}
+
+export function buildVisibleAgentPaneEntries(
+  scopedWorkspaces: ScopedWorkspace[],
+  bridgeViews: BridgeConnectionView[],
+  hostScope: HostScope,
+  agentGroup: AgentGroup,
+  agentSort: AgentSort,
+) {
+  const agentPanes = sortScopedAgentPanes(
+    scopedWorkspaces.flatMap((entry) => {
+      const sorted = sortAgentPanes(
+        entry.snapshot.panes.filter(
+          (pane) => pane.workspace_id === entry.workspace.workspace_id && isAgentPane(pane),
+        ),
+        agentSort,
+        entry.snapshot,
+      );
+      return sorted.map((pane) => {
+        const tab = entry.snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
+        return {
+          bridgeId: entry.bridgeId,
+          bridgeIndex: entry.bridgeIndex,
+          bridgeLabel: entry.bridgeLabel,
+          bridgeColor: entry.bridgeColor,
+          pane,
+          snapshot: entry.snapshot,
+          workspace: entry.workspace,
+          tabNumber: tab?.number,
+          tabLabel: tab ? displayTabLabel(tab, entry.snapshot.panes) : undefined,
+        };
+      });
+    }),
+    agentSort,
+  );
+  if (agentGroup === "none") {
     return agentPanes;
   }
 
-  const panesByWorkspace = new Map<string, PaneInfo[]>();
-  for (const pane of agentPanes) {
-    const panes = panesByWorkspace.get(pane.workspace_id) ?? [];
-    panes.push(pane);
-    panesByWorkspace.set(pane.workspace_id, panes);
+  const groups = buildScopedAgentGroups(agentPanes, agentGroup, hostScope);
+  if (agentGroup === "hostWorkspace" && hostScope === "all") {
+    return bridgeViews.flatMap((view) =>
+      groups.filter((group) => group.bridgeId === view.runtime.id).flatMap((group) => group.panes),
+    );
   }
+  return groups.flatMap((group) => group.panes);
+}
 
-  return snapshot.workspaces.flatMap((workspace) => panesByWorkspace.get(workspace.workspace_id) ?? []);
+export function buildScopedAgentGroups(
+  agentPanes: ScopedAgentPane[],
+  agentGroup: AgentGroup,
+  hostScope: HostScope,
+) {
+  const paneBuckets = new Map<string, ScopedAgentGroup>();
+  const groupByWorkspace = agentGroup === "workspace" || agentGroup === "hostWorkspace";
+  for (const entry of agentPanes) {
+    const key = groupByWorkspace
+      ? `${entry.bridgeId}:${entry.pane.workspace_id}`
+      : entry.bridgeId;
+    const label =
+      agentGroup === "host"
+        ? entry.bridgeLabel
+        : agentGroup === "hostWorkspace"
+          ? (entry.workspace?.label ?? "workspace")
+          : hostScope === "all"
+            ? `${entry.bridgeLabel} / ${entry.workspace?.label ?? "workspace"}`
+            : (entry.workspace?.label ?? "workspace");
+    const existing =
+      paneBuckets.get(key) ??
+      {
+        key,
+        bridgeId: entry.bridgeId,
+        label,
+        bridgeColor: entry.bridgeColor,
+        status: groupByWorkspace ? entry.workspace?.agent_status : undefined,
+        panes: [],
+      };
+    existing.panes.push(entry);
+    paneBuckets.set(key, existing);
+  }
+  return [...paneBuckets.values()].map((group) => ({
+    ...group,
+    status: group.status ?? aggregateStatus(group.panes.map((entry) => entry.pane)),
+  }));
+}
+
+export function buildVisibleTabWorkspaceGroups(
+  scopedWorkspaces: ScopedWorkspace[],
+): ScopedTabWorkspace[] {
+  return scopedWorkspaces.map((entry) => ({
+    ...entry,
+    tabs: sortTabsForWorkspace(entry.snapshot.tabs, entry.workspace.workspace_id)
+      .map((tab) => ({ tab, panes: sortPanesForTab(entry.snapshot.panes, tab.tab_id) }))
+      .filter((group) => group.panes.length > 0),
+  }));
+}
+
+export function buildVisibleTabEntries(
+  scopedWorkspaces: ScopedWorkspace[],
+  bridgeViews: BridgeConnectionView[],
+  hostScope: HostScope,
+  agentGroup: AgentGroup,
+): ScopedTabEntry[] {
+  const spaceGroups = buildVisibleTabWorkspaceGroups(scopedWorkspaces);
+  const flattenGroup = (group: ScopedTabWorkspace): ScopedTabEntry[] =>
+    group.tabs.map(({ tab, panes }) => ({ ...group, tab, panes }));
+  if (agentGroup === "host" || (agentGroup === "hostWorkspace" && hostScope === "all")) {
+    return bridgeViews.flatMap((view) =>
+      spaceGroups
+        .filter((group) => group.bridgeId === view.runtime.id && group.tabs.length > 0)
+        .flatMap(flattenGroup),
+    );
+  }
+  return spaceGroups.flatMap(flattenGroup);
+}
+
+export function nextVisibleAgentPaneEntry(
+  entries: ScopedAgentPane[],
+  currentIndex: number,
+  step: -1 | 1,
+): ScopedAgentPane {
+  return entries[nextVisibleEntryIndex(entries.length, currentIndex, step)];
+}
+
+export function nextVisibleTabEntry(
+  entries: ScopedTabEntry[],
+  currentIndex: number,
+  step: -1 | 1,
+): ScopedTabEntry {
+  return entries[nextVisibleEntryIndex(entries.length, currentIndex, step)];
+}
+
+function nextVisibleEntryIndex(length: number, currentIndex: number, step: -1 | 1) {
+  if (length === 0) {
+    throw new Error("cannot navigate an empty visible entry list");
+  }
+  if (currentIndex === -1) {
+    return step > 0 ? 0 : length - 1;
+  }
+  return (currentIndex + step + length) % length;
 }
 
 function orderedShortcutTabPanes(
@@ -2749,57 +2977,23 @@ function Switcher({
   const selectedBridgeView = selectedBridgeId
     ? (bridgeViews.find((view) => view.runtime.id === selectedBridgeId) ?? null)
     : null;
-  const hostBridgeViews =
-    hostScope === "all" ? bridgeViews : selectedBridgeView ? [selectedBridgeView] : [];
-  const activeWorkspaceForView = useCallback((view: BridgeConnectionView) => {
-    const viewSnapshot = view.snapshot;
-    if (!viewSnapshot || viewSnapshot.workspaces.length === 0) {
-      return null;
-    }
-    const preferredWorkspaceId =
-      view.runtime.id === selectedBridgeId
-        ? (activeSpace?.workspace_id ?? activeWorkspacesByBridgeId[view.runtime.id])
-        : activeWorkspacesByBridgeId[view.runtime.id];
-    return (
-      (preferredWorkspaceId &&
-        viewSnapshot.workspaces.find((workspace) => workspace.workspace_id === preferredWorkspaceId)) ||
-      viewSnapshot.workspaces.find((workspace) => workspace.focused) ||
-      viewSnapshot.workspaces[0] ||
-      null
-    );
-  }, [activeSpace?.workspace_id, activeWorkspacesByBridgeId, selectedBridgeId]);
+  const hostBridgeViews = visibleHostBridgeViews(bridgeViews, selectedBridgeId, hostScope);
+  const activeWorkspaceForView = useCallback(
+    (view: BridgeConnectionView) =>
+      activeWorkspaceForBridgeView(view, selectedBridgeId, activeSpace, activeWorkspacesByBridgeId),
+    [activeSpace, activeWorkspacesByBridgeId, selectedBridgeId],
+  );
   const scopedWorkspaces = useMemo<ScopedWorkspace[]>(
     () =>
-      hostBridgeViews.flatMap((view) => {
-        const viewSnapshot = view.snapshot;
-        if (!viewSnapshot) {
-          return [];
-        }
-        const bridgeIndex = Math.max(
-          0,
-          bridgeViews.findIndex((candidate) => candidate.runtime.id === view.runtime.id),
-        );
-        const workspaces =
-          scope === "all"
-            ? viewSnapshot.workspaces
-            : [activeWorkspaceForView(view)].filter(
-                (workspace): workspace is WorkspaceInfo => workspace !== null,
-              );
-        return workspaces.map((workspace) => ({
-          bridgeId: view.runtime.id,
-          bridgeIndex,
-          bridgeLabel: view.runtime.label,
-          bridgeColor: view.runtime.color,
-          snapshot: viewSnapshot,
-          workspace,
-        }));
-      }),
-    [
-      activeWorkspaceForView,
-      bridgeViews,
-      hostBridgeViews,
-      scope,
-    ],
+      buildVisibleScopedWorkspaces(
+        bridgeViews,
+        selectedBridgeId,
+        hostScope,
+        scope,
+        activeSpace,
+        activeWorkspacesByBridgeId,
+      ),
+    [activeSpace, activeWorkspacesByBridgeId, bridgeViews, hostScope, scope, selectedBridgeId],
   );
   const panes = scopedWorkspaces.flatMap((entry) =>
     entry.snapshot.panes.filter((pane) => pane.workspace_id === entry.workspace.workspace_id),
@@ -2821,79 +3015,24 @@ function Switcher({
       : Boolean(snapshot);
 
   const agentPanes = useMemo<ScopedAgentPane[]>(() => {
-    return sortScopedAgentPanes(
-      scopedWorkspaces.flatMap((entry) => {
-        const sorted = sortAgentPanes(
-          entry.snapshot.panes.filter(
-            (pane) => pane.workspace_id === entry.workspace.workspace_id && isAgentPane(pane),
-          ),
-          agentSort,
-          entry.snapshot,
-        );
-        return sorted.map((pane) => {
-          const tab = entry.snapshot.tabs.find((item) => item.tab_id === pane.tab_id);
-          return {
-            bridgeId: entry.bridgeId,
-            bridgeIndex: entry.bridgeIndex,
-            bridgeLabel: entry.bridgeLabel,
-            bridgeColor: entry.bridgeColor,
-            pane,
-            snapshot: entry.snapshot,
-            workspace: entry.workspace,
-            tabNumber: tab?.number,
-            tabLabel: tab ? displayTabLabel(tab, entry.snapshot.panes) : undefined,
-          };
-        });
-      }),
+    return buildVisibleAgentPaneEntries(
+      scopedWorkspaces,
+      bridgeViews,
+      hostScope,
+      "none",
       agentSort,
     );
-  }, [agentSort, scopedWorkspaces]);
+  }, [agentSort, bridgeViews, hostScope, scopedWorkspaces]);
 
   const agentGroups = useMemo(() => {
     if (agentGroup === "none") {
       return [];
     }
-    const paneBuckets = new Map<string, ScopedAgentGroup>();
-    const groupByWorkspace = agentGroup === "workspace" || agentGroup === "hostWorkspace";
-    for (const entry of agentPanes) {
-      const key = groupByWorkspace
-        ? `${entry.bridgeId}:${entry.pane.workspace_id}`
-        : entry.bridgeId;
-      const label =
-        agentGroup === "host"
-          ? entry.bridgeLabel
-          : agentGroup === "hostWorkspace"
-            ? (entry.workspace?.label ?? "workspace")
-          : hostScope === "all"
-            ? `${entry.bridgeLabel} / ${entry.workspace?.label ?? "workspace"}`
-            : (entry.workspace?.label ?? "workspace");
-      const existing =
-        paneBuckets.get(key) ??
-        {
-          key,
-          bridgeId: entry.bridgeId,
-          label,
-          bridgeColor: entry.bridgeColor,
-          status: groupByWorkspace ? entry.workspace?.agent_status : undefined,
-          panes: [],
-        };
-      existing.panes.push(entry);
-      paneBuckets.set(key, existing);
-    }
-    return [...paneBuckets.values()].map((group) => ({
-      ...group,
-      status: group.status ?? aggregateStatus(group.panes.map((entry) => entry.pane)),
-    }));
+    return buildScopedAgentGroups(agentPanes, agentGroup, hostScope);
   }, [agentGroup, agentPanes, hostScope]);
 
   const spaceGroups = useMemo<ScopedTabWorkspace[]>(
-    () =>
-      scopedWorkspaces.map((entry) => ({
-        ...entry,
-        tabs: sortTabsForWorkspace(entry.snapshot.tabs, entry.workspace.workspace_id)
-          .map((tab) => ({ tab, panes: sortPanesForTab(entry.snapshot.panes, tab.tab_id) }))
-          .filter((group) => group.panes.length > 0),
-      })),
+    () => buildVisibleTabWorkspaceGroups(scopedWorkspaces),
     [scopedWorkspaces],
   );
   const spaceCount = hostBridgeViews.reduce(
