@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildVisibleAgentPaneEntries,
+  buildVisibleScopedWorkspaces,
+  buildVisibleTabEntries,
+  nextVisibleAgentPaneEntry,
+  nextVisibleTabEntry,
   resolveInitialSelectedBridgeId,
   shouldCollapseHostScope,
   sortScopedAgentPanes,
   stableBridgeRefreshOffsetMs,
 } from "./App";
+import type { BridgeConnectionView } from "./App";
+import type { BridgeRuntime } from "./bridge";
 import {
   currentConnectionSnapshot,
   isConnectionResultCurrent,
 } from "./connectionState";
-import type { PaneInfo, Snapshot, WorkspaceInfo } from "./types";
+import type { AgentStatus, PaneInfo, Snapshot, TabInfo, WorkspaceInfo } from "./types";
 
 describe("App connection guards", () => {
   it("hides snapshots from stale backend connections", () => {
@@ -75,6 +82,210 @@ describe("App multi-bridge helpers", () => {
       "bridge-b:workspace-a:2:pane-1",
     ]);
   });
+
+  it("builds visible agent entries across hosts for all-host shortcut navigation", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b")),
+      ),
+    ];
+
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+
+    expect(
+      buildVisibleAgentPaneEntries(scopedWorkspaces, bridgeViews, "all", "none", "workspace").map(
+        (item) => `${item.bridgeId}:${item.pane.pane_id}`,
+      ),
+    ).toEqual(["bridge-a:pane-a", "bridge-b:pane-b"]);
+  });
+
+  it("limits visible shortcut entries to the selected host in selected-host scope", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b")),
+      ),
+    ];
+
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-b",
+      "selected",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+
+    expect(
+      buildVisibleAgentPaneEntries(scopedWorkspaces, bridgeViews, "selected", "none", "workspace").map(
+        (item) => `${item.bridgeId}:${item.pane.pane_id}`,
+      ),
+    ).toEqual(["bridge-b:pane-b"]);
+  });
+
+  it("keeps host/workspace grouped shortcut order aligned with the rendered sidebar", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a", "idle")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b", "blocked")),
+      ),
+    ];
+
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+
+    expect(
+      buildVisibleAgentPaneEntries(
+        scopedWorkspaces,
+        bridgeViews,
+        "all",
+        "hostWorkspace",
+        "attention",
+      ).map((item) => `${item.bridgeId}:${item.pane.pane_id}`),
+    ).toEqual(["bridge-a:pane-a", "bridge-b:pane-b"]);
+  });
+
+  it("allows flat all-host agent shortcuts to follow attention priority across hosts", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a", "idle")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b", "blocked")),
+      ),
+    ];
+
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+
+    expect(
+      buildVisibleAgentPaneEntries(scopedWorkspaces, bridgeViews, "all", "none", "attention").map(
+        (item) => `${item.bridgeId}:${item.pane.pane_id}`,
+      ),
+    ).toEqual(["bridge-b:pane-b", "bridge-a:pane-a"]);
+  });
+
+  it("builds visible tab entries across hosts for all-host shortcut navigation", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b")),
+      ),
+    ];
+
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+
+    expect(
+      buildVisibleTabEntries(scopedWorkspaces, bridgeViews, "all", "none").map(
+        (item) => `${item.bridgeId}:${item.tab.tab_id}`,
+      ),
+    ).toEqual(["bridge-a:tab-a", "bridge-b:tab-b"]);
+  });
+
+  it("navigates visible agent entries with fallback and wrap-around", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b")),
+      ),
+    ];
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+    const entries = buildVisibleAgentPaneEntries(
+      scopedWorkspaces,
+      bridgeViews,
+      "all",
+      "none",
+      "workspace",
+    );
+
+    expect(nextVisibleAgentPaneEntry(entries, -1, 1).pane.pane_id).toBe("pane-a");
+    expect(nextVisibleAgentPaneEntry(entries, -1, -1).pane.pane_id).toBe("pane-b");
+    expect(nextVisibleAgentPaneEntry(entries, 0, -1).pane.pane_id).toBe("pane-b");
+    expect(nextVisibleAgentPaneEntry(entries, 1, 1).pane.pane_id).toBe("pane-a");
+  });
+
+  it("navigates visible tab entries with fallback and wrap-around", () => {
+    const bridgeViews = [
+      bridgeView(
+        "bridge-a",
+        bridgeSnapshot("workspace-a", "tab-a", pane("pane-a", "workspace-a", "tab-a")),
+      ),
+      bridgeView(
+        "bridge-b",
+        bridgeSnapshot("workspace-b", "tab-b", pane("pane-b", "workspace-b", "tab-b")),
+      ),
+    ];
+    const scopedWorkspaces = buildVisibleScopedWorkspaces(
+      bridgeViews,
+      "bridge-a",
+      "all",
+      "space",
+      null,
+      { "bridge-a": "workspace-a", "bridge-b": "workspace-b" },
+    );
+    const entries = buildVisibleTabEntries(scopedWorkspaces, bridgeViews, "all", "none");
+
+    expect(nextVisibleTabEntry(entries, -1, 1).tab.tab_id).toBe("tab-a");
+    expect(nextVisibleTabEntry(entries, -1, -1).tab.tab_id).toBe("tab-b");
+    expect(nextVisibleTabEntry(entries, 0, -1).tab.tab_id).toBe("tab-b");
+    expect(nextVisibleTabEntry(entries, 1, 1).tab.tab_id).toBe("tab-a");
+  });
 });
 
 function entry(
@@ -116,14 +327,68 @@ function workspace(workspaceId: string, number: number): WorkspaceInfo {
   };
 }
 
-function pane(paneId: string, workspaceId: string, tabId: string): PaneInfo {
+function pane(
+  paneId: string,
+  workspaceId: string,
+  tabId: string,
+  agentStatus: AgentStatus = "idle",
+): PaneInfo {
   return {
     pane_id: paneId,
     terminal_id: `${paneId}-terminal`,
     workspace_id: workspaceId,
     tab_id: tabId,
     focused: false,
-    agent_status: "idle",
+    agent_status: agentStatus,
     revision: 1,
+  };
+}
+
+function bridgeView(bridgeId: string, snapshot: Snapshot): BridgeConnectionView {
+  return {
+    runtime: bridgeRuntime(bridgeId),
+    snapshot,
+    loadState: "ready",
+  };
+}
+
+function bridgeRuntime(bridgeId: string): BridgeRuntime {
+  return {
+    id: bridgeId,
+    mode: "configured",
+    label: bridgeId,
+    color: "#89b4fa",
+    backend: null,
+    connectionKey: bridgeId,
+    resumeToken: 0,
+    capabilities: null,
+    capabilityState: "ready",
+    capabilityError: null,
+    canConnect: true,
+    httpUrl: (path) => `http://${bridgeId}${path}`,
+    wsUrl: (path) => `ws://${bridgeId}${path}`,
+  };
+}
+
+function bridgeSnapshot(workspaceId: string, tabId: string, paneInfo: PaneInfo): Snapshot {
+  const workspaceInfo: WorkspaceInfo = {
+    ...workspace(workspaceId, 1),
+    active_tab_id: tabId,
+    agent_status: paneInfo.agent_status,
+  };
+  const tabInfo: TabInfo = {
+    tab_id: tabId,
+    workspace_id: workspaceId,
+    number: 1,
+    label: tabId,
+    focused: false,
+    pane_count: 1,
+    agent_status: paneInfo.agent_status,
+  };
+  return {
+    workspaces: [workspaceInfo],
+    tabs: [tabInfo],
+    panes: [paneInfo],
+    layouts: [],
   };
 }
