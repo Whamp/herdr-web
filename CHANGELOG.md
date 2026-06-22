@@ -6,6 +6,9 @@
 
 ### Added
 
+- Added a Keyboard shortcut profile setting with Auto, OS-specific, and Legacy profiles for app and
+  terminal shortcut behavior.
+
 ### Changed
 
 ### Fixed
@@ -37,6 +40,9 @@
   keeps the Settings dialog open. [PR #16](https://github.com/kcosr/herdr-web/pull/16)
 - Fixed sidebar keyboard shortcuts so agent and tab navigation follows the visible host/sidebar
   order across selected-host and all-host views. [PR #18](https://github.com/kcosr/herdr-web/pull/18)
+- Fixed terminal copy and paste shortcuts by normalizing common clipboard conventions before
+  Ghostty treats them as terminal input, including Ctrl+Insert/Shift+Insert and platform copy/paste
+  keys.
 
 ## [0.2.0] - 2026-06-19
 

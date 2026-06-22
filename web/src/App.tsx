@@ -29,6 +29,12 @@ import {
   parseContentInsetTopPx,
   parseMobileControlsScalePercent,
 } from "./displayPrefs";
+import {
+  DEFAULT_KEYBINDING_PROFILE,
+  isAppShortcutModifier,
+  parseKeybindingProfile,
+} from "./keybindings";
+import type { KeybindingProfile } from "./keybindings";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
@@ -204,6 +210,7 @@ type DisplayPrefs = {
   mobileLongPressBehavior: MobileLongPressBehavior;
   mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
   mobileKeyboardHideRefit: boolean;
+  keybindingProfile: KeybindingProfile;
 };
 type LegacyDisplaySelectionPrefs = {
   activeSpaceId: string | null;
@@ -244,6 +251,7 @@ function readDisplayPrefs(): DisplayPrefs {
     mobileLongPressBehavior: DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
     mobileTouchSelectionEndpointTimeoutMs: DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
     mobileKeyboardHideRefit: DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
+    keybindingProfile: DEFAULT_KEYBINDING_PROFILE,
   };
   try {
     const raw = window.localStorage.getItem(DISPLAY_PREFS_KEY);
@@ -331,6 +339,7 @@ function parseDisplayPrefsValue(
       parsed.mobileTouchSelectionEndpointTimeoutMs,
     ),
     mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
+    keybindingProfile: parseKeybindingProfile(parsed.keybindingProfile),
   };
 }
 
@@ -408,6 +417,7 @@ function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
         parsed.mobileTouchSelectionEndpointTimeoutMs,
       ),
       mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
+      keybindingProfile: parseKeybindingProfile(parsed.keybindingProfile),
     };
   } catch {
     return fallback;
@@ -589,6 +599,7 @@ export function App() {
   const [mobileKeyboardHideRefit, setMobileKeyboardHideRefit] = useState(
     initialPrefs.mobileKeyboardHideRefit,
   );
+  const [keybindingProfile, setKeybindingProfile] = useState(initialPrefs.keybindingProfile);
   const [launchTarget, setLaunchTarget] = useState<ScopedLaunchTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -928,6 +939,7 @@ export function App() {
       mobileLongPressBehavior,
       mobileTouchSelectionEndpointTimeoutMs,
       mobileKeyboardHideRefit,
+      keybindingProfile,
     });
   }, [
     displayPrefsLoaded,
@@ -954,6 +966,7 @@ export function App() {
     mobileLongPressBehavior,
     mobileTouchSelectionEndpointTimeoutMs,
     mobileKeyboardHideRefit,
+    keybindingProfile,
   ]);
 
   useEffect(() => {
@@ -1326,12 +1339,14 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const navigationShortcut = isAppNavigationShortcut(event);
-      const closeTabShortcut = isCloseTabShortcut(event);
-      const newTabShortcut = isNewTabShortcut(event);
-      const splitDirection = splitSupported ? splitShortcutDirection(event) : null;
-      const paneFocusDirection = paneFocusSupported ? paneFocusShortcutDirection(event) : null;
-      const paneCycleStep = paneCycleShortcutStep(event);
+      const navigationShortcut = isAppNavigationShortcut(event, keybindingProfile);
+      const closeTabShortcut = isCloseTabShortcut(event, keybindingProfile);
+      const newTabShortcut = isNewTabShortcut(event, keybindingProfile);
+      const splitDirection = splitSupported ? splitShortcutDirection(event, keybindingProfile) : null;
+      const paneFocusDirection = paneFocusSupported
+        ? paneFocusShortcutDirection(event, keybindingProfile)
+        : null;
+      const paneCycleStep = paneCycleShortcutStep(event, keybindingProfile);
       if (
         (!navigationShortcut &&
           !closeTabShortcut &&
@@ -2058,6 +2073,7 @@ export function App() {
             terminalInputTransport={terminalInputTransport}
             terminalInputBatchDelayMs={terminalInputBatchDelayMs}
             terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+            keybindingProfile={keybindingProfile}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
             resumeToken={selectedRuntime?.resumeToken ?? 0}
             httpUrl={selectedHttpUrl}
@@ -2080,6 +2096,7 @@ export function App() {
             terminalInputTransport={terminalInputTransport}
             terminalInputBatchDelayMs={terminalInputBatchDelayMs}
             terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+            keybindingProfile={keybindingProfile}
             refitToken={refitToken}
             focusToken={terminalFocusToken}
           />
@@ -2159,6 +2176,8 @@ export function App() {
           showMobileKeyboardHideRefit={showMobileKeyboardHideRefit}
           mobileKeyboardHideRefit={mobileKeyboardHideRefit}
           onMobileKeyboardHideRefit={setMobileKeyboardHideRefit}
+          keybindingProfile={keybindingProfile}
+          onKeybindingProfile={setKeybindingProfile}
           onClose={() => setBackendSettingsOpen(false)}
         />
       ) : null}
@@ -2646,9 +2665,9 @@ function orderedShortcutTabPanes(
   return tab ? sortPanesForTab(snapshot.panes, tab.tab_id) : [];
 }
 
-function isAppNavigationShortcut(event: KeyboardEvent) {
+function isAppNavigationShortcut(event: KeyboardEvent, keybindingProfile: KeybindingProfile) {
   return (
-    isPlatformShortcutModifier(event) &&
+    isAppShortcutModifier(event, keybindingProfile) &&
     event.shiftKey &&
     (event.key === "ArrowUp" ||
       event.key === "ArrowDown" ||
@@ -2657,20 +2676,20 @@ function isAppNavigationShortcut(event: KeyboardEvent) {
   );
 }
 
-function isCloseTabShortcut(event: KeyboardEvent) {
+function isCloseTabShortcut(event: KeyboardEvent, keybindingProfile: KeybindingProfile) {
   return (
-    isPlatformShortcutModifier(event) &&
+    isAppShortcutModifier(event, keybindingProfile) &&
     event.shiftKey &&
     event.code === "KeyX"
   );
 }
 
-function isNewTabShortcut(event: KeyboardEvent) {
-  return isPlatformShortcutModifier(event) && event.shiftKey && event.code === "KeyT";
+function isNewTabShortcut(event: KeyboardEvent, keybindingProfile: KeybindingProfile) {
+  return isAppShortcutModifier(event, keybindingProfile) && event.shiftKey && event.code === "KeyT";
 }
 
-function paneFocusShortcutDirection(event: KeyboardEvent): PaneFocusDirection | null {
-  if (!isPlatformShortcutModifier(event)) {
+function paneFocusShortcutDirection(event: KeyboardEvent, keybindingProfile: KeybindingProfile): PaneFocusDirection | null {
+  if (!isAppShortcutModifier(event, keybindingProfile)) {
     return null;
   }
   if (event.code === "KeyH") {
@@ -2688,15 +2707,15 @@ function paneFocusShortcutDirection(event: KeyboardEvent): PaneFocusDirection | 
   return null;
 }
 
-function paneCycleShortcutStep(event: KeyboardEvent) {
-  if (!isPlatformShortcutModifier(event) || event.key !== "Tab") {
+function paneCycleShortcutStep(event: KeyboardEvent, keybindingProfile: KeybindingProfile) {
+  if (!isAppShortcutModifier(event, keybindingProfile) || event.key !== "Tab") {
     return 0;
   }
   return event.shiftKey ? -1 : 1;
 }
 
-function splitShortcutDirection(event: KeyboardEvent): SplitDirection | null {
-  if (!isPlatformShortcutModifier(event) || !event.shiftKey) {
+function splitShortcutDirection(event: KeyboardEvent, keybindingProfile: KeybindingProfile): SplitDirection | null {
+  if (!isAppShortcutModifier(event, keybindingProfile) || !event.shiftKey) {
     return null;
   }
   if (event.code === "KeyV") {
@@ -2706,10 +2725,6 @@ function splitShortcutDirection(event: KeyboardEvent): SplitDirection | null {
     return "right";
   }
   return null;
-}
-
-function isPlatformShortcutModifier(event: KeyboardEvent) {
-  return !event.ctrlKey && event.metaKey !== event.altKey;
 }
 
 function activeShortcutTab(
@@ -2760,6 +2775,7 @@ function SplitGrid({
   terminalInputTransport,
   terminalInputBatchDelayMs,
   terminalOutputCoalesceMs,
+  keybindingProfile,
   connectionKey,
   resumeToken,
   httpUrl,
@@ -2778,6 +2794,7 @@ function SplitGrid({
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
   terminalOutputCoalesceMs: number;
+  keybindingProfile: KeybindingProfile;
   connectionKey: string;
   resumeToken: number;
   httpUrl: (path: string, query?: URLSearchParams) => string;
@@ -2811,6 +2828,7 @@ function SplitGrid({
               terminalInputTransport={terminalInputTransport}
               terminalInputBatchDelayMs={terminalInputBatchDelayMs}
               terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+              keybindingProfile={keybindingProfile}
               refitToken={selected ? refitToken : 0}
               focusToken={selected ? focusToken : 0}
             />

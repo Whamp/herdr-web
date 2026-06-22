@@ -149,8 +149,15 @@ for HTTP/cleartext behavior, Android SDK setup, and APK verification notes.
 Settings are grouped by area:
 
 - Bridge: same-origin and saved bridge profiles, reachability testing, and bridge enablement.
-- Terminal: browser-to-bridge terminal input transport and input batching delay.
+- Terminal: keyboard shortcut profile, browser-to-bridge terminal input transport, and batching delays.
 - Mobile: touch-specific terminal behavior when running on a coarse pointer device.
+
+The keyboard shortcut profile defaults to Auto, which detects the browser OS and uses OS-native app
+shortcut modifiers: Command on macOS and Alt on Windows/Linux. The Legacy profile keeps older Herdr
+Web behavior that accepts either Meta/Super or Alt for app shortcuts. Terminal copy/paste shortcuts
+are normalized separately so common terminal conventions keep working across profiles: `Ctrl+Insert`
+copy, `Shift+Insert` paste, direct `Meta/Cmd+C` and `Meta/Cmd+V` when the browser receives them, and
+`Ctrl+Shift+C` / `Ctrl+Shift+V` on non-macOS profiles.
 
 Terminal input payloads can be sent as JSON or binary WebSocket frames. JSON remains the default;
 binary is available for comparing terminal input performance. Terminal input batching is off by
@@ -231,20 +238,26 @@ HOST=0.0.0.0 scripts/run-bridge.sh --allow-host host-b --allow-origin http://hos
 ## Keyboard Shortcuts
 
 These app shortcuts are ignored while dialogs, menus, and normal text inputs are active. They still
-work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts such as `Cmd+Tab`,
+work when the terminal's hidden keyboard input has focus. The default Auto shortcut profile uses
+`Cmd` on macOS and `Alt` on Windows/Linux. Choose the Legacy profile in Settings to accept either
+`Meta/Super` or `Alt`, matching older Herdr Web builds. OS-reserved shortcuts such as `Cmd+Tab`,
 `Meta+Tab`, or some `Alt+Tab` setups may not reach the browser.
 
-| Action | macOS | Windows/Linux |
+| Action | macOS Auto | Windows/Linux Auto |
 | --- | --- | --- |
-| Select previous/next agent pane | `Cmd/Option+Shift+Up/Down` | `Meta/Alt+Shift+Up/Down` |
-| Select previous/next tab in the active space | `Cmd/Option+Shift+Left/Right` | `Meta/Alt+Shift+Left/Right` |
-| Focus split left/down/up/right | `Cmd/Option(+Shift)+H/J/K/L` | `Meta/Alt(+Shift)+H/J/K/L` |
-| Cycle split next | `Cmd/Option+Tab` | `Meta/Alt+Tab` |
-| Cycle split previous | `Cmd/Option+Shift+Tab` | `Meta/Alt+Shift+Tab` |
-| Split selected pane down | `Cmd/Option+Shift+V` | `Meta/Alt+Shift+V` |
-| Split selected pane right | `Cmd/Option+Shift+-` | `Meta/Alt+Shift+-` |
-| Open the new-tab launch modal | `Cmd/Option+Shift+T` | `Meta/Alt+Shift+T` |
-| Confirm close for the focused split, or tab when only one split exists | `Cmd/Option+Shift+X` | `Meta/Alt+Shift+X` |
+| Select previous/next agent pane | `Cmd+Shift+Up/Down` | `Alt+Shift+Up/Down` |
+| Select previous/next tab in the active space | `Cmd+Shift+Left/Right` | `Alt+Shift+Left/Right` |
+| Focus split left/down/up/right | `Cmd(+Shift)+H/J/K/L` | `Alt(+Shift)+H/J/K/L` |
+| Cycle split next | `Cmd+Tab` | `Alt+Tab` |
+| Cycle split previous | `Cmd+Shift+Tab` | `Alt+Shift+Tab` |
+| Split selected pane down | `Cmd+Shift+V` | `Alt+Shift+V` |
+| Split selected pane right | `Cmd+Shift+-` | `Alt+Shift+-` |
+| Open the new-tab launch modal | `Cmd+Shift+T` | `Alt+Shift+T` |
+| Confirm close for the focused split, or tab when only one split exists | `Cmd+Shift+X` | `Alt+Shift+X` |
+
+Terminal copy/paste shortcuts are handled by the terminal renderer before Ghostty Web encodes them
+as terminal input: `Ctrl+Insert` copies, `Shift+Insert` pastes, `Meta/Cmd+C` and `Meta/Cmd+V` work
+when delivered by the browser, and non-macOS profiles also support `Ctrl+Shift+C` / `Ctrl+Shift+V`.
 
 ## Runtime Model
 

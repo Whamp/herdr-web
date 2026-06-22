@@ -38,6 +38,12 @@ import {
   parseMobileControlsScalePercent,
 } from "./displayPrefs";
 import {
+  KEYBINDING_PROFILE_DESCRIPTIONS,
+  KEYBINDING_PROFILE_LABELS,
+  KEYBINDING_PROFILE_OPTIONS,
+} from "./keybindings";
+import type { KeybindingProfile } from "./keybindings";
+import {
   DEFAULT_TERMINAL_FONT_SIZE_PX,
   MAX_TERMINAL_FONT_SIZE_PX,
   MIN_TERMINAL_FONT_SIZE_PX,
@@ -82,6 +88,8 @@ type Props = {
   showMobileKeyboardHideRefit: boolean;
   mobileKeyboardHideRefit: boolean;
   onMobileKeyboardHideRefit: (enabled: boolean) => void;
+  keybindingProfile: KeybindingProfile;
+  onKeybindingProfile: (profile: KeybindingProfile) => void;
   onClose: () => void;
 };
 
@@ -120,6 +128,8 @@ export function BackendSettingsDialog({
   showMobileKeyboardHideRefit,
   mobileKeyboardHideRefit,
   onMobileKeyboardHideRefit,
+  keybindingProfile,
+  onKeybindingProfile,
   onClose,
 }: Props) {
   const bridge = useBridge();
@@ -528,6 +538,27 @@ export function BackendSettingsDialog({
                     defaultValue={DEFAULT_TERMINAL_FONT_SIZE_PX}
                     onChange={(value) => onTerminalFontSizePx(parseTerminalFontSizePx(value))}
                   />
+                </div>
+                <div className="settings-label">Keyboard shortcuts</div>
+                <div className="settings-row settings-row-stack">
+                  <span>Shortcut profile</span>
+                  <div className="segmented-control" role="group" aria-label="Keyboard shortcut profile">
+                    {KEYBINDING_PROFILE_OPTIONS.map((profile) => (
+                      <button
+                        key={profile}
+                        type="button"
+                        data-on={keybindingProfile === profile}
+                        aria-pressed={keybindingProfile === profile}
+                        title={KEYBINDING_PROFILE_DESCRIPTIONS[profile]}
+                        onClick={() => onKeybindingProfile(profile)}
+                      >
+                        {KEYBINDING_PROFILE_LABELS[profile]}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="settings-hint">
+                    {KEYBINDING_PROFILE_DESCRIPTIONS[keybindingProfile]}
+                  </span>
                 </div>
                 <div className="settings-label">Terminal transport</div>
                 <div className="settings-row">

@@ -1886,6 +1886,17 @@ button {
   font-size: 12.5px;
 }
 
+.settings-row-stack {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.settings-hint {
+  color: var(--overlay1);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .segmented-control {
   display: inline-flex;
   width: 100%;

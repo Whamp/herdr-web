@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, RefObject } from "react";
+import type { KeybindingProfile } from "./keybindings";
 import { ConfirmDialog } from "./overlays";
 import { addNativeResumeHandler } from "./native";
 import { shellQuote } from "./shell";
@@ -74,6 +75,8 @@ type Props = {
   terminalInputBatchDelayMs?: number;
   /** Delay for coalescing terminal output frames. Zero disables output batching. */
   terminalOutputCoalesceMs?: number;
+  /** Keyboard shortcut profile used by app and terminal clipboard shortcuts. */
+  keybindingProfile?: KeybindingProfile;
   /** Incrementing token from the parent that requests an immediate fit+resize. */
   refitToken?: number;
   /** Incrementing token from the parent that requests focus on the preferred terminal input. */
@@ -134,6 +137,7 @@ export function TerminalView({
   terminalInputTransport = "json",
   terminalInputBatchDelayMs = 0,
   terminalOutputCoalesceMs = DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
+  keybindingProfile = "auto",
   refitToken = 0,
   focusToken = 0,
 }: Props) {
@@ -191,8 +195,14 @@ export function TerminalView({
   terminalInputTransportRef.current = terminalInputTransport;
   const terminalInputBatchDelayMsRef = useRef(terminalInputBatchDelayMs);
   terminalInputBatchDelayMsRef.current = terminalInputBatchDelayMs;
+  const keybindingProfileRef = useRef(keybindingProfile);
+  keybindingProfileRef.current = keybindingProfile;
   connectionKeyRef.current = connectionKey;
   terminalIdRef.current = pane?.terminal_id ?? null;
+
+  useEffect(() => {
+    rendererRef.current?.setKeybindingProfile(keybindingProfile);
+  }, [keybindingProfile]);
 
   const focusMobileCommandInput = useCallback(() => {
     if (!mobileControlsRef.current) {
@@ -456,7 +466,10 @@ export function TerminalView({
     let resizeObserver: ResizeObserver | null = null;
     const generation = rendererGenerationRef.current + 1;
     rendererGenerationRef.current = generation;
-    const renderer: TerminalRenderer = new GhosttyRenderer(terminalFontSizePxRef.current);
+    const renderer: TerminalRenderer = new GhosttyRenderer({
+      fontSizePx: terminalFontSizePxRef.current,
+      keybindingProfile: keybindingProfileRef.current,
+    });
     rendererRef.current = renderer;
     setConnectionState("connecting");
 
@@ -485,6 +498,7 @@ export function TerminalView({
         }
 
         renderer.setScrollSensitivity(scrollSensitivityRef.current);
+        renderer.setKeybindingProfile(keybindingProfileRef.current);
         renderer.setTapFocusHandler(
           !mobileControlsRef.current
             ? null

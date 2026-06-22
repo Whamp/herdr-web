@@ -1,4 +1,6 @@
 import type { FitAddon, Terminal } from "ghostty-web";
+import { terminalClipboardShortcutAction } from "./keybindings";
+import type { KeybindingProfile, TerminalClipboardShortcutAction } from "./keybindings";
 import {
   findFirstUrlInSelection,
   terminalSelectionRange,
@@ -118,6 +120,7 @@ export type TerminalRenderer = {
   focusTextInput(): void;
   clearSelection(): void;
   setScrollSensitivity(value: number): void;
+  setKeybindingProfile(profile: KeybindingProfile): void;
   dispose(): void;
 };
 
@@ -136,9 +139,17 @@ export class GhosttyRenderer implements TerminalRenderer {
     DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS;
   #textInputTapGraceUntil = 0;
   #fontSizePx: number;
+  #keybindingProfile: KeybindingProfile = "auto";
 
-  constructor(fontSizePx = DEFAULT_TERMINAL_FONT_SIZE_PX) {
-    this.#fontSizePx = fontSizePx;
+  constructor(
+    options: { fontSizePx?: number; keybindingProfile?: KeybindingProfile } | number = {},
+  ) {
+    if (typeof options === "number") {
+      this.#fontSizePx = options;
+      return;
+    }
+    this.#fontSizePx = options.fontSizePx ?? DEFAULT_TERMINAL_FONT_SIZE_PX;
+    this.#keybindingProfile = options.keybindingProfile ?? "auto";
   }
 
   async mount(container: HTMLElement) {
@@ -179,6 +190,9 @@ export class GhosttyRenderer implements TerminalRenderer {
     terminal.loadAddon(fitAddon);
     terminal.open(container);
     terminal.attachCustomKeyEventHandler((event) => {
+      if (handleTerminalClipboardShortcut(event, terminal, this.#keybindingProfile)) {
+        return true;
+      }
       const output = customKeyboardEventOutput(event);
       if (!output) {
         return false;
@@ -290,6 +304,10 @@ export class GhosttyRenderer implements TerminalRenderer {
 
   setScrollSensitivity(value: number) {
     this.#scrollSensitivity = value;
+  }
+
+  setKeybindingProfile(profile: KeybindingProfile) {
+    this.#keybindingProfile = profile;
   }
 
   dispose() {
@@ -1251,6 +1269,95 @@ function keyboardEventOutput(event: KeyboardEvent) {
     default:
       return null;
   }
+}
+
+type TerminalClipboardAccess = Pick<Terminal, "getSelection" | "paste">;
+type TerminalClipboardClient = {
+  readText(): Promise<string | null>;
+  writeText(text: string): Promise<void>;
+};
+
+export async function applyTerminalClipboardShortcut(
+  action: TerminalClipboardShortcutAction,
+  terminal: TerminalClipboardAccess,
+  clipboard: TerminalClipboardClient = browserTerminalClipboard,
+) {
+  if (action === "copy") {
+    const selection = terminal.getSelection();
+    if (selection.length > 0) {
+      await clipboard.writeText(selection);
+    }
+    return;
+  }
+
+  const text = await clipboard.readText();
+  if (text) {
+    terminal.paste(text);
+  }
+}
+
+function handleTerminalClipboardShortcut(
+  event: KeyboardEvent,
+  terminal: TerminalClipboardAccess,
+  keybindingProfile: KeybindingProfile,
+) {
+  const action = terminalClipboardShortcutAction(event, keybindingProfile);
+  if (!action) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === "function") {
+    event.stopImmediatePropagation();
+  }
+  void applyTerminalClipboardShortcut(action, terminal).catch((error) => {
+    console.warn("terminal clipboard shortcut failed", error);
+  });
+  return true;
+}
+
+const browserTerminalClipboard: TerminalClipboardClient = {
+  async readText() {
+    try {
+      return (await navigator.clipboard?.readText?.()) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  async writeText(text: string) {
+    const writeText = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    if (writeText) {
+      try {
+        await writeText(text);
+        return;
+      } catch {
+        // Fall through to the execCommand fallback for browsers that reject the async clipboard API.
+      }
+    }
+    if (!copyTextWithHiddenTextarea(text)) {
+      throw new Error("clipboard write failed");
+    }
+  },
+};
+
+function copyTextWithHiddenTextarea(text: string) {
+  const textarea = document.createElement("textarea");
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  activeElement?.focus({ preventScroll: true });
+  return copied;
 }
 
 function customKeyboardEventOutput(event: KeyboardEvent) {
