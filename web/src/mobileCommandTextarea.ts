@@ -1,5 +1,7 @@
 export type MobileCommandTextareaAutosizeTarget = {
   scrollHeight: number;
+  clientHeight?: number;
+  offsetHeight?: number;
   style: {
     height: string;
   };
@@ -12,5 +14,9 @@ export function autosizeMobileCommandTextarea(
     return;
   }
   textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
+  const borderHeight =
+    typeof textarea.offsetHeight === "number" && typeof textarea.clientHeight === "number"
+      ? Math.max(0, textarea.offsetHeight - textarea.clientHeight)
+      : 0;
+  textarea.style.height = `${textarea.scrollHeight + borderHeight}px`;
 }

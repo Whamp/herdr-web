@@ -10,8 +10,9 @@
 
 ### Fixed
 
-- Fixed the mobile terminal command input so long prompts wrap, grow taller while editing,
-  and remain viewable instead of scrolling sideways.
+- Added Mobile settings for an expanding terminal command input and Enter-as-newline
+  editing, allowing long prompts to wrap and remain viewable while preserving send-on-Enter
+  by default. [PR #21](https://github.com/kcosr/herdr-web/pull/21)
 - Improved terminal reconnect/resume handling so Android foregrounding and quick terminal switches
   keep the renderer stable, avoid stale tab flashes, and suppress transient connecting overlays.
   [PR #19](https://github.com/kcosr/herdr-web/pull/19)
