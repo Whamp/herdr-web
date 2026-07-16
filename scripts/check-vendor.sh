@@ -53,9 +53,13 @@ if [[ -n "$unexpected_path_deps" ]]; then
   exit 1
 fi
 
-if [[ -n "${HERDR_SRC:-}" ]]; then
-  if [[ ! -d "$HERDR_SRC/src" ]]; then
+if [[ -n "${HERDR_SRC:-}" || -n "${HERDR_WIRE_SRC:-}" ]]; then
+  if [[ -n "${HERDR_SRC:-}" && ! -d "$HERDR_SRC/src" ]]; then
     echo "HERDR_SRC must point at a Herdr checkout containing src/" >&2
+    exit 1
+  fi
+  if [[ -n "${HERDR_WIRE_SRC:-}" && ! -d "$HERDR_WIRE_SRC/src" ]]; then
+    echo "HERDR_WIRE_SRC must point at a Herdr checkout containing src/" >&2
     exit 1
   fi
 
@@ -71,39 +75,44 @@ if [[ -n "${HERDR_SRC:-}" ]]; then
 
   compare_wire_body() {
     local wire_file
-    for wire_file in "$HERDR_SRC/src/protocol/wire.rs" "$COMPAT/src/protocol/wire.rs"; do
+    for wire_file in "$HERDR_WIRE_SRC/src/protocol/wire.rs" "$COMPAT/src/protocol/wire.rs"; do
       if ! grep -q '^use std::collections::HashMap;' "$wire_file"; then
         echo "wire.rs anchor line missing in $wire_file; update compare_wire_body" >&2
         exit 1
       fi
     done
     if ! diff -q \
-      <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$HERDR_SRC/src/protocol/wire.rs") \
+      <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$HERDR_WIRE_SRC/src/protocol/wire.rs") \
       <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$COMPAT/src/protocol/wire.rs") \
       >/dev/null; then
-      echo "Herdr protocol wire copy drifted from HERDR_SRC" >&2
+      echo "Herdr protocol wire copy drifted from HERDR_WIRE_SRC" >&2
       diff -u \
-        <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$HERDR_SRC/src/protocol/wire.rs") \
+        <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$HERDR_WIRE_SRC/src/protocol/wire.rs") \
         <(awk 'seen || /^use std::collections::HashMap;/{seen=1} seen {print}' "$COMPAT/src/protocol/wire.rs") \
         | sed -n '1,120p' >&2
       exit 1
     fi
   }
 
-  compare_exact "src/api/schema.rs" "src/api/schema.rs"
-  while IFS= read -r -d '' upstream_schema_file; do
-    file_name="$(basename "$upstream_schema_file")"
-    case "$file_name" in
-      tests.rs|tabs.rs|workspaces.rs)
-        continue
-        ;;
-    esac
-    compare_exact "src/api/schema/$file_name" "src/api/schema/$file_name"
-  done < <(find "$HERDR_SRC/src/api/schema" -maxdepth 1 -type f -name '*.rs' -print0)
-  compare_wire_body
+  if [[ -n "${HERDR_SRC:-}" ]]; then
+    compare_exact "src/api/schema.rs" "src/api/schema.rs"
+    while IFS= read -r -d '' upstream_schema_file; do
+      file_name="$(basename "$upstream_schema_file")"
+      case "$file_name" in
+        tests.rs|tabs.rs|workspaces.rs)
+          continue
+          ;;
+      esac
+      compare_exact "src/api/schema/$file_name" "src/api/schema/$file_name"
+    done < <(find "$HERDR_SRC/src/api/schema" -maxdepth 1 -type f -name '*.rs' -print0)
+  fi
+  if [[ -n "${HERDR_WIRE_SRC:-}" ]]; then
+    compare_wire_body
+  fi
 
-  echo "Herdr compatibility vendor layout and HERDR_SRC drift checks passed"
+  echo "Herdr compatibility vendor layout and requested drift checks passed"
 else
   echo "Herdr compatibility vendor layout looks clean"
-  echo "Set HERDR_SRC=/path/to/herdr to compare exact upstream schema/wire copies"
+  echo "Set HERDR_SRC=/path/to/stable-herdr for schema drift checks"
+  echo "Set HERDR_WIRE_SRC=/path/to/wire-reference for protocol wire drift checks"
 fi

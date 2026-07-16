@@ -8,6 +8,10 @@
 
 ### Changed
 
+- Refreshed the vendored terminal wire protocol to protocol `17`, allowing the bridge to attach to
+  the `remote-link-externalization-test` Herdr build while retaining protocol `16` support. Terminal
+  links in herdr-web still open directly in the browser and do not request Herdr-managed forwards.
+
 ### Fixed
 
 ### Removed

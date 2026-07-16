@@ -38,10 +38,11 @@ use herdr_compat::api::schema::{
     SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind, TabCreateParams,
     TabInfo, TabListParams, WorkspaceInfo,
 };
+#[cfg(test)]
+use herdr_compat::protocol::RenderEncoding;
 use herdr_compat::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
-    ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
-    PROTOCOL_VERSION,
+    self, AttachScrollDirection, AttachScrollSource, ClientMessage, ServerMessage, MAX_FRAME_SIZE,
+    MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 use crate::agent_activity::{AgentActivityListResponse, AgentActivityManager};
@@ -3856,20 +3857,8 @@ fn open_terminal_attach(
     output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
 ) -> Result<TerminalAttach, BridgeError> {
     let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)?;
-    protocol::write_message(
-        &mut stream,
-        &ClientMessage::Hello {
-            version: protocol_version,
-            cols,
-            rows,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        },
-    )
-    .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    protocol::write_terminal_attach_hello(&mut stream, protocol_version, cols, rows)
+        .map_err(|err| BridgeError::Protocol(err.to_string()))?;
 
     let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
         .map_err(|err| BridgeError::Protocol(err.to_string()))?;
@@ -3960,9 +3949,13 @@ fn open_terminal_attach(
                 ServerMessage::Notify { .. }
                 | ServerMessage::Clipboard { .. }
                 | ServerMessage::WindowTitle { .. }
-                | ServerMessage::ReloadSoundConfig
+                | ServerMessage::ReloadClientConfig
                 | ServerMessage::MouseCapture { .. }
                 | ServerMessage::PrefixInputSource { .. }
+                | ServerMessage::ExternalOpenPrepare { .. }
+                | ServerMessage::ExternalOpenCommit { .. }
+                | ServerMessage::ExternalOpenCancel { .. }
+                | ServerMessage::ExternalOpenPolicyMutationRequest { .. }
                 | ServerMessage::Frame(_)
                 | ServerMessage::Graphics { .. } => {}
             }
@@ -5473,6 +5466,11 @@ mod tests {
             daemon_protocol_from_status(runtime_status(PROTOCOL_VERSION)).unwrap(),
             PROTOCOL_VERSION
         );
+    }
+
+    #[test]
+    fn daemon_status_protocol_accepts_port_forward_test_protocol() {
+        assert_eq!(daemon_protocol_from_status(runtime_status(17)).unwrap(), 17);
     }
 
     #[test]

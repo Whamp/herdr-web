@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -59,6 +59,94 @@ pub enum ClientLaunchMode {
     App,
     /// Direct terminal attach client.
     TerminalAttach,
+}
+
+/// Stable opaque identity of one external-open attachment lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExternalOpenAttachmentId([u64; 2]);
+
+impl ExternalOpenAttachmentId {
+    pub(crate) const fn from_parts(parts: [u64; 2]) -> Self {
+        Self(parts)
+    }
+
+    // Keep stable serialization available to cross-target roundtrip tests even
+    // though only Unix launchers export the attachment identity at runtime.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn to_env_value(self) -> String {
+        format!("{:016x}{:016x}", self.0[0], self.0[1])
+    }
+
+    pub(crate) fn from_env_value(value: &str) -> Option<Self> {
+        if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let high = u64::from_str_radix(&value[..16], 16).ok()?;
+        let low = u64::from_str_radix(&value[16..], 16).ok()?;
+        (high != 0 || low != 0).then_some(Self([high, low]))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: u64) -> Self {
+        Self([0x4845_5244_525f_4154, value])
+    }
+}
+
+/// Effective device-local policy advertised by a full app connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenPolicy {
+    Disabled,
+    Enabled,
+}
+
+/// Closed stage at which a device-local policy mutation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenPolicyMutationFailureStage {
+    Write,
+    Reload,
+}
+
+/// Coarse forwarding metadata that never discloses either port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenPortStatus {
+    SamePort,
+    RemappedPort,
+}
+
+/// Prepared target authorized by a later server commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenTarget {
+    Direct,
+    Forwarded { port_status: ExternalOpenPortStatus },
+}
+
+/// Closed client-owned reasons that can stop preparation before commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenPreparationFailure {
+    UnsupportedScheme,
+    AuthorityUserinfoForbidden,
+    InvalidPort,
+    InvalidAbsoluteUrl,
+    UnsupportedLoopbackForm,
+    LoopbackUnsupportedOnPlatform,
+    ManagedSshRequired,
+    ForwardingUnavailable,
+    TooManyOpensInProgress,
+    TooManyForwardRequests,
+    TooManyMappingWaiters,
+    ForwardCapacityExhausted,
+    ForwardBindExhausted,
+    AtomicForwardCreationFailed,
+    ForwardCommandRejected,
+    ForwardCommandTimedOut,
+}
+
+/// Closed result reported after an irrevocable server commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExternalOpenResult {
+    OpenedDirectly,
+    OpenedThroughForward { port_status: ExternalOpenPortStatus },
+    PlatformOpenRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +412,10 @@ pub enum ClientMessage {
         keybindings: ClientKeybindings,
         /// Whether this connection will render the full app or attach directly to a pane terminal.
         launch_mode: ClientLaunchMode,
+        /// Effective local policy for full app connections; absent for terminal connections.
+        external_open_policy: Option<ExternalOpenPolicy>,
+        /// Stable external-open attachment authority; absent for terminal connections.
+        external_open_attachment_id: Option<ExternalOpenAttachmentId>,
     },
 
     /// Raw input bytes read from the client's stdin.
@@ -394,6 +486,42 @@ pub enum ClientMessage {
         target: String,
         /// Replace an existing writable controller for this terminal.
         takeover: bool,
+    },
+
+    /// Replace this full app connection's effective device-local policy.
+    ExternalOpenPolicyUpdate { policy: ExternalOpenPolicy },
+
+    /// Report that preparation completed and is waiting for server commit.
+    ExternalOpenReady {
+        request_id: u64,
+        target: ExternalOpenTarget,
+    },
+
+    /// Report a terminal preparation failure before commit.
+    ExternalOpenPreparationFailed {
+        request_id: u64,
+        reason: ExternalOpenPreparationFailure,
+    },
+
+    /// Report the platform-open result after commit.
+    ExternalOpenResult {
+        request_id: u64,
+        result: ExternalOpenResult,
+    },
+
+    /// Report the exact outcome of a source-bound device-local policy mutation.
+    ExternalOpenPolicyMutationResult {
+        request_id: u64,
+        requested_policy: ExternalOpenPolicy,
+        persisted_policy: Option<ExternalOpenPolicy>,
+        effective_policy: ExternalOpenPolicy,
+        failure_stage: Option<ExternalOpenPolicyMutationFailureStage>,
+    },
+
+    /// Report that an explicit local client-config reload could not refresh this policy.
+    ExternalOpenPolicyReloadFailed {
+        effective_policy: ExternalOpenPolicy,
+        cleanup_incomplete: bool,
     },
 }
 
@@ -649,7 +777,7 @@ pub enum ServerMessage {
     },
 
     /// Client-local runtime config changed on disk; refresh it without reconnecting.
-    ReloadSoundConfig,
+    ReloadClientConfig,
 
     /// Whether the client should currently capture host mouse input.
     MouseCapture {
@@ -663,6 +791,21 @@ pub enum ServerMessage {
     PrefixInputSource {
         /// Whether the ASCII input source should be active.
         active: bool,
+    },
+
+    /// Ask the initiating full app connection to prepare one external open.
+    ExternalOpenPrepare { request_id: u64, url: String },
+
+    /// Irrevocably authorize the prepared platform-open side effect.
+    ExternalOpenCommit { request_id: u64 },
+
+    /// Cancel an uncommitted request best-effort.
+    ExternalOpenCancel { request_id: u64 },
+
+    /// Ask the source full app connection to persist and reload its local policy.
+    ExternalOpenPolicyMutationRequest {
+        request_id: u64,
+        requested_policy: ExternalOpenPolicy,
     },
 }
 
@@ -940,10 +1083,21 @@ mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
 
+    #[test]
+    fn external_open_attachment_id_has_stable_environment_roundtrip() {
+        let id =
+            ExternalOpenAttachmentId::from_parts([0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210]);
+
+        let encoded = id.to_env_value();
+
+        assert_eq!(encoded, "0123456789abcdeffedcba9876543210");
+        assert_eq!(ExternalOpenAttachmentId::from_env_value(&encoded), Some(id));
+    }
+
     // ---- Round-trip: ClientMessage ----
 
     #[test]
-    fn client_hello_roundtrip() {
+    fn client_hello_roundtrip_includes_full_app_external_open_policy() {
         let msg = ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             cols: 80,
@@ -953,6 +1107,28 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            external_open_policy: Some(ExternalOpenPolicy::Enabled),
+            external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn terminal_connection_hello_roundtrip_omits_external_open_policy() {
+        let msg = ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            requested_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: ClientKeybindings::Server,
+            launch_mode: ClientLaunchMode::TerminalAttach,
+            external_open_policy: None,
+            external_open_attachment_id: None,
         };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ClientMessage, _) =
@@ -990,6 +1166,8 @@ mod tests {
                 requested_encoding: RenderEncoding::SemanticFrame,
                 keybindings: ClientKeybindings::Server,
                 launch_mode: ClientLaunchMode::App,
+                external_open_policy: Some(ExternalOpenPolicy::Disabled),
+                external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
             }),
             0
         );
@@ -1043,6 +1221,256 @@ mod tests {
             }),
             9
         );
+    }
+
+    #[test]
+    fn external_open_client_message_wire_tags_append_after_protocol_16_order() {
+        fn tag(msg: &ClientMessage) -> u8 {
+            *bincode::serde::encode_to_vec(msg, bincode::config::standard())
+                .unwrap()
+                .first()
+                .expect("encoded client message should include enum tag")
+        }
+
+        assert_eq!(
+            tag(&ClientMessage::ExternalOpenPolicyUpdate {
+                policy: ExternalOpenPolicy::Enabled,
+            }),
+            10
+        );
+        assert_eq!(
+            tag(&ClientMessage::ExternalOpenReady {
+                request_id: 1,
+                target: ExternalOpenTarget::Direct,
+            }),
+            11
+        );
+        assert_eq!(
+            tag(&ClientMessage::ExternalOpenPreparationFailed {
+                request_id: 1,
+                reason: ExternalOpenPreparationFailure::InvalidAbsoluteUrl,
+            }),
+            12
+        );
+        assert_eq!(
+            tag(&ClientMessage::ExternalOpenResult {
+                request_id: 1,
+                result: ExternalOpenResult::OpenedDirectly,
+            }),
+            13
+        );
+    }
+
+    #[test]
+    fn external_open_client_messages_roundtrip() {
+        let messages = [
+            ClientMessage::ExternalOpenPolicyUpdate {
+                policy: ExternalOpenPolicy::Enabled,
+            },
+            ClientMessage::ExternalOpenReady {
+                request_id: 41,
+                target: ExternalOpenTarget::Direct,
+            },
+            ClientMessage::ExternalOpenReady {
+                request_id: 42,
+                target: ExternalOpenTarget::Forwarded {
+                    port_status: ExternalOpenPortStatus::RemappedPort,
+                },
+            },
+            ClientMessage::ExternalOpenPreparationFailed {
+                request_id: 43,
+                reason: ExternalOpenPreparationFailure::ForwardCommandTimedOut,
+            },
+            ClientMessage::ExternalOpenResult {
+                request_id: 44,
+                result: ExternalOpenResult::OpenedDirectly,
+            },
+            ClientMessage::ExternalOpenResult {
+                request_id: 45,
+                result: ExternalOpenResult::OpenedThroughForward {
+                    port_status: ExternalOpenPortStatus::SamePort,
+                },
+            },
+            ClientMessage::ExternalOpenResult {
+                request_id: 46,
+                result: ExternalOpenResult::PlatformOpenRejected,
+            },
+        ];
+
+        for message in messages {
+            let encoded =
+                bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+            let (decoded, consumed): (ClientMessage, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(consumed, encoded.len());
+            assert_eq!(decoded, message);
+        }
+    }
+
+    #[test]
+    fn external_open_policy_mutation_messages_roundtrip_with_stable_order() {
+        fn roundtrip_client(message: ClientMessage, expected_tag: u8) {
+            let encoded =
+                bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+            assert_eq!(encoded.first().copied(), Some(expected_tag));
+            let (decoded, consumed): (ClientMessage, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(consumed, encoded.len());
+            assert_eq!(decoded, message);
+        }
+
+        fn roundtrip_server(message: ServerMessage, expected_tag: u8) {
+            let encoded =
+                bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+            assert_eq!(encoded.first().copied(), Some(expected_tag));
+            let (decoded, consumed): (ServerMessage, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(consumed, encoded.len());
+            assert_eq!(decoded, message);
+        }
+
+        roundtrip_server(
+            ServerMessage::ExternalOpenPolicyMutationRequest {
+                request_id: 7,
+                requested_policy: ExternalOpenPolicy::Enabled,
+            },
+            14,
+        );
+        roundtrip_client(
+            ClientMessage::ExternalOpenPolicyReloadFailed {
+                effective_policy: ExternalOpenPolicy::Disabled,
+                cleanup_incomplete: true,
+            },
+            15,
+        );
+        for (failure_stage, persisted_policy) in [
+            (None, Some(ExternalOpenPolicy::Enabled)),
+            (Some(ExternalOpenPolicyMutationFailureStage::Write), None),
+            (
+                Some(ExternalOpenPolicyMutationFailureStage::Reload),
+                Some(ExternalOpenPolicy::Enabled),
+            ),
+        ] {
+            roundtrip_client(
+                ClientMessage::ExternalOpenPolicyMutationResult {
+                    request_id: 7,
+                    requested_policy: ExternalOpenPolicy::Enabled,
+                    persisted_policy,
+                    effective_policy: ExternalOpenPolicy::Disabled,
+                    failure_stage,
+                },
+                14,
+            );
+        }
+
+        fn tag<T: Serialize>(value: &T) -> u8 {
+            *bincode::serde::encode_to_vec(value, bincode::config::standard())
+                .unwrap()
+                .first()
+                .expect("encoded enum should include tag")
+        }
+        assert_eq!(tag(&ExternalOpenPolicyMutationFailureStage::Write), 0);
+        assert_eq!(tag(&ExternalOpenPolicyMutationFailureStage::Reload), 1);
+        assert_eq!(PROTOCOL_VERSION, 17);
+    }
+
+    #[test]
+    fn external_open_closed_value_wire_order_is_stable() {
+        macro_rules! roundtrip_tag {
+            ($type:ty, $value:expr) => {{
+                let value = $value;
+                let encoded =
+                    bincode::serde::encode_to_vec(&value, bincode::config::standard()).unwrap();
+                let tag = *encoded.first().expect("encoded enum should include tag");
+                let (decoded, consumed): ($type, usize) =
+                    bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
+                        .unwrap();
+                assert_eq!(consumed, encoded.len());
+                assert_eq!(decoded, value);
+                tag
+            }};
+        }
+
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenPolicy, ExternalOpenPolicy::Disabled),
+            0
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenPolicy, ExternalOpenPolicy::Enabled),
+            1
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenPortStatus, ExternalOpenPortStatus::SamePort),
+            0
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenPortStatus, ExternalOpenPortStatus::RemappedPort),
+            1
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenTarget, ExternalOpenTarget::Direct),
+            0
+        );
+        assert_eq!(
+            roundtrip_tag!(
+                ExternalOpenTarget,
+                ExternalOpenTarget::Forwarded {
+                    port_status: ExternalOpenPortStatus::SamePort,
+                }
+            ),
+            1
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenResult, ExternalOpenResult::OpenedDirectly),
+            0
+        );
+        assert_eq!(
+            roundtrip_tag!(
+                ExternalOpenResult,
+                ExternalOpenResult::OpenedThroughForward {
+                    port_status: ExternalOpenPortStatus::SamePort,
+                }
+            ),
+            1
+        );
+        assert_eq!(
+            roundtrip_tag!(ExternalOpenResult, ExternalOpenResult::PlatformOpenRejected),
+            2
+        );
+
+        for (reason, expected_tag) in [
+            (ExternalOpenPreparationFailure::UnsupportedScheme, 0),
+            (
+                ExternalOpenPreparationFailure::AuthorityUserinfoForbidden,
+                1,
+            ),
+            (ExternalOpenPreparationFailure::InvalidPort, 2),
+            (ExternalOpenPreparationFailure::InvalidAbsoluteUrl, 3),
+            (ExternalOpenPreparationFailure::UnsupportedLoopbackForm, 4),
+            (
+                ExternalOpenPreparationFailure::LoopbackUnsupportedOnPlatform,
+                5,
+            ),
+            (ExternalOpenPreparationFailure::ManagedSshRequired, 6),
+            (ExternalOpenPreparationFailure::ForwardingUnavailable, 7),
+            (ExternalOpenPreparationFailure::TooManyOpensInProgress, 8),
+            (ExternalOpenPreparationFailure::TooManyForwardRequests, 9),
+            (ExternalOpenPreparationFailure::TooManyMappingWaiters, 10),
+            (ExternalOpenPreparationFailure::ForwardCapacityExhausted, 11),
+            (ExternalOpenPreparationFailure::ForwardBindExhausted, 12),
+            (
+                ExternalOpenPreparationFailure::AtomicForwardCreationFailed,
+                13,
+            ),
+            (ExternalOpenPreparationFailure::ForwardCommandRejected, 14),
+            (ExternalOpenPreparationFailure::ForwardCommandTimedOut, 15),
+        ] {
+            assert_eq!(
+                roundtrip_tag!(ExternalOpenPreparationFailure, reason),
+                expected_tag
+            );
+        }
+        assert_eq!(PROTOCOL_VERSION, 17);
     }
 
     #[test]
@@ -1210,6 +1638,33 @@ mod tests {
     }
 
     // ---- Round-trip: ServerMessage ----
+
+    #[test]
+    fn external_open_server_messages_roundtrip_in_stable_order() {
+        fn roundtrip(msg: ServerMessage) {
+            let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+            let tag = *encoded
+                .first()
+                .expect("encoded server message should include enum tag");
+            let (decoded, consumed): (ServerMessage, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(consumed, encoded.len());
+            assert_eq!(decoded, msg);
+            match msg {
+                ServerMessage::ExternalOpenPrepare { .. } => assert_eq!(tag, 11),
+                ServerMessage::ExternalOpenCommit { .. } => assert_eq!(tag, 12),
+                ServerMessage::ExternalOpenCancel { .. } => assert_eq!(tag, 13),
+                other => panic!("unexpected external-open server fixture: {other:?}"),
+            }
+        }
+
+        roundtrip(ServerMessage::ExternalOpenPrepare {
+            request_id: 41,
+            url: "https://example.com/a?b=c#d".to_owned(),
+        });
+        roundtrip(ServerMessage::ExternalOpenCommit { request_id: 41 });
+        roundtrip(ServerMessage::ExternalOpenCancel { request_id: 41 });
+    }
 
     #[test]
     fn server_welcome_roundtrip() {
@@ -1395,9 +1850,10 @@ mod tests {
     }
 
     #[test]
-    fn server_reload_sound_config_roundtrip() {
-        let msg = ServerMessage::ReloadSoundConfig;
+    fn server_reload_client_config_roundtrip() {
+        let msg = ServerMessage::ReloadClientConfig;
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        assert_eq!(encoded.first(), Some(&8));
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
@@ -1436,6 +1892,8 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            external_open_policy: Some(ExternalOpenPolicy::Disabled),
+            external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).unwrap();
@@ -1510,6 +1968,8 @@ mod tests {
                     requested_encoding: RenderEncoding::SemanticFrame,
                     keybindings: ClientKeybindings::Server,
                     launch_mode: ClientLaunchMode::App,
+                    external_open_policy: Some(ExternalOpenPolicy::Disabled),
+                    external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
                 },
                 1 => ClientMessage::Input {
                     data: vec![(i % 256) as u8; (i as usize % 50) + 1],
@@ -1946,6 +2406,8 @@ mod tests {
             requested_encoding: RenderEncoding::SemanticFrame,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::App,
+            external_open_policy: Some(ExternalOpenPolicy::Disabled),
+            external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).unwrap();
@@ -1982,6 +2444,8 @@ mod tests {
                 requested_encoding: RenderEncoding::SemanticFrame,
                 keybindings: ClientKeybindings::Server,
                 launch_mode: ClientLaunchMode::App,
+                external_open_policy: Some(ExternalOpenPolicy::Disabled),
+                external_open_attachment_id: Some(ExternalOpenAttachmentId::for_test(1)),
             },
             ClientMessage::Input {
                 data: b"hello world".to_vec(),

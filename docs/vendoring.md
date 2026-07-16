@@ -31,8 +31,13 @@ The browser app is not vendored into Herdr. It lives at `web/`, and `herdr-web-b
 
 ## Current Reference
 
-- Upstream checkout: a clean Herdr source checkout outside this repository
-- Upstream release baseline: `v0.7.2`
+- API and schema baseline: upstream Herdr `v0.7.2`
+- Terminal wire baseline: `Whamp/herdr` commit
+  `048df3876f60099e186a22297938260cae0eb625` (`remote-link-externalization-test`)
+
+The protocol `17` wire baseline is an explicit compatibility exception for the remote-link test
+build. Keep API and schema refreshes anchored to a clean upstream release checkout; do not copy
+unrelated API or server changes from the experimental fork.
 
 Use the upstream checkout as an external reference for audits and refreshes. It is not required to
 build `herdr-web`.
@@ -61,19 +66,22 @@ bridge narrows the drift check to only the terminal attach message regions.
 
 ## Refresh Process
 
-Use a clean Herdr checkout as the source reference. Do not refresh from an experimental tree that
-may contain unrelated local drift.
+Use separate clean checkouts for the stable API/schema baseline and the protocol wire baseline. Do
+not copy unrelated API or server changes from the experimental wire checkout.
 
 ```bash
-HERDR_SRC=/path/to/herdr
+HERDR_SRC=/path/to/herdr-v0.7.2
+HERDR_WIRE_SRC=/path/to/herdr-remote-link-test
 HERDR_WEB=/path/to/herdr-web
 ```
 
-1. Verify the source checkout is clean:
+1. Verify both source checkouts are clean and pinned to the intended revisions:
 
 ```bash
 git -C "$HERDR_SRC" status --short
 git -C "$HERDR_SRC" rev-parse --short HEAD
+git -C "$HERDR_WIRE_SRC" status --short
+git -C "$HERDR_WIRE_SRC" rev-parse --short HEAD
 ```
 
 2. Reconcile only the compatibility surface:
@@ -83,7 +91,8 @@ src/api/client.rs          -> vendor/herdr-compat/src/api/client.rs
 src/api/status.rs          -> vendor/herdr-compat/src/api/status.rs
 src/api/schema.rs          -> vendor/herdr-compat/src/api/schema.rs
 src/api/schema/*.rs        -> vendor/herdr-compat/src/api/schema/*.rs
-src/protocol/wire.rs       -> vendor/herdr-compat/src/protocol/wire.rs
+$HERDR_WIRE_SRC/src/protocol/wire.rs
+                           -> vendor/herdr-compat/src/protocol/wire.rs
 src/ipc.rs                 -> vendor/herdr-compat/src/ipc.rs
 src/logging.rs             -> vendor/herdr-compat/src/logging.rs
 src/server/socket_paths.rs -> vendor/herdr-compat/src/server/socket_paths.rs
@@ -105,11 +114,13 @@ src/server/socket_paths.rs -> vendor/herdr-compat/src/server/socket_paths.rs
 ```bash
 scripts/check-vendor.sh
 HERDR_SRC="$HERDR_SRC" scripts/check-vendor.sh
+HERDR_WIRE_SRC="$HERDR_WIRE_SRC" scripts/check-vendor.sh
+HERDR_SRC="$HERDR_SRC" HERDR_WIRE_SRC="$HERDR_WIRE_SRC" scripts/check-vendor.sh
 ```
 
-The optional `HERDR_SRC` mode exact-compares unmodified schema files and the terminal wire protocol
-body. Locally adapted files are intentionally excluded from exact comparison and must be reviewed
-manually during refresh.
+`HERDR_SRC` exact-compares unmodified schema files. `HERDR_WIRE_SRC` exact-compares the terminal
+wire protocol body. Locally adapted files are intentionally excluded from exact comparison and must
+be reviewed manually during refresh.
 
 5. Re-run validation:
 
@@ -130,10 +141,12 @@ the refit button after changing browser sizes.
 
 ## Compatibility Policy
 
-The bridge pings Herdr's status API at startup and requires daemon protocol `16` or newer. The
-`v0.7.2` baseline provides the native `session.snapshot` bootstrap API used by `/api/snapshot`, so
-older daemons are rejected before serving the web app. This is not a complete stability guarantee
-because the bridge mirrors private APIs.
+The bridge pings Herdr's status API at startup and accepts daemon protocols `16` and `17`. The
+`v0.7.2` baseline provides protocol `16` and the native `session.snapshot` bootstrap API used by
+`/api/snapshot`; older daemons are rejected before serving the web app. Protocol `17` adds the
+remote-link external-open lifecycle. The bridge uses protocol `17` only for terminal attachment and
+sets its external-open fields to `None`; terminal links still open directly in the browser. This is
+not a complete stability guarantee because the bridge mirrors private APIs.
 
 When updating Herdr:
 
