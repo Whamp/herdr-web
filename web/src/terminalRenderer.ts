@@ -409,7 +409,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         touch && endpointDragStartX !== null && endpointDragStartY !== null
           ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
           : "Δpx=–";
-      prototypeDiagnostics.textContent = `PROTOTYPE · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
+      prototypeDiagnostics.textContent = `CURSOR TEST · vertical caret · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
     };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {

@@ -12,7 +12,8 @@ This focused prototype changes only the marker:
 
 - a vertical caret immediately before the selected character;
 - top and bottom aligned to that character's row;
-- no underline or tail extending toward another row.
+- no underline or tail extending toward another row;
+- a visible `CURSOR TEST · vertical caret` label so the phone build cannot be confused with the earlier A/B/C prototype.
 
 Touch-to-cell calculations and selection range calculations are unchanged.
 
@@ -31,7 +32,7 @@ Android artifact:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
-SHA-256: 4198e0a866a180f05cb91a52dda73be2a9bbb5ec3cc15d60a38b69dfc1763e36
+SHA-256: 0c93fcd256fe5424e5bb6cd43e79a97dff55e191e884116da9867789610a4c46
 ```
 
 ## Phone check
