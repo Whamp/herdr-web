@@ -6,6 +6,7 @@ import {
   trimUrlPunctuation,
 } from "./terminalSelection";
 import type { TerminalSelectionPoint } from "./terminalSelection";
+import { terminalEndpointBubblePosition } from "./terminalEndpointBubblePosition";
 import { terminalLoupeCursorGeometry } from "./terminalLoupeCursorGeometry";
 import { terminalTapFocusAction } from "./terminalTapFocus";
 import type { TerminalTapFocusResult } from "./terminalTapFocus";
@@ -42,6 +43,8 @@ const TOUCH_LOUPE_OFFSET_Y_PX = 132;
 const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
 const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
 const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
+const TOUCH_ENDPOINT_ATTACHMENT_X_PX = 36;
+const TOUCH_ENDPOINT_ATTACHMENT_Y_PX = 7;
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -409,7 +412,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         touch && endpointDragStartX !== null && endpointDragStartY !== null
           ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
           : "Δpx=–";
-      prototypeDiagnostics.textContent = `CURSOR TEST · vertical caret · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
+      prototypeDiagnostics.textContent = `CURSOR + ICON TEST · aligned markers · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
     };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {
@@ -676,14 +679,20 @@ export class GhosttyRenderer implements TerminalRenderer {
       const bubble = ensureEndpointBubble();
       delete bubble.dataset.dragging;
       bubble.setAttribute("data-hint", "Drag");
-      positionOverlay(
-        bubble,
-        client.clientX,
-        client.clientY,
-        TOUCH_ENDPOINT_HIT_WIDTH_PX,
-        TOUCH_ENDPOINT_HIT_HEIGHT_PX,
-        0,
-      );
+      const rect = container.getBoundingClientRect();
+      const position = terminalEndpointBubblePosition({
+        targetClientX: client.clientX,
+        targetClientY: client.clientY,
+        containerLeft: rect.left,
+        containerTop: rect.top,
+        containerWidth: rect.width,
+        containerHeight: rect.height,
+        bubbleWidth: TOUCH_ENDPOINT_HIT_WIDTH_PX,
+        bubbleHeight: TOUCH_ENDPOINT_HIT_HEIGHT_PX,
+        attachmentOffsetX: TOUCH_ENDPOINT_ATTACHMENT_X_PX,
+        attachmentOffsetY: TOUCH_ENDPOINT_ATTACHMENT_Y_PX,
+      });
+      bubble.style.transform = `translate(${position.left}px, ${position.top}px)`;
     };
     const startTouchSelection = () => {
       selectionTimer = null;
