@@ -14,7 +14,9 @@ This throwaway prototype extends the anchored mobile-selection branch and runs i
 
 The selector hides during endpoint dragging so it does not obstruct the bottom edge. The prototype HUD reports the mode, gesture phase, fixed start, moving endpoint, finger displacement, active edge/depth, and cumulative requested scroll rows.
 
-During scrolling, the start remains in the original absolute row coordinate. The viewport projection moves that start by the cumulative scroll offset, while the endpoint remains under the finger and accumulates the same offset in its absolute row coordinate. This is a prototype of gesture feel and coordinate stability, not the production absolute-buffer selection implementation.
+During scrolling, the start remains in the original absolute row coordinate. The viewport projection moves that start by the cumulative scroll offset, while the endpoint remains under the finger and accumulates the same offset in its absolute row coordinate.
+
+This is a prototype of gesture feel and coordinate stability, not the production absolute-buffer selection implementation. Its offset counts requested scroll rows because the current bridge callback has no scroll acknowledgement; test with a connected terminal and ample scrollback, away from scroll boundaries. Once the start leaves the viewport, the visible highlight clips at the edge even though the HUD's logical start remains fixed. Copying after a cross-viewport drag is therefore not evidence for the later absolute-buffer text model.
 
 ## Run
 
@@ -26,7 +28,7 @@ Android artifact:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
-SHA-256: 902f9361643c5e61c843afd42b146c48dba502d2ce924ed1f545bf1bed8fb8e1
+SHA-256: bd5604b7df0d57fd10cd21eb9febaaf6ea7bc8132bd075f78f9b28a32f94cd5f
 ```
 
 ## Real-phone comparison

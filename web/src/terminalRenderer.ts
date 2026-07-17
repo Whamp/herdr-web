@@ -582,6 +582,10 @@ export class GhosttyRenderer implements TerminalRenderer {
           edgeScrollOffsetRows,
       };
     };
+    const toViewportPoint = (point: TerminalCellPosition) => ({
+      col: point.col,
+      row: clampInteger(point.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
+    });
     const updateSimpleTouchSelection = (touch: Touch) => {
       if (!simpleSelectionStart) {
         return;
@@ -595,13 +599,9 @@ export class GhosttyRenderer implements TerminalRenderer {
       if (selectionState.phase === "idle") {
         return;
       }
-      const toViewport = (point: TerminalCellPosition) => ({
-        col: point.col,
-        row: clampInteger(point.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
-      });
       const range = terminalSelectionRange(
-        toViewport(selectionState.start),
-        toViewport(selectionState.endpoint),
+        toViewportPoint(selectionState.start),
+        toViewportPoint(selectionState.endpoint),
         terminal.cols,
       );
       selectTerminalViewportRange(terminal, range.from, range.to);
@@ -741,11 +741,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       const position = endpointPositionFromDrag(lastEndpointTouch);
       selectionState = moveTouchSelectionEndpoint(selectionState, position, lastEndpointTouch);
       selectCurrentTouchRange();
-      const viewportPoint = {
-        col: position.col,
-        row: clampInteger(position.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
-      };
-      renderLoupeAfterTerminalPaint(viewportPoint, lastEndpointTouch);
+      renderLoupeAfterTerminalPaint(toViewportPoint(position), lastEndpointTouch);
       renderPrototypeDiagnostics("edge scroll", lastEndpointTouch);
     };
     const emitEdgeScroll = (lines: number) => {
@@ -956,13 +952,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       selectionState = moveTouchSelectionEndpoint(selectionState, position, client);
       renderPrototypeDiagnostics("move endpoint", touch);
       selectCurrentTouchRange();
-      renderLoupe(
-        {
-          col: position.col,
-          row: clampInteger(position.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
-        },
-        client,
-      );
+      renderLoupe(toViewportPoint(position), client);
     };
     const completeEndpointDrag = (event: TouchEvent) => {
       if (event.changedTouches.length > 0 && endpointDragMoved) {
@@ -972,7 +962,11 @@ export class GhosttyRenderer implements TerminalRenderer {
       suppressMouseEvents();
       const selection = completeTouchSelection(selectionState);
       const selectedText = selection
-        ? terminalSelectedTextFromViewportRange(terminal, selection.start, selection.end)
+        ? terminalSelectedTextFromViewportRange(
+            terminal,
+            toViewportPoint(selection.start),
+            toViewportPoint(selection.end),
+          )
         : "";
       if (selectedText.length > 0 && this.#mobileTouchSelectionHandler) {
         resetTouchSelection(false);
@@ -1262,8 +1256,10 @@ export class GhosttyRenderer implements TerminalRenderer {
       window.open(linkText, "_blank", "noopener,noreferrer");
     };
 
-    ensurePrototypeSwitcher();
-    renderPrototypeDiagnostics("ready");
+    if (this.#mobileLongPressBehavior === "loupe") {
+      ensurePrototypeSwitcher();
+      renderPrototypeDiagnostics("ready");
+    }
     container.addEventListener("touchstart", onTouchStart, {
       capture: true,
       passive: this.#mobileLongPressBehavior === "off",
