@@ -8,6 +8,9 @@
 
 ### Changed
 
+- Focused the mobile selection drag-handle prototype on a hollow ring centered over the anchored
+  character, preserving glyph readability and a generous touch target.
+
 ### Fixed
 
 ### Removed

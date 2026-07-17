@@ -6,7 +6,10 @@ import {
   trimUrlPunctuation,
 } from "./terminalSelection";
 import type { TerminalSelectionPoint } from "./terminalSelection";
-import { terminalEndpointBubblePosition } from "./terminalEndpointBubblePosition";
+import {
+  centeredTerminalDragHandleGeometry,
+  terminalEndpointBubblePosition,
+} from "./terminalEndpointBubblePosition";
 import { terminalLoupeCursorGeometry } from "./terminalLoupeCursorGeometry";
 import { terminalTapFocusAction } from "./terminalTapFocus";
 import type { TerminalTapFocusResult } from "./terminalTapFocus";
@@ -43,12 +46,12 @@ const TOUCH_LOUPE_OFFSET_Y_PX = 132;
 const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
 const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
 const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
-const DRAG_HANDLE_PROTOTYPE_VARIANTS = [
-  { key: "A", name: "Centered", attachmentX: 36, attachmentY: 36 },
-  { key: "B", name: "Pinned below", attachmentX: 36, attachmentY: 7 },
-  { key: "C", name: "Sidecar", attachmentX: 7, attachmentY: 36 },
-] as const;
-type DragHandlePrototypeVariant = (typeof DRAG_HANDLE_PROTOTYPE_VARIANTS)[number]["key"];
+const TOUCH_ENDPOINT_RING_DIAMETER_PX = 42;
+const TOUCH_ENDPOINT_GEOMETRY = centeredTerminalDragHandleGeometry({
+  touchTargetWidth: TOUCH_ENDPOINT_HIT_WIDTH_PX,
+  touchTargetHeight: TOUCH_ENDPOINT_HIT_HEIGHT_PX,
+  ringDiameter: TOUCH_ENDPOINT_RING_DIAMETER_PX,
+});
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -393,9 +396,6 @@ export class GhosttyRenderer implements TerminalRenderer {
     let mouseDownY: number | null = null;
     let selectionState: TerminalTouchSelectionState = idleTouchSelectionState;
     let endpointBubble: HTMLDivElement | null = null;
-    let endpointBubbleAnchor: { clientX: number; clientY: number } | null = null;
-    let dragHandlePrototypeVariant = dragHandlePrototypeVariantFromUrl();
-    let dragHandlePrototypeSwitcher: HTMLDivElement | null = null;
     let loupe: { root: HTMLDivElement; canvas: HTMLCanvasElement } | null = null;
     let endpointDragStartX: number | null = null;
     let endpointDragStartY: number | null = null;
@@ -419,47 +419,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         touch && endpointDragStartX !== null && endpointDragStartY !== null
           ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
           : "Δpx=–";
-      const variant = DRAG_HANDLE_PROTOTYPE_VARIANTS.find(
-        (candidate) => candidate.key === dragHandlePrototypeVariant,
-      );
-      prototypeDiagnostics.textContent = `DRAG HANDLE ${variant?.key} · ${variant?.name} · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
-    };
-
-    const updateDragHandlePrototypeSwitcher = () => {
-      for (const button of dragHandlePrototypeSwitcher?.querySelectorAll("button") ?? []) {
-        const selected = button.dataset.variant === dragHandlePrototypeVariant;
-        button.setAttribute("aria-pressed", String(selected));
-      }
-    };
-    const ensureDragHandlePrototypeSwitcher = () => {
-      if (this.#mobileLongPressBehavior !== "loupe" || dragHandlePrototypeSwitcher) {
-        return;
-      }
-      dragHandlePrototypeSwitcher = document.createElement("div");
-      dragHandlePrototypeSwitcher.className = "terminal-drag-handle-prototype-switcher";
-      dragHandlePrototypeSwitcher.setAttribute("aria-label", "Drag handle prototype style");
-      for (const variant of DRAG_HANDLE_PROTOTYPE_VARIANTS) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.dataset.variant = variant.key;
-        button.textContent = `${variant.key} ${variant.name}`;
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          dragHandlePrototypeVariant = variant.key;
-          const url = new URL(window.location.href);
-          url.searchParams.set("drag-handle", variant.key);
-          window.history.replaceState(null, "", url);
-          updateDragHandlePrototypeSwitcher();
-          if (endpointBubbleAnchor) {
-            positionEndpointBubble(endpointBubbleAnchor);
-          }
-          renderPrototypeDiagnostics(`switched to ${variant.key}`);
-        });
-        dragHandlePrototypeSwitcher.append(button);
-      }
-      container.append(dragHandlePrototypeSwitcher);
-      updateDragHandlePrototypeSwitcher();
+      prototypeDiagnostics.textContent = `HOLLOW CENTERED HANDLE TEST · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
     };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {
@@ -498,7 +458,6 @@ export class GhosttyRenderer implements TerminalRenderer {
     const removeEndpointBubble = () => {
       endpointBubble?.remove();
       endpointBubble = null;
-      endpointBubbleAnchor = null;
     };
     const removeLoupe = () => {
       clearLoupeRenderFrame();
@@ -707,14 +666,23 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       endpointBubble = document.createElement("div");
       endpointBubble.className = "terminal-touch-endpoint";
-      endpointBubble.dataset.variant = dragHandlePrototypeVariant;
       endpointBubble.setAttribute("aria-hidden", "true");
       endpointBubble.setAttribute("data-hint", "Drag");
-      const line = document.createElement("span");
-      line.className = "terminal-touch-endpoint-line";
-      const knob = document.createElement("span");
-      knob.className = "terminal-touch-endpoint-knob";
-      endpointBubble.append(line, knob);
+      endpointBubble.style.setProperty(
+        "--terminal-touch-endpoint-ring-diameter",
+        `${TOUCH_ENDPOINT_RING_DIAMETER_PX}px`,
+      );
+      endpointBubble.style.setProperty(
+        "--terminal-touch-endpoint-ring-left",
+        `${TOUCH_ENDPOINT_GEOMETRY.ringLeft}px`,
+      );
+      endpointBubble.style.setProperty(
+        "--terminal-touch-endpoint-ring-top",
+        `${TOUCH_ENDPOINT_GEOMETRY.ringTop}px`,
+      );
+      const ring = document.createElement("span");
+      ring.className = "terminal-touch-endpoint-ring";
+      endpointBubble.append(ring);
       container.append(endpointBubble);
       return endpointBubble;
     };
@@ -726,12 +694,6 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
     const positionEndpointBubble = (client: { clientX: number; clientY: number }) => {
       const bubble = ensureEndpointBubble();
-      const variant =
-        DRAG_HANDLE_PROTOTYPE_VARIANTS.find(
-          (candidate) => candidate.key === dragHandlePrototypeVariant,
-        ) ?? DRAG_HANDLE_PROTOTYPE_VARIANTS[0];
-      endpointBubbleAnchor = client;
-      bubble.dataset.variant = variant.key;
       delete bubble.dataset.dragging;
       bubble.setAttribute("data-hint", "Drag");
       const rect = container.getBoundingClientRect();
@@ -744,8 +706,6 @@ export class GhosttyRenderer implements TerminalRenderer {
         containerHeight: rect.height,
         bubbleWidth: TOUCH_ENDPOINT_HIT_WIDTH_PX,
         bubbleHeight: TOUCH_ENDPOINT_HIT_HEIGHT_PX,
-        attachmentOffsetX: variant.attachmentX,
-        attachmentOffsetY: variant.attachmentY,
       });
       bubble.style.transform = `translate(${position.left}px, ${position.top}px)`;
     };
@@ -936,12 +896,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       touchScrolled = false;
       pendingTouchLines = 0;
     };
-    const isDragHandlePrototypeSwitcherTarget = (target: EventTarget | null) =>
-      target instanceof Node && dragHandlePrototypeSwitcher?.contains(target) === true;
     const onTouchStart = (event: TouchEvent) => {
-      if (isDragHandlePrototypeSwitcherTarget(event.target)) {
-        return;
-      }
       clearSelectionTimer();
       if (selectionState.phase === "waiting-endpoint") {
         if (
@@ -1038,10 +993,6 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
     };
     const onTouchEnd = (event: TouchEvent) => {
-      if (isDragHandlePrototypeSwitcherTarget(event.target)) {
-        resetTouchTracking();
-        return;
-      }
       clearSelectionTimer();
       if (this.#hasMouseTracking(terminal)) {
         if (selectionState.phase !== "idle") {
@@ -1110,9 +1061,6 @@ export class GhosttyRenderer implements TerminalRenderer {
       return false;
     };
     const onMouseDown = (event: MouseEvent) => {
-      if (isDragHandlePrototypeSwitcherTarget(event.target)) {
-        return;
-      }
       mouseDownX = event.clientX;
       mouseDownY = event.clientY;
       if (this.#hasMouseTracking(terminal)) {
@@ -1126,13 +1074,10 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
     };
     const onMouseUp = (event: MouseEvent) => {
-      if (isDragHandlePrototypeSwitcherTarget(event.target)) {
-        return;
-      }
       suppressCompatMouseEvent(event);
     };
     const onClick = (event: MouseEvent) => {
-      if (isDragHandlePrototypeSwitcherTarget(event.target) || suppressCompatMouseEvent(event)) {
+      if (suppressCompatMouseEvent(event)) {
         return;
       }
       const moved =
@@ -1158,8 +1103,6 @@ export class GhosttyRenderer implements TerminalRenderer {
       window.open(linkText, "_blank", "noopener,noreferrer");
     };
 
-    ensureDragHandlePrototypeSwitcher();
-
     container.addEventListener("touchstart", onTouchStart, {
       capture: true,
       passive: this.#mobileLongPressBehavior === "off",
@@ -1183,8 +1126,6 @@ export class GhosttyRenderer implements TerminalRenderer {
       container.removeEventListener("click", onClick, { capture: true });
       prototypeDiagnostics?.remove();
       prototypeDiagnostics = null;
-      dragHandlePrototypeSwitcher?.remove();
-      dragHandlePrototypeSwitcher = null;
     };
   }
 
@@ -1405,11 +1346,6 @@ function textareaKeyboardEventOutput(event: KeyboardEvent) {
     return customKeyboardEventOutput(event);
   }
   return event.shiftKey ? "\x1B[Z" : "\t";
-}
-
-function dragHandlePrototypeVariantFromUrl(): DragHandlePrototypeVariant {
-  const value = new URL(window.location.href).searchParams.get("drag-handle")?.toUpperCase();
-  return DRAG_HANDLE_PROTOTYPE_VARIANTS.find((variant) => variant.key === value)?.key ?? "A";
 }
 
 function touchCellPosition(terminal: Terminal, clientX: number, clientY: number): TerminalCellPosition {

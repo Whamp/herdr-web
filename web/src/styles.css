@@ -1732,37 +1732,6 @@ button {
   white-space: pre-wrap;
 }
 
-.terminal-drag-handle-prototype-switcher {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  z-index: 10;
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  transform: translateX(-50%);
-  border: 1px solid #f9e2af;
-  border-radius: 999px;
-  background: rgb(17 17 27 / 94%);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 44%);
-}
-
-.terminal-drag-handle-prototype-switcher button {
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 5px 8px;
-  background: transparent;
-  color: var(--subtext0);
-  font: 10px/1 ui-monospace, monospace;
-  white-space: nowrap;
-}
-
-.terminal-drag-handle-prototype-switcher button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--accent) 72%, white);
-  background: color-mix(in srgb, var(--accent) 34%, var(--mantle));
-  color: var(--text);
-}
-
 .terminal-touch-loupe {
   position: absolute;
   left: 0;
@@ -1817,93 +1786,18 @@ button {
   white-space: nowrap;
 }
 
-.terminal-touch-endpoint-line {
-  display: none;
+.terminal-touch-endpoint-ring {
   position: absolute;
-  left: 50%;
-  top: 8px;
-  width: 2px;
-  height: 18px;
-  transform: translateX(-50%);
+  left: var(--terminal-touch-endpoint-ring-left);
+  top: var(--terminal-touch-endpoint-ring-top);
+  box-sizing: border-box;
+  width: var(--terminal-touch-endpoint-ring-diameter);
+  height: var(--terminal-touch-endpoint-ring-diameter);
+  border: 3px solid color-mix(in srgb, var(--terminal-touch-marker) 82%, white);
   border-radius: 999px;
-  background: var(--terminal-touch-marker);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 26%);
+  background: color-mix(in srgb, var(--terminal-touch-marker) 8%, transparent);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 24%), 0 0 0 1px rgb(0 0 0 / 20%);
   pointer-events: none;
-}
-
-.terminal-touch-endpoint-line::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: -2px;
-  width: 10px;
-  height: 2px;
-  transform: translateX(-50%);
-  border-radius: inherit;
-  background: inherit;
-  box-shadow: inherit;
-}
-
-.terminal-touch-endpoint-knob {
-  position: absolute;
-  left: 13px;
-  top: 13px;
-  display: grid;
-  width: 46px;
-  height: 46px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent) 72%, white);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 78%, var(--mantle));
-  box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
-  pointer-events: none;
-}
-
-.terminal-touch-endpoint-knob::after {
-  content: "";
-  width: 10px;
-  height: 10px;
-  border-radius: inherit;
-  background: var(--base);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 42%);
-}
-
-.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-line {
-  display: block;
-  top: 6px;
-  width: 4px;
-  height: 22px;
-}
-
-.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-line::before {
-  top: -2px;
-  width: 14px;
-  height: 4px;
-}
-
-.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-knob {
-  top: 24px;
-}
-
-.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-line {
-  display: block;
-  left: 6px;
-  top: 50%;
-  width: 22px;
-  height: 4px;
-  transform: translateY(-50%);
-}
-
-.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-line::before {
-  left: -2px;
-  top: 50%;
-  width: 4px;
-  height: 14px;
-  transform: translateY(-50%);
-}
-
-.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-knob {
-  left: 24px;
 }
 
 .terminal-mobile-controls {

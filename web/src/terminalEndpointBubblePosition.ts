@@ -8,20 +8,35 @@ export interface TerminalEndpointBubbleGeometryInput {
   containerHeight: number;
   bubbleWidth: number;
   bubbleHeight: number;
-  attachmentOffsetX: number;
-  attachmentOffsetY: number;
 }
 
-/** Positions the bubble around its selected terminal cell. */
+/** Measurements used to center a visible drag ring within its touch target. */
+export interface CenteredTerminalDragHandleGeometryInput {
+  touchTargetWidth: number;
+  touchTargetHeight: number;
+  ringDiameter: number;
+}
+
+/** Geometry for a visible ring centered within a larger touch target. */
+export function centeredTerminalDragHandleGeometry(
+  input: CenteredTerminalDragHandleGeometryInput,
+) {
+  return {
+    ringLeft: (input.touchTargetWidth - input.ringDiameter) / 2,
+    ringTop: (input.touchTargetHeight - input.ringDiameter) / 2,
+  };
+}
+
+/** Centers the touch target on its selected terminal cell. */
 export function terminalEndpointBubblePosition(input: TerminalEndpointBubbleGeometryInput) {
   return {
     left: clamp(
-      input.targetClientX - input.containerLeft - input.attachmentOffsetX,
+      input.targetClientX - input.containerLeft - input.bubbleWidth / 2,
       4,
       Math.max(4, input.containerWidth - input.bubbleWidth - 4),
     ),
     top: clamp(
-      input.targetClientY - input.containerTop - input.attachmentOffsetY,
+      input.targetClientY - input.containerTop - input.bubbleHeight / 2,
       4,
       Math.max(4, input.containerHeight - input.bubbleHeight - 4),
     ),

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { terminalEndpointBubblePosition } from "./terminalEndpointBubblePosition";
+import {
+  centeredTerminalDragHandleGeometry,
+  terminalEndpointBubblePosition,
+} from "./terminalEndpointBubblePosition";
 
-describe("terminal endpoint drag bubble", () => {
-  it("places the drag icon center on the selected cell center", () => {
+describe("terminal endpoint drag handle", () => {
+  it("centers the generous touch target on the selected cell", () => {
     const position = terminalEndpointBubblePosition({
       targetClientX: 150,
       targetClientY: 100,
@@ -12,10 +15,21 @@ describe("terminal endpoint drag bubble", () => {
       containerHeight: 800,
       bubbleWidth: 72,
       bubbleHeight: 72,
-      attachmentOffsetX: 36,
-      attachmentOffsetY: 36,
     });
 
     expect(position).toEqual({ left: 114, top: 64 });
+  });
+
+  it("centers a smaller visible ring within the touch target", () => {
+    expect(
+      centeredTerminalDragHandleGeometry({
+        touchTargetWidth: 72,
+        touchTargetHeight: 72,
+        ringDiameter: 42,
+      }),
+    ).toEqual({
+      ringLeft: 15,
+      ringTop: 15,
+    });
   });
 });
