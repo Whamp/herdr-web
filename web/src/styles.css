@@ -1732,6 +1732,37 @@ button {
   white-space: pre-wrap;
 }
 
+.terminal-drag-handle-prototype-switcher {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  transform: translateX(-50%);
+  border: 1px solid #f9e2af;
+  border-radius: 999px;
+  background: rgb(17 17 27 / 94%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 44%);
+}
+
+.terminal-drag-handle-prototype-switcher button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--subtext0);
+  font: 10px/1 ui-monospace, monospace;
+  white-space: nowrap;
+}
+
+.terminal-drag-handle-prototype-switcher button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 72%, white);
+  background: color-mix(in srgb, var(--accent) 34%, var(--mantle));
+  color: var(--text);
+}
+
 .terminal-touch-loupe {
   position: absolute;
   left: 0;
@@ -1835,6 +1866,44 @@ button {
   border-radius: inherit;
   background: var(--base);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 42%);
+}
+
+.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-line {
+  display: block;
+  top: 6px;
+  width: 4px;
+  height: 22px;
+}
+
+.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-line::before {
+  top: -2px;
+  width: 14px;
+  height: 4px;
+}
+
+.terminal-touch-endpoint[data-variant="B"] .terminal-touch-endpoint-knob {
+  top: 24px;
+}
+
+.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-line {
+  display: block;
+  left: 6px;
+  top: 50%;
+  width: 22px;
+  height: 4px;
+  transform: translateY(-50%);
+}
+
+.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-line::before {
+  left: -2px;
+  top: 50%;
+  width: 4px;
+  height: 14px;
+  transform: translateY(-50%);
+}
+
+.terminal-touch-endpoint[data-variant="C"] .terminal-touch-endpoint-knob {
+  left: 24px;
 }
 
 .terminal-mobile-controls {
