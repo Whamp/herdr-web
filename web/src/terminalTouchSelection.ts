@@ -62,13 +62,12 @@ export function commitTouchSelectionStart(
 
 export function beginTouchSelectionEndpointDrag(
   state: TerminalTouchSelectionState,
-  point: TerminalSelectionPoint,
   client: TerminalTouchClientPoint,
 ): TerminalTouchSelectionState {
   if (state.phase !== "waiting-endpoint") {
     return state;
   }
-  return { phase: "dragging-endpoint", start: state.start, endpoint: point, client };
+  return { phase: "dragging-endpoint", start: state.start, endpoint: state.start, client };
 }
 
 export function moveTouchSelectionEndpoint(

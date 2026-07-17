@@ -24,13 +24,27 @@ describe("terminal touch selection flow", () => {
     });
   });
 
+  it("anchors the endpoint to the committed start when dragging begins", () => {
+    const waiting = commitTouchSelectionStart(
+      startTouchSelectionPlacement({ col: 2, row: 1 }, { clientX: 18, clientY: 30 }),
+    );
+    const dragging = beginTouchSelectionEndpointDrag(waiting, { clientX: 63, clientY: 30 });
+
+    expect(dragging).toMatchObject({
+      phase: "dragging-endpoint",
+      start: { col: 2, row: 1 },
+      endpoint: { col: 2, row: 1 },
+    });
+  });
+
   it("completes forward endpoint drags", () => {
     const waiting = commitTouchSelectionStart(
       startTouchSelectionPlacement({ col: 2, row: 1 }, { clientX: 18, clientY: 30 }),
     );
-    const dragging = beginTouchSelectionEndpointDrag(waiting, { col: 7, row: 1 }, { clientX: 63, clientY: 30 });
+    const dragging = beginTouchSelectionEndpointDrag(waiting, { clientX: 63, clientY: 30 });
+    const moved = moveTouchSelectionEndpoint(dragging, { col: 7, row: 1 }, { clientX: 108, clientY: 30 });
 
-    expect(completeTouchSelection(dragging)).toEqual({
+    expect(completeTouchSelection(moved)).toEqual({
       start: { col: 2, row: 1 },
       end: { col: 7, row: 1 },
     });
@@ -40,7 +54,7 @@ describe("terminal touch selection flow", () => {
     const waiting = commitTouchSelectionStart(
       startTouchSelectionPlacement({ col: 8, row: 3 }, { clientX: 72, clientY: 58 }),
     );
-    const dragging = beginTouchSelectionEndpointDrag(waiting, { col: 4, row: 2 }, { clientX: 36, clientY: 42 });
+    const dragging = beginTouchSelectionEndpointDrag(waiting, { clientX: 36, clientY: 42 });
     const moved = moveTouchSelectionEndpoint(dragging, { col: 1, row: 2 }, { clientX: 9, clientY: 42 });
 
     expect(completeTouchSelection(moved)).toEqual({

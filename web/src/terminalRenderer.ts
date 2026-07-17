@@ -41,7 +41,6 @@ const TOUCH_LOUPE_OFFSET_Y_PX = 132;
 const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
 const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
 const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
-const TOUCH_ENDPOINT_HANDLE_OFFSET_Y_PX = TOUCH_LOUPE_TARGET_OFFSET_Y_PX;
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -390,6 +389,27 @@ export class GhosttyRenderer implements TerminalRenderer {
     let endpointDragStartX: number | null = null;
     let endpointDragStartY: number | null = null;
     let endpointDragMoved = false;
+    let prototypeDiagnostics: HTMLDivElement | null = null;
+
+    const renderPrototypeDiagnostics = (transition: string, touch?: Touch) => {
+      if (!prototypeDiagnostics && transition === "reset") {
+        return;
+      }
+      if (!prototypeDiagnostics) {
+        prototypeDiagnostics = document.createElement("div");
+        prototypeDiagnostics.className = "terminal-touch-prototype-state";
+        container.append(prototypeDiagnostics);
+      }
+      const selection =
+        selectionState.phase === "idle"
+          ? "start=– endpoint=–"
+          : `start=${selectionState.start.col},${selectionState.start.row} endpoint=${selectionState.endpoint.col},${selectionState.endpoint.row}`;
+      const delta =
+        touch && endpointDragStartX !== null && endpointDragStartY !== null
+          ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
+          : "Δpx=–";
+      prototypeDiagnostics.textContent = `PROTOTYPE · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
+    };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {
       suppressMouseUntil = performance.now() + duration;
@@ -443,6 +463,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointDragStartX = null;
       endpointDragStartY = null;
       endpointDragMoved = false;
+      renderPrototypeDiagnostics("reset");
       if (clearTerminalSelection) {
         terminal.clearSelection();
       }
@@ -460,8 +481,30 @@ export class GhosttyRenderer implements TerminalRenderer {
       touchCellPosition(terminal, clientX, clientY - TOUCH_LOUPE_TARGET_OFFSET_Y_PX);
     const loupePositionFromTouch = (touch: Touch) =>
       loupePositionFromClient(touch.clientX, touch.clientY);
-    const endpointPositionFromTouch = (touch: Touch) =>
-      touchCellPosition(terminal, touch.clientX, touch.clientY - TOUCH_ENDPOINT_HANDLE_OFFSET_Y_PX);
+    const endpointPositionFromDrag = (touch: Touch) => {
+      if (
+        selectionState.phase !== "dragging-endpoint" ||
+        endpointDragStartX === null ||
+        endpointDragStartY === null
+      ) {
+        return selectionState.phase === "idle" ? { col: 0, row: 0 } : selectionState.endpoint;
+      }
+      const metrics = terminal.renderer?.getMetrics();
+      const cellWidth = metrics?.width ?? 9;
+      const cellHeight = metrics?.height ?? 16;
+      return {
+        col: clampInteger(
+          selectionState.start.col + Math.round((touch.clientX - endpointDragStartX) / cellWidth),
+          0,
+          Math.max(0, terminal.cols - 1),
+        ),
+        row: clampInteger(
+          selectionState.start.row + Math.round((touch.clientY - endpointDragStartY) / cellHeight),
+          0,
+          Math.max(0, terminal.rows - 1),
+        ),
+      };
+    };
     const updateSimpleTouchSelection = (touch: Touch) => {
       if (!simpleSelectionStart) {
         return;
@@ -669,6 +712,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       const position = loupePositionFromClient(touchStartX, touchStartY);
       selectionState = startTouchSelectionPlacement(position, client);
+      renderPrototypeDiagnostics("long press → placing start");
       touchMoved = true;
       suppressMouseEvents();
       terminal.textarea?.blur();
@@ -683,11 +727,13 @@ export class GhosttyRenderer implements TerminalRenderer {
       const position = loupePositionFromTouch(touch);
       const client = clientFromTouch(touch);
       selectionState = moveTouchSelectionPlacement(selectionState, position, client);
+      renderPrototypeDiagnostics("move start", touch);
       selectCurrentTouchRange();
       renderLoupe(position, client);
     };
     const waitForEndpointDrag = () => {
       selectionState = commitTouchSelectionStart(selectionState);
+      renderPrototypeDiagnostics("placing start → waiting endpoint");
       removeLoupe();
       if (selectionState.phase !== "waiting-endpoint") {
         return;
@@ -707,12 +753,12 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointDragStartX = touch.clientX;
       endpointDragStartY = touch.clientY;
       endpointDragMoved = false;
-      const position = endpointPositionFromTouch(touch);
       const client = clientFromTouch(touch);
-      selectionState = beginTouchSelectionEndpointDrag(selectionState, position, client);
+      selectionState = beginTouchSelectionEndpointDrag(selectionState, client);
       if (selectionState.phase !== "dragging-endpoint") {
         return;
       }
+      renderPrototypeDiagnostics("waiting endpoint → dragging endpoint", touch);
       selectCurrentTouchRange();
       hideEndpointBubble();
       renderLoupe(selectionState.endpoint, client);
@@ -730,9 +776,10 @@ export class GhosttyRenderer implements TerminalRenderer {
         }
         endpointDragMoved = true;
       }
-      const position = endpointPositionFromTouch(touch);
+      const position = endpointPositionFromDrag(touch);
       const client = clientFromTouch(touch);
       selectionState = moveTouchSelectionEndpoint(selectionState, position, client);
+      renderPrototypeDiagnostics("move endpoint", touch);
       selectCurrentTouchRange();
       renderLoupe(position, client);
     };
@@ -1052,6 +1099,8 @@ export class GhosttyRenderer implements TerminalRenderer {
       container.removeEventListener("mousedown", onMouseDown, { capture: true });
       container.removeEventListener("mouseup", onMouseUp, { capture: true });
       container.removeEventListener("click", onClick, { capture: true });
+      prototypeDiagnostics?.remove();
+      prototypeDiagnostics = null;
     };
   }
 

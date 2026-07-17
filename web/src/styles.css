@@ -1716,6 +1716,22 @@ button {
   flex: 0 0 auto;
 }
 
+.terminal-touch-prototype-state {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 9;
+  max-width: calc(100% - 12px);
+  pointer-events: none;
+  border: 1px solid #f9e2af;
+  border-radius: 6px;
+  padding: 4px 6px;
+  background: rgb(17 17 27 / 92%);
+  color: #f9e2af;
+  font: 10px/1.35 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+
 .terminal-touch-loupe {
   position: absolute;
   left: 0;
