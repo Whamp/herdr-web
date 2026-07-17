@@ -1732,6 +1732,42 @@ button {
   white-space: pre-wrap;
 }
 
+.terminal-edge-scroll-prototype-switcher {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  z-index: 10;
+  display: flex;
+  max-width: calc(100% - 12px);
+  gap: 3px;
+  transform: translateX(-50%);
+  border: 1px solid #f9e2af;
+  border-radius: 999px;
+  padding: 3px;
+  background: rgb(17 17 27 / 94%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 42%);
+  white-space: nowrap;
+}
+
+.terminal-edge-scroll-prototype-switcher[hidden] {
+  display: none;
+}
+
+.terminal-edge-scroll-prototype-switcher button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: transparent;
+  color: #cdd6f4;
+  font: 10px/1.2 ui-monospace, monospace;
+}
+
+.terminal-edge-scroll-prototype-switcher button[data-active] {
+  background: #f9e2af;
+  color: #11111b;
+}
+
 .terminal-touch-loupe {
   position: absolute;
   left: 0;

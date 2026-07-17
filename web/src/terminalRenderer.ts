@@ -17,7 +17,10 @@ import {
   moveTouchSelectionPlacement,
   startTouchSelectionPlacement,
 } from "./terminalTouchSelection";
-import type { TerminalTouchSelectionState } from "./terminalTouchSelection";
+import type {
+  TerminalTouchClientPoint,
+  TerminalTouchSelectionState,
+} from "./terminalTouchSelection";
 import { DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS } from "./mobileTerminalPrefs";
 import type {
   MobileLongPressBehavior,
@@ -41,6 +44,11 @@ const TOUCH_LOUPE_OFFSET_Y_PX = 132;
 const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
 const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
 const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
+const EDGE_SCROLL_ZONE_PX = 72;
+const EDGE_SCROLL_DWELL_MS = 320;
+const EDGE_SCROLL_STEADY_ROWS_PER_SECOND = 4;
+const EDGE_SCROLL_PROPORTIONAL_MIN_ROWS_PER_SECOND = 2;
+const EDGE_SCROLL_PROPORTIONAL_MAX_ROWS_PER_SECOND = 12;
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -74,6 +82,7 @@ type TerminalSelectionEndpoint = {
   col: number;
   absoluteRow: number;
 };
+type EdgeScrollPrototypeMode = "A" | "B" | "C";
 type GhosttySelectionManagerAccess = {
   selectionStart: TerminalSelectionEndpoint | null;
   selectionEnd: TerminalSelectionEndpoint | null;
@@ -390,8 +399,19 @@ export class GhosttyRenderer implements TerminalRenderer {
     let endpointDragStartY: number | null = null;
     let endpointDragMoved = false;
     let prototypeDiagnostics: HTMLDivElement | null = null;
+    let prototypeSwitcher: HTMLDivElement | null = null;
+    let edgeScrollMode: EdgeScrollPrototypeMode = edgeScrollModeFromUrl();
+    let edgeScrollDirection: -1 | 0 | 1 = 0;
+    let edgeScrollDepth = 0;
+    let edgeScrollOffsetRows = 0;
+    let edgeScrollEnteredAt = 0;
+    let edgeScrollLastFrameAt = 0;
+    let edgeScrollPendingRows = 0;
+    let edgeScrollStepTaken = false;
+    let edgeScrollFrame: number | null = null;
+    let lastEndpointTouch: TerminalTouchClientPoint | null = null;
 
-    const renderPrototypeDiagnostics = (transition: string, touch?: Touch) => {
+    const renderPrototypeDiagnostics = (transition: string, touch?: TerminalTouchClientPoint) => {
       if (!prototypeDiagnostics && transition === "reset") {
         return;
       }
@@ -408,7 +428,48 @@ export class GhosttyRenderer implements TerminalRenderer {
         touch && endpointDragStartX !== null && endpointDragStartY !== null
           ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
           : "Δpx=–";
-      prototypeDiagnostics.textContent = `PROTOTYPE · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
+      const edge =
+        edgeScrollDirection === 0
+          ? "edge=none"
+          : `edge=${edgeScrollDirection < 0 ? "top" : "bottom"} ${Math.round(edgeScrollDepth * 100)}%`;
+      prototypeDiagnostics.textContent = `PROTOTYPE ${edgeScrollMode} · ${transition}\n${selectionState.phase} · ${selection} · ${delta}\n${edge} · scroll=${edgeScrollOffsetRows}`;
+    };
+    const setEdgeScrollMode = (mode: EdgeScrollPrototypeMode) => {
+      edgeScrollMode = mode;
+      const url = new URL(window.location.href);
+      url.searchParams.set("edge-scroll", mode);
+      window.history.replaceState(null, "", url);
+      prototypeSwitcher?.querySelectorAll("button").forEach((button) => {
+        button.toggleAttribute("data-active", button.textContent?.startsWith(mode) ?? false);
+      });
+      renderPrototypeDiagnostics("changed edge-scroll mode");
+    };
+    const ensurePrototypeSwitcher = () => {
+      if (prototypeSwitcher) {
+        return;
+      }
+      prototypeSwitcher = document.createElement("div");
+      prototypeSwitcher.className = "terminal-edge-scroll-prototype-switcher";
+      prototypeSwitcher.setAttribute("aria-label", "Edge scroll prototype mode");
+      const modes: Array<[EdgeScrollPrototypeMode, string]> = [
+        ["A", "dwell + steady"],
+        ["B", "proportional"],
+        ["C", "single steps"],
+      ];
+      for (const [mode, label] of modes) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${mode} · ${label}`;
+        button.toggleAttribute("data-active", mode === edgeScrollMode);
+        button.addEventListener("pointerdown", (event) => event.stopPropagation());
+        button.addEventListener("touchstart", (event) => event.stopPropagation(), { passive: true });
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setEdgeScrollMode(mode);
+        });
+        prototypeSwitcher.append(button);
+      }
+      container.append(prototypeSwitcher);
     };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {
@@ -431,6 +492,19 @@ export class GhosttyRenderer implements TerminalRenderer {
         window.cancelAnimationFrame(loupeRenderFrame);
         loupeRenderFrame = null;
       }
+    };
+    const clearEdgeScrollFrame = () => {
+      if (edgeScrollFrame !== null) {
+        window.cancelAnimationFrame(edgeScrollFrame);
+        edgeScrollFrame = null;
+      }
+      edgeScrollDirection = 0;
+      edgeScrollDepth = 0;
+      edgeScrollEnteredAt = 0;
+      edgeScrollLastFrameAt = 0;
+      edgeScrollPendingRows = 0;
+      edgeScrollStepTaken = false;
+      lastEndpointTouch = null;
     };
     const clearSelectionClearTimer = () => {
       if (selectionClearTimer !== null) {
@@ -463,6 +537,11 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointDragStartX = null;
       endpointDragStartY = null;
       endpointDragMoved = false;
+      clearEdgeScrollFrame();
+      edgeScrollOffsetRows = 0;
+      if (prototypeSwitcher) {
+        prototypeSwitcher.hidden = false;
+      }
       renderPrototypeDiagnostics("reset");
       if (clearTerminalSelection) {
         terminal.clearSelection();
@@ -481,7 +560,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       touchCellPosition(terminal, clientX, clientY - TOUCH_LOUPE_TARGET_OFFSET_Y_PX);
     const loupePositionFromTouch = (touch: Touch) =>
       loupePositionFromClient(touch.clientX, touch.clientY);
-    const endpointPositionFromDrag = (touch: Touch) => {
+    const endpointPositionFromDrag = (touch: TerminalTouchClientPoint) => {
       if (
         selectionState.phase !== "dragging-endpoint" ||
         endpointDragStartX === null ||
@@ -498,11 +577,9 @@ export class GhosttyRenderer implements TerminalRenderer {
           0,
           Math.max(0, terminal.cols - 1),
         ),
-        row: clampInteger(
-          selectionState.start.row + Math.round((touch.clientY - endpointDragStartY) / cellHeight),
-          0,
-          Math.max(0, terminal.rows - 1),
-        ),
+        row: selectionState.start.row +
+          Math.round((touch.clientY - endpointDragStartY) / cellHeight) +
+          edgeScrollOffsetRows,
       };
     };
     const updateSimpleTouchSelection = (touch: Touch) => {
@@ -518,7 +595,15 @@ export class GhosttyRenderer implements TerminalRenderer {
       if (selectionState.phase === "idle") {
         return;
       }
-      const range = terminalSelectionRange(selectionState.start, selectionState.endpoint, terminal.cols);
+      const toViewport = (point: TerminalCellPosition) => ({
+        col: point.col,
+        row: clampInteger(point.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
+      });
+      const range = terminalSelectionRange(
+        toViewport(selectionState.start),
+        toViewport(selectionState.endpoint),
+        terminal.cols,
+      );
       selectTerminalViewportRange(terminal, range.from, range.to);
     };
     const cellClientCenter = (point: TerminalCellPosition) => {
@@ -649,6 +734,90 @@ export class GhosttyRenderer implements TerminalRenderer {
         }
       });
     };
+    const renderEndpointAfterEdgeScroll = () => {
+      if (!lastEndpointTouch || selectionState.phase !== "dragging-endpoint") {
+        return;
+      }
+      const position = endpointPositionFromDrag(lastEndpointTouch);
+      selectionState = moveTouchSelectionEndpoint(selectionState, position, lastEndpointTouch);
+      selectCurrentTouchRange();
+      const viewportPoint = {
+        col: position.col,
+        row: clampInteger(position.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
+      };
+      renderLoupeAfterTerminalPaint(viewportPoint, lastEndpointTouch);
+      renderPrototypeDiagnostics("edge scroll", lastEndpointTouch);
+    };
+    const emitEdgeScroll = (lines: number) => {
+      if (lines === 0) {
+        return;
+      }
+      edgeScrollOffsetRows += lines;
+      if (this.#scrollCallback) {
+        this.#scrollCallback(lines);
+      } else {
+        terminal.scrollLines(lines);
+      }
+      renderEndpointAfterEdgeScroll();
+    };
+    const runEdgeScrollFrame = (timestamp: number) => {
+      edgeScrollFrame = null;
+      if (edgeScrollDirection === 0 || selectionState.phase !== "dragging-endpoint") {
+        return;
+      }
+      const elapsed = edgeScrollLastFrameAt === 0 ? 0 : Math.min(80, timestamp - edgeScrollLastFrameAt);
+      edgeScrollLastFrameAt = timestamp;
+      if (edgeScrollMode === "A") {
+        if (timestamp - edgeScrollEnteredAt >= EDGE_SCROLL_DWELL_MS) {
+          edgeScrollPendingRows += (elapsed / 1000) * EDGE_SCROLL_STEADY_ROWS_PER_SECOND;
+        }
+      } else if (edgeScrollMode === "B") {
+        const speed =
+          EDGE_SCROLL_PROPORTIONAL_MIN_ROWS_PER_SECOND +
+          edgeScrollDepth *
+            (EDGE_SCROLL_PROPORTIONAL_MAX_ROWS_PER_SECOND - EDGE_SCROLL_PROPORTIONAL_MIN_ROWS_PER_SECOND);
+        edgeScrollPendingRows += (elapsed / 1000) * speed;
+      } else if (!edgeScrollStepTaken) {
+        edgeScrollStepTaken = true;
+        emitEdgeScroll(edgeScrollDirection);
+      }
+      const wholeRows = Math.floor(edgeScrollPendingRows);
+      if (wholeRows > 0) {
+        edgeScrollPendingRows -= wholeRows;
+        emitEdgeScroll(edgeScrollDirection * wholeRows);
+      }
+      if (edgeScrollMode !== "C") {
+        edgeScrollFrame = window.requestAnimationFrame(runEdgeScrollFrame);
+      }
+    };
+    const updateEdgeScrollIntent = (touch: Touch) => {
+      lastEndpointTouch = clientFromTouch(touch);
+      const rect = container.getBoundingClientRect();
+      let direction: -1 | 0 | 1 = 0;
+      let depth = 0;
+      if (touch.clientY <= rect.top + EDGE_SCROLL_ZONE_PX) {
+        direction = -1;
+        depth = clampNumber((rect.top + EDGE_SCROLL_ZONE_PX - touch.clientY) / EDGE_SCROLL_ZONE_PX, 0, 1);
+      } else if (touch.clientY >= rect.bottom - EDGE_SCROLL_ZONE_PX) {
+        direction = 1;
+        depth = clampNumber((touch.clientY - (rect.bottom - EDGE_SCROLL_ZONE_PX)) / EDGE_SCROLL_ZONE_PX, 0, 1);
+      }
+      if (direction !== edgeScrollDirection) {
+        if (edgeScrollFrame !== null) {
+          window.cancelAnimationFrame(edgeScrollFrame);
+          edgeScrollFrame = null;
+        }
+        edgeScrollDirection = direction;
+        edgeScrollEnteredAt = performance.now();
+        edgeScrollLastFrameAt = 0;
+        edgeScrollPendingRows = 0;
+        edgeScrollStepTaken = false;
+      }
+      edgeScrollDepth = depth;
+      if (direction !== 0 && edgeScrollFrame === null && (edgeScrollMode !== "C" || !edgeScrollStepTaken)) {
+        edgeScrollFrame = window.requestAnimationFrame(runEdgeScrollFrame);
+      }
+    };
     const ensureEndpointBubble = () => {
       if (endpointBubble) {
         return endpointBubble;
@@ -753,6 +922,11 @@ export class GhosttyRenderer implements TerminalRenderer {
       endpointDragStartX = touch.clientX;
       endpointDragStartY = touch.clientY;
       endpointDragMoved = false;
+      edgeScrollOffsetRows = 0;
+      lastEndpointTouch = clientFromTouch(touch);
+      if (prototypeSwitcher) {
+        prototypeSwitcher.hidden = true;
+      }
       const client = clientFromTouch(touch);
       selectionState = beginTouchSelectionEndpointDrag(selectionState, client);
       if (selectionState.phase !== "dragging-endpoint") {
@@ -768,6 +942,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
     const updateEndpointDrag = (touch: Touch, force = false) => {
       clearLoupeRenderFrame();
+      updateEdgeScrollIntent(touch);
       if (endpointDragStartX !== null && endpointDragStartY !== null) {
         const deltaX = touch.clientX - endpointDragStartX;
         const deltaY = touch.clientY - endpointDragStartY;
@@ -781,7 +956,13 @@ export class GhosttyRenderer implements TerminalRenderer {
       selectionState = moveTouchSelectionEndpoint(selectionState, position, client);
       renderPrototypeDiagnostics("move endpoint", touch);
       selectCurrentTouchRange();
-      renderLoupe(position, client);
+      renderLoupe(
+        {
+          col: position.col,
+          row: clampInteger(position.row - edgeScrollOffsetRows, 0, Math.max(0, terminal.rows - 1)),
+        },
+        client,
+      );
     };
     const completeEndpointDrag = (event: TouchEvent) => {
       if (event.changedTouches.length > 0 && endpointDragMoved) {
@@ -872,6 +1053,9 @@ export class GhosttyRenderer implements TerminalRenderer {
       pendingTouchLines = 0;
     };
     const onTouchStart = (event: TouchEvent) => {
+      if (event.target instanceof Element && event.target.closest(".terminal-edge-scroll-prototype-switcher")) {
+        return;
+      }
       clearSelectionTimer();
       if (selectionState.phase === "waiting-endpoint") {
         if (
@@ -1078,6 +1262,8 @@ export class GhosttyRenderer implements TerminalRenderer {
       window.open(linkText, "_blank", "noopener,noreferrer");
     };
 
+    ensurePrototypeSwitcher();
+    renderPrototypeDiagnostics("ready");
     container.addEventListener("touchstart", onTouchStart, {
       capture: true,
       passive: this.#mobileLongPressBehavior === "off",
@@ -1101,6 +1287,8 @@ export class GhosttyRenderer implements TerminalRenderer {
       container.removeEventListener("click", onClick, { capture: true });
       prototypeDiagnostics?.remove();
       prototypeDiagnostics = null;
+      prototypeSwitcher?.remove();
+      prototypeSwitcher = null;
     };
   }
 
@@ -1519,6 +1707,11 @@ function terminalBufferLineText(line: TerminalBufferLine) {
     }
   }
   return { text, columns };
+}
+
+function edgeScrollModeFromUrl(): EdgeScrollPrototypeMode {
+  const mode = new URL(window.location.href).searchParams.get("edge-scroll");
+  return mode === "B" || mode === "C" ? mode : "A";
 }
 
 function clampInteger(value: number, min: number, max: number) {
