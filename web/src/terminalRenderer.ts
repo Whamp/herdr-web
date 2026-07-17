@@ -6,6 +6,7 @@ import {
   trimUrlPunctuation,
 } from "./terminalSelection";
 import type { TerminalSelectionPoint } from "./terminalSelection";
+import { terminalLoupeCursorGeometry } from "./terminalLoupe";
 import { terminalTapFocusAction } from "./terminalTapFocus";
 import type { TerminalTapFocusResult } from "./terminalTapFocus";
 import {
@@ -602,14 +603,18 @@ export class GhosttyRenderer implements TerminalRenderer {
         TOUCH_LOUPE_WIDTH_PX,
         TOUCH_LOUPE_HEIGHT_PX,
       );
-      const markerLeft = ((point.col * cellWidth - sxCss) / sourceWidth) * TOUCH_LOUPE_WIDTH_PX;
-      const markerRight = (((point.col + 1) * cellWidth - sxCss) / sourceWidth) * TOUCH_LOUPE_WIDTH_PX;
-      const markerY = (((point.row + 1) * cellHeight - syCss) / sourceHeight) * TOUCH_LOUPE_HEIGHT_PX - 2;
-      const anchorLeft = clampNumber(markerLeft, 4, TOUCH_LOUPE_WIDTH_PX - 4);
-      const anchorRight = clampNumber(markerRight, 4, TOUCH_LOUPE_WIDTH_PX - 4);
-      const anchorY = clampNumber(markerY, 8, TOUCH_LOUPE_HEIGHT_PX - 18);
-      const anchorCenter = (anchorLeft + anchorRight) / 2;
-      const markerBottom = TOUCH_LOUPE_HEIGHT_PX - 2;
+      const cursor = terminalLoupeCursorGeometry({
+        col: point.col,
+        row: point.row,
+        cellWidth,
+        cellHeight,
+        sourceX: sxCss,
+        sourceY: syCss,
+        sourceWidth,
+        sourceHeight,
+        loupeWidth: TOUCH_LOUPE_WIDTH_PX,
+        loupeHeight: TOUCH_LOUPE_HEIGHT_PX,
+      });
       const markerColor = cssColor(
         container,
         "--terminal-touch-marker",
@@ -619,18 +624,14 @@ export class GhosttyRenderer implements TerminalRenderer {
       ctx.strokeStyle = "rgba(17, 17, 27, 0.78)";
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.moveTo(anchorLeft, anchorY + 1);
-      ctx.lineTo(anchorRight, anchorY + 1);
-      ctx.moveTo(anchorCenter, anchorY + 1);
-      ctx.lineTo(anchorCenter, markerBottom);
+      ctx.moveTo(cursor.caretX, cursor.caretTop);
+      ctx.lineTo(cursor.caretX, cursor.caretBottom);
       ctx.stroke();
       ctx.strokeStyle = markerColor;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(anchorLeft, anchorY);
-      ctx.lineTo(anchorRight, anchorY);
-      ctx.moveTo(anchorCenter, anchorY);
-      ctx.lineTo(anchorCenter, markerBottom);
+      ctx.moveTo(cursor.caretX, cursor.caretTop);
+      ctx.lineTo(cursor.caretX, cursor.caretBottom);
       ctx.stroke();
       ctx.lineCap = "butt";
       ctx.strokeStyle = "rgba(17, 17, 27, 0.85)";
