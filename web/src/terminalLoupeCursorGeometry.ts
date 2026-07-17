@@ -1,4 +1,5 @@
-export type TerminalLoupeGeometryInput = {
+/** Measurements needed to place a cursor over a magnified terminal cell. */
+export interface TerminalLoupeGeometryInput {
   col: number;
   row: number;
   cellWidth: number;
@@ -9,8 +10,9 @@ export type TerminalLoupeGeometryInput = {
   sourceHeight: number;
   loupeWidth: number;
   loupeHeight: number;
-};
+}
 
+/** Places a vertical caret immediately before the selected cell and within its row. */
 export function terminalLoupeCursorGeometry(input: TerminalLoupeGeometryInput) {
   const targetLeft = ((input.col * input.cellWidth - input.sourceX) / input.sourceWidth) * input.loupeWidth;
   const targetTop =

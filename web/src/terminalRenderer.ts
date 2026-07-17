@@ -6,7 +6,7 @@ import {
   trimUrlPunctuation,
 } from "./terminalSelection";
 import type { TerminalSelectionPoint } from "./terminalSelection";
-import { terminalLoupeCursorGeometry } from "./terminalLoupe";
+import { terminalLoupeCursorGeometry } from "./terminalLoupeCursorGeometry";
 import { terminalTapFocusAction } from "./terminalTapFocus";
 import type { TerminalTapFocusResult } from "./terminalTapFocus";
 import {
@@ -620,7 +620,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         "--terminal-touch-marker",
         cssColor(container, "--accent", "#b4befe"),
       );
-      ctx.lineCap = "round";
+      ctx.lineCap = "butt";
       ctx.strokeStyle = "rgba(17, 17, 27, 0.78)";
       ctx.lineWidth = 4;
       ctx.beginPath();

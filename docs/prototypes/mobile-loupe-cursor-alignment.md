@@ -23,7 +23,7 @@ A focused geometry test reproduced the old mismatch: the old marker was centered
 Automated checks:
 
 - `npm run lint:web`
-- `npm run test:web` — 181 tests passed
+- `npm run test:web` — 182 tests passed
 - `npm run build:web`
 - `npm run android:build:debug`
 
@@ -31,7 +31,7 @@ Android artifact:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
-SHA-256: c5c1e78dea68cfb92d849bc920daa574d8a6b16b1c64605feb2ed25e69ff44e3
+SHA-256: 4198e0a866a180f05cb91a52dda73be2a9bbb5ec3cc15d60a38b69dfc1763e36
 ```
 
 ## Phone check
