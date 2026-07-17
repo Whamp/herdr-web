@@ -1787,6 +1787,7 @@ button {
 }
 
 .terminal-touch-endpoint-line {
+  display: none;
   position: absolute;
   left: 50%;
   top: 8px;
@@ -1815,7 +1816,7 @@ button {
 .terminal-touch-endpoint-knob {
   position: absolute;
   left: 13px;
-  top: 22px;
+  top: 13px;
   display: grid;
   width: 46px;
   height: 46px;

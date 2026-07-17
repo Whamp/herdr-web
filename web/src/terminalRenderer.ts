@@ -43,8 +43,8 @@ const TOUCH_LOUPE_OFFSET_Y_PX = 132;
 const TOUCH_LOUPE_TARGET_OFFSET_Y_PX = 48;
 const TOUCH_ENDPOINT_HIT_WIDTH_PX = 72;
 const TOUCH_ENDPOINT_HIT_HEIGHT_PX = 72;
-const TOUCH_ENDPOINT_ATTACHMENT_X_PX = 36;
-const TOUCH_ENDPOINT_ATTACHMENT_Y_PX = 7;
+const TOUCH_ENDPOINT_ICON_CENTER_X_PX = 36;
+const TOUCH_ENDPOINT_ICON_CENTER_Y_PX = 36;
 const TAP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/giu;
 
 type GhosttyModule = typeof import("ghostty-web");
@@ -412,7 +412,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         touch && endpointDragStartX !== null && endpointDragStartY !== null
           ? `Δpx=${Math.round(touch.clientX - endpointDragStartX)},${Math.round(touch.clientY - endpointDragStartY)}`
           : "Δpx=–";
-      prototypeDiagnostics.textContent = `CURSOR + ICON TEST · aligned markers · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
+      prototypeDiagnostics.textContent = `CURSOR + ICON TEST · centered drag icon · ${transition}\n${selectionState.phase} · ${selection} · ${delta}`;
     };
 
     const suppressMouseEvents = (duration = TOUCH_COMPAT_MOUSE_SUPPRESS_MS) => {
@@ -689,8 +689,8 @@ export class GhosttyRenderer implements TerminalRenderer {
         containerHeight: rect.height,
         bubbleWidth: TOUCH_ENDPOINT_HIT_WIDTH_PX,
         bubbleHeight: TOUCH_ENDPOINT_HIT_HEIGHT_PX,
-        attachmentOffsetX: TOUCH_ENDPOINT_ATTACHMENT_X_PX,
-        attachmentOffsetY: TOUCH_ENDPOINT_ATTACHMENT_Y_PX,
+        attachmentOffsetX: TOUCH_ENDPOINT_ICON_CENTER_X_PX,
+        attachmentOffsetY: TOUCH_ENDPOINT_ICON_CENTER_Y_PX,
       });
       bubble.style.transform = `translate(${position.left}px, ${position.top}px)`;
     };

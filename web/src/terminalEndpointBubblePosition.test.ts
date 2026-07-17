@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { terminalEndpointBubblePosition } from "./terminalEndpointBubblePosition";
 
 describe("terminal endpoint drag bubble", () => {
-  it("places the bubble attachment point on the selected cell center", () => {
+  it("places the drag icon center on the selected cell center", () => {
     const position = terminalEndpointBubblePosition({
       targetClientX: 150,
       targetClientY: 100,
@@ -13,9 +13,9 @@ describe("terminal endpoint drag bubble", () => {
       bubbleWidth: 72,
       bubbleHeight: 72,
       attachmentOffsetX: 36,
-      attachmentOffsetY: 7,
+      attachmentOffsetY: 36,
     });
 
-    expect(position).toEqual({ left: 114, top: 93 });
+    expect(position).toEqual({ left: 114, top: 64 });
   });
 });

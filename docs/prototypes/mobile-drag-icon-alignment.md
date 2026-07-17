@@ -4,9 +4,11 @@
 
 Android hardware confirmed that the loupe cursor and selected text were correct, but the drag icon appeared below the anchored starting character.
 
-The drag bubble was positioned with its top edge at the selected cell center. Its visible attachment mark begins seven pixels inside the bubble, so the mark appeared seven pixels too low. The corrected position subtracts that internal offset, placing the attachment mark on the selected cell center. Selection coordinates and endpoint dragging are unchanged.
+The first attempted correction aligned the thin stem above the icon with the selected character. Android screenshots showed that the stem was already correct while the large circular drag icon still hung one terminal row below it.
 
-The on-screen test label is `CURSOR + ICON TEST · aligned markers`.
+The corrected design removes the stem and centers the circular drag icon itself on the selected character. Selection coordinates and endpoint dragging are unchanged.
+
+The on-screen test label is `CURSOR + ICON TEST · centered drag icon`.
 
 ## Verification
 
@@ -20,7 +22,7 @@ Android artifact:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
-SHA-256: e4d8d2721b8c53e3af2270a45ef3617d3d48613d20903afa19c6131698180f10
+SHA-256: 9770aba716648ec63e5516ed9afff06986c0206250c4a66f003892e9a3132a9a
 ```
 
 Hardware validation remains required to confirm that the icon now visually attaches to the selected character without affecting the already-correct selection behavior.
