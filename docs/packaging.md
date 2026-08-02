@@ -181,6 +181,10 @@ bin/herdr-web --host 0.0.0.0 --allow-host host-b --allow-origin http://host-a:87
 served page's Content Security Policy so that page can connect to another bridge over HTTP and
 WebSocket.
 
+If a trusted reverse proxy exposes the called bridge at another HTTPS authority, also pass its
+external origin with `--public-origin`. The option extends Host validation; the proxy still owns TLS
+and must forward HTTP and WebSocket traffic.
+
 ## Manual Release Upload
 
 The release script creates the GitHub release from changelog notes. Separately packaged tarballs and

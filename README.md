@@ -304,6 +304,18 @@ HOST=0.0.0.0 scripts/run-bridge.sh --allow-host host-a --allow-connect-origin ht
 HOST=0.0.0.0 scripts/run-bridge.sh --allow-host host-b --allow-origin http://host-a:8787
 ```
 
+When a trusted reverse proxy exposes a bridge at a different HTTPS authority, declare that external
+origin explicitly. This keeps Host validation enabled while accepting the proxy's public authority:
+
+```bash
+HOST=127.0.0.1 PORT=4000 scripts/run-bridge.sh \
+  --public-origin https://host-b.example.com \
+  --allow-origin https://host-a.example.com
+```
+
+`--public-origin` only extends bridge Host validation. The reverse proxy still owns TLS and must
+forward HTTP and WebSocket traffic to the bridge.
+
 ## Keyboard Shortcuts
 
 These app shortcuts are ignored while dialogs, menus, and normal text inputs are active. They still

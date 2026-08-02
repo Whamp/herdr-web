@@ -50,4 +50,15 @@ bin/herdr-web --host 0.0.0.0 --allow-host host-a --allow-connect-origin http://h
 bin/herdr-web --host 0.0.0.0 --allow-host host-b --allow-origin http://host-a:8787
 ```
 
+If a trusted reverse proxy exposes host B at another HTTPS authority, declare that external origin:
+
+```bash
+bin/herdr-web --host 127.0.0.1 --port 4000 \
+  --public-origin https://host-b.example.com \
+  --allow-origin https://host-a.example.com
+```
+
+The proxy must forward HTTP and WebSocket traffic. `--public-origin` extends Host validation; it does
+not configure TLS or the proxy.
+
 Only bind to non-loopback interfaces on networks you trust.
