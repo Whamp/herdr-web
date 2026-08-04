@@ -10,7 +10,7 @@ They do not publish npm packages, and the package versions are not release versi
 - Rust stable.
 - JDK 21 and Android SDK when validating the Android shell.
 - GitHub CLI authenticated as a user that can create releases.
-- A local Herdr `v0.7.5` or newer session reporting terminal protocol `17` for browser and packaged
+- A local Herdr `v0.8.0` or newer session reporting terminal protocol `19` for browser and packaged
   bridge smoke testing.
 
 ## Prepare
@@ -96,7 +96,7 @@ dist-packages/herdr-web-vX.Y.Z-android.apk
 
 ## Browser Smoke
 
-Start or attach a Herdr `v0.7.5` or newer session reporting terminal protocol `17`:
+Start or attach a Herdr `v0.8.0` or newer session reporting terminal protocol `19`:
 
 ```bash
 herdr
@@ -125,8 +125,8 @@ Open `http://127.0.0.1:8787` and verify:
 - Binding to `HOST=0.0.0.0` is only used on a trusted network.
 
 Repeat the startup, terminal attach, and launcher checks with an unpacked desktop tarball before
-uploading it. Confirm the bridge rejects protocol `16` and unreviewed protocols newer than `17`
-instead of serving a partially compatible UI.
+uploading it. Confirm the bridge rejects protocols older or newer than `19` instead of serving a
+partially compatible UI.
 
 ## Cut
 

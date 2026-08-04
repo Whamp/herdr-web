@@ -22,6 +22,9 @@
 
 ### Fixed
 
+- Restored bridge startup and terminal attach compatibility with Herdr `v0.8.0` by refreshing the
+  vendored API schema and terminal wire protocol to protocol `19`.
+
 ### Removed
 
 ## [0.4.0] - 2026-07-30

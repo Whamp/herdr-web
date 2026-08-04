@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPAT="$ROOT/vendor/herdr-compat"
-EXPECTED_HERDR_COMMIT="ef4c23f5775bb8cfec05f05d0844226ff959a07a"
+EXPECTED_HERDR_COMMIT="346411fa21afd297f5ed3b3fa56f9e3fbf7654b7"
 
 if ! command -v rg >/dev/null; then
   echo "ripgrep (rg) is required for vendor checks" >&2
@@ -57,7 +57,7 @@ if rg -n '#\[path[[:space:]]*=' "$ROOT/bridge" "$COMPAT" >/dev/null; then
 fi
 
 if rg -n '\bcustom_status\b' "$COMPAT" >/dev/null; then
-  echo "obsolete custom_status fields are not allowed in the Herdr 0.7.5 compatibility copy" >&2
+  echo "obsolete custom_status fields are not allowed in the Herdr 0.8.0 compatibility copy" >&2
   rg -n '\bcustom_status\b' "$COMPAT" >&2
   exit 1
 fi
@@ -82,13 +82,13 @@ if [[ -n "${HERDR_SRC:-}" ]]; then
 
   upstream_commit="$(git -C "$HERDR_SRC" rev-parse HEAD 2>/dev/null || true)"
   if [[ "$upstream_commit" != "$EXPECTED_HERDR_COMMIT" ]]; then
-    echo "HERDR_SRC must be a Herdr v0.7.5 checkout at $EXPECTED_HERDR_COMMIT" >&2
+    echo "HERDR_SRC must be a Herdr v0.8.0 checkout at $EXPECTED_HERDR_COMMIT" >&2
     echo "found: ${upstream_commit:-not a git checkout}" >&2
     exit 1
   fi
 
   if [[ -n "$(git -C "$HERDR_SRC" status --short)" ]]; then
-    echo "HERDR_SRC must be a clean Herdr v0.7.5 checkout" >&2
+    echo "HERDR_SRC must be a clean Herdr v0.8.0 checkout" >&2
     git -C "$HERDR_SRC" status --short >&2
     exit 1
   fi
@@ -161,8 +161,8 @@ if [[ -n "${HERDR_SRC:-}" ]]; then
   compare_popup_size
   compare_wire_body
 
-  echo "Herdr v0.7.5 compatibility vendor layout and HERDR_SRC drift checks passed"
+  echo "Herdr v0.8.0 compatibility vendor layout and HERDR_SRC drift checks passed"
 else
-  echo "Herdr v0.7.5 compatibility vendor layout looks clean"
-  echo "Set HERDR_SRC=/path/to/clean/herdr-v0.7.5 to compare exact upstream schema/wire copies"
+  echo "Herdr v0.8.0 compatibility vendor layout looks clean"
+  echo "Set HERDR_SRC=/path/to/clean/herdr-v0.8.0 to compare exact upstream schema/wire copies"
 fi
