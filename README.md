@@ -381,8 +381,12 @@ fit/resize frame.
 API and WebSocket requests must use an allowed bridge `Host` header. Browser-originated requests
 must also be same-origin with the bridge, an explicitly allowed origin such as Android's
 `http://localhost`, or a loopback development proxy origin allowed for Vite. Hostname backends must
-be explicitly allowed with `--allow-host HOSTNAME`. This is a DNS-rebinding/CSRF guard, not user
-authentication.
+be explicitly allowed with `--allow-host HOSTNAME`.
+
+When a trusted reverse proxy publishes the bridge from a different scheme or port, pass its exact
+external origin with `--public-origin ORIGIN`. This allows that Origin and Host authority while
+keeping ordinary `--allow-host` names restricted to the bridge's listening port. These flags are
+DNS-rebinding/CSRF guards, not user authentication.
 
 Bridge-owned notes are part of that same request policy. Any allowed bridge client can read and
 mutate saved note content, including clients connecting over a trusted LAN when the bridge is bound
