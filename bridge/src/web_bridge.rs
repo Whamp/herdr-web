@@ -5934,6 +5934,14 @@ mod tests {
     }
 
     #[test]
+    fn daemon_status_accepts_herdr_0_8_protocol_19() {
+        assert_eq!(
+            validated_daemon_protocol(runtime_status("0.8.0", 19)).unwrap(),
+            19
+        );
+    }
+
+    #[test]
     fn daemon_status_rejects_missing_or_invalid_version() {
         let missing = herdr_compat::api::RuntimeStatus {
             version: None,
