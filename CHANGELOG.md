@@ -6,6 +6,9 @@
 
 ### Added
 
+- Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different
+  scheme or port.
+
 ### Changed
 
 ### Fixed
