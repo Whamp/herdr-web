@@ -93,6 +93,7 @@ struct BridgeOptions {
     launcher_presets_path: Option<PathBuf>,
     allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
+    public_origins: Vec<String>,
     allowed_connect_sources: Vec<String>,
 }
 
@@ -118,6 +119,7 @@ struct RequestPolicy {
     bind_port: u16,
     allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
+    public_origins: Vec<String>,
     allowed_connect_sources: Vec<String>,
 }
 
@@ -768,7 +770,7 @@ pub(crate) fn run_command(args: &[String]) -> io::Result<i32> {
         Err(message) => {
             eprintln!("{message}");
             eprintln!(
-                "usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--launcher-presets PATH] [--allow-origin ORIGIN] [--allow-host HOSTNAME] [--allow-connect-origin ORIGIN]"
+                "usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--launcher-presets PATH] [--allow-origin ORIGIN] [--public-origin ORIGIN] [--allow-host HOSTNAME] [--allow-connect-origin ORIGIN]"
             );
             return Ok(2);
         }
@@ -797,6 +799,7 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
     let mut launcher_presets_path = None;
     let mut allowed_hosts = Vec::new();
     let mut allowed_origins = Vec::new();
+    let mut public_origins = Vec::new();
     let mut allowed_connect_sources = Vec::new();
     let mut explicit_session = None;
     let mut index = 0;
@@ -866,6 +869,13 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
                 allowed_origins.push(normalize_allowed_origin(value)?);
                 index += 2;
             }
+            "--public-origin" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --public-origin".into());
+                };
+                public_origins.push(normalize_allowed_origin(value)?);
+                index += 2;
+            }
             "--allow-connect-origin" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err("missing value for --allow-connect-origin".into());
@@ -892,6 +902,7 @@ fn parse_options(args: &[String]) -> Result<Option<BridgeOptions>, String> {
         launcher_presets_path,
         allowed_hosts,
         allowed_origins,
+        public_origins,
         allowed_connect_sources,
     }))
 }
@@ -903,13 +914,14 @@ fn print_help() {
 fn help_text() -> &'static str {
     "herdr-web-bridge\n\
 \n\
-Usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--upload-dir DIR] [--launcher-presets PATH] [--allow-origin ORIGIN] [--allow-host HOSTNAME] [--allow-connect-origin ORIGIN]\n\
+Usage: herdr-web-bridge [--session NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--upload-dir DIR] [--launcher-presets PATH] [--allow-origin ORIGIN] [--public-origin ORIGIN] [--allow-host HOSTNAME] [--allow-connect-origin ORIGIN]\n\
 \n\
 Runs the local HTTP/WebSocket bridge for herdr-web.\n\
 Defaults to the active Herdr daemon sockets and 127.0.0.1:8787.\n\
 Use --session NAME to target a named Herdr session and ignore HERDR_SOCKET_PATH.\n\
 Use --host 0.0.0.0 to listen on non-loopback interfaces.\n\
 Use --allow-origin http://localhost for bundled Android app access.\n\
+Use --public-origin ORIGIN when a trusted reverse proxy serves the bridge from that external origin.\n\
 Use --allow-host HOSTNAME to accept that exact DNS hostname in Host headers.\n\
 Use --allow-connect-origin ORIGIN to let the served web app connect to another bridge origin.\n\
 Use --launcher-presets PATH or HERDR_WEB_LAUNCHER_PRESETS to load custom launch presets.\n\
@@ -937,6 +949,7 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
         bind_port: options.port,
         allowed_hosts: options.allowed_hosts.clone(),
         allowed_origins: options.allowed_origins.clone(),
+        public_origins: options.public_origins.clone(),
         allowed_connect_sources: options.allowed_connect_sources.clone(),
     };
     let api = ApiClient::for_socket_path(crate::session::active_api_socket_path());
@@ -1322,6 +1335,15 @@ fn host_authority_allowed(authority: &str, policy: &RequestPolicy) -> bool {
         return true;
     }
 
+    if policy
+        .public_origins
+        .iter()
+        .filter_map(|origin| origin_authority(origin))
+        .any(|public_authority| same_authority(public_authority, authority))
+    {
+        return true;
+    }
+
     if !authority_port_matches(authority, policy.bind_port) {
         return false;
     }
@@ -1360,6 +1382,7 @@ fn request_origin_allowed(headers: &HeaderMap, policy: &RequestPolicy) -> bool {
         || policy
             .allowed_origins
             .iter()
+            .chain(&policy.public_origins)
             .any(|allowed| allowed.eq_ignore_ascii_case(origin))
 }
 
@@ -5326,6 +5349,7 @@ mod tests {
             bind_port: 4000,
             allowed_hosts: Vec::new(),
             allowed_origins: vec!["http://localhost".to_string()],
+            public_origins: Vec::new(),
             allowed_connect_sources: Vec::new(),
         };
         assert!(request_allowed(
@@ -5392,6 +5416,7 @@ mod tests {
             bind_port: 4000,
             allowed_hosts: vec!["herdr-host.local".to_string()],
             allowed_origins: Vec::new(),
+            public_origins: Vec::new(),
             allowed_connect_sources: Vec::new(),
         };
         assert!(host_authority_allowed("herdr-host.local:4000", &policy));
@@ -5401,12 +5426,48 @@ mod tests {
     }
 
     #[test]
+    fn public_origin_allows_only_its_reverse_proxy_authority() {
+        let mut policy = test_policy("100.92.238.117", 4000);
+        policy.public_origins = vec!["https://server60.greyhound-chinstrap.ts.net".to_string()];
+
+        assert!(request_allowed(
+            &origin_headers(
+                "server60.greyhound-chinstrap.ts.net",
+                Some("https://server60.greyhound-chinstrap.ts.net")
+            ),
+            &policy
+        ));
+        assert!(request_allowed(
+            &origin_headers(
+                "100.92.238.117:4000",
+                Some("https://server60.greyhound-chinstrap.ts.net")
+            ),
+            &policy
+        ));
+        assert!(!request_allowed(
+            &origin_headers(
+                "server60.greyhound-chinstrap.ts.net.evil.example",
+                Some("https://server60.greyhound-chinstrap.ts.net")
+            ),
+            &policy
+        ));
+        assert!(!request_allowed(
+            &origin_headers(
+                "server60.greyhound-chinstrap.ts.net",
+                Some("https://evil.example")
+            ),
+            &policy
+        ));
+    }
+
+    #[test]
     fn cors_headers_reflect_only_allowed_origins() {
         let policy = RequestPolicy {
             bind_host: "0.0.0.0".to_string(),
             bind_port: 4000,
             allowed_hosts: Vec::new(),
             allowed_origins: vec!["http://localhost".to_string()],
+            public_origins: Vec::new(),
             allowed_connect_sources: Vec::new(),
         };
         assert_eq!(
@@ -6187,6 +6248,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_options_accepts_public_reverse_proxy_origin() {
+        let args = vec![
+            "--public-origin".to_string(),
+            "HTTPS://SERVER60.GREYHOUND-CHINSTRAP.TS.NET".to_string(),
+        ];
+
+        let options = parse_options(&args).unwrap().unwrap();
+        assert_eq!(
+            options.public_origins,
+            vec!["https://server60.greyhound-chinstrap.ts.net".to_string()]
+        );
+    }
+
+    #[test]
     fn parse_options_configures_explicit_session() {
         let _guard = crate::session::TEST_ENV_LOCK.lock().unwrap();
         let previous_session = std::env::var(crate::session::SESSION_ENV_VAR).ok();
@@ -6284,6 +6359,7 @@ mod tests {
             bind_port,
             allowed_hosts: Vec::new(),
             allowed_origins: Vec::new(),
+            public_origins: Vec::new(),
             allowed_connect_sources: Vec::new(),
         }
     }

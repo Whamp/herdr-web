@@ -6,6 +6,8 @@
 
 ### Added
 
+- Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different
+  scheme or port.
 - Added persistent expand/collapse controls to grouped Agents, Tabs, and Spaces headers, including
   independent, visually nested host and workspace controls for Host + workspace grouping and a
   bulk expand/collapse control for the current Agents or Tabs list.
