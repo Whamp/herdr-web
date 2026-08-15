@@ -13,6 +13,8 @@
 
 - Mobile terminals now use a static visible cursor instead of a blinking cursor, reducing continuous
   canvas redraw work on resource-constrained devices. Desktop cursors continue to blink.
+- Terminal output now negotiates gzip compression between matching web apps and bridges, while
+  remaining compatible with older versions and keeping incompressible updates raw.
 
 ### Fixed
 
