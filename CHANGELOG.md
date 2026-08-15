@@ -18,10 +18,11 @@
 
 ### Fixed
 
-- Incremented the Android package version to code 3 so this debug APK can update existing
+- Incremented the Android package version to code 4 so this debug APK can update existing
   `dev.herdr.web` installations signed with the same development certificate.
-- Mobile terminal copies now remove visual row boundaries that split HTTP(S) links, including
-  alphanumeric continuations at the terminal's right edge, while preserving ordinary line breaks.
+- Mobile terminal copies now remove canvas row gaps that split HTTP(S) links, including indented
+  alphanumeric continuations when terminal edge metadata is unavailable, while preserving ordinary
+  line breaks.
 
 ### Removed
 
