@@ -42,8 +42,26 @@ describe("terminal selection helpers", () => {
     ).toBe("http://100.112.72.93:8765/herdr-hollow-centered-handle-d872ae6.apk");
   });
 
+  it("rejoins an alphanumeric URL continuation at the terminal right edge", () => {
+    expect(
+      normalizeMobileTerminalCopyText(
+        "http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n 689b6-android-debug.apk",
+        [true],
+      ),
+    ).toBe("http://100.112.72.93:4100/herdr-web-rebased-v2-ab689b6-android-debug.apk");
+  });
+
+  it("preserves an alphanumeric hard line break without terminal right-edge evidence", () => {
+    expect(
+      normalizeMobileTerminalCopyText(
+        "http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n 689b6-android-debug.apk",
+        [false],
+      ),
+    ).toBe("http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n 689b6-android-debug.apk");
+  });
+
   it("preserves copied prose line boundaries and spaces", () => {
-    expect(normalizeMobileTerminalCopyText("first line\nsecond line with spaces")).toBe(
+    expect(normalizeMobileTerminalCopyText("first line\nsecond line with spaces", [true])).toBe(
       "first line\nsecond line with spaces",
     );
   });
@@ -55,7 +73,7 @@ describe("terminal selection helpers", () => {
   });
 
   it("preserves a hard line boundary before list prose", () => {
-    expect(normalizeMobileTerminalCopyText("https://example.com/release/\n- Next step")).toBe(
+    expect(normalizeMobileTerminalCopyText("https://example.com/release/\n- Next step", [true])).toBe(
       "https://example.com/release/\n- Next step",
     );
   });
