@@ -18,6 +18,9 @@
 
 ### Fixed
 
+- Incremented the Android package version so the latest private APK installs as an update over the
+  previous build.
+
 ### Removed
 
 ## [0.4.1] - 2026-08-05
