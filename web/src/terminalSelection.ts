@@ -1,5 +1,6 @@
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+/iu;
 const URL_CONTINUATION_PATTERN = /^[^\s"'<>`]+/u;
+const TRAILING_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>`]+$/iu;
 const TRAILING_URL_PUNCTUATION = /[.,;:!?]+$/u;
 const TRAILING_BALANCED_CLOSERS = /[)\]}]+$/u;
 
@@ -71,6 +72,32 @@ export function terminalUrlTapTarget(value: string | null, mouseTracking: boolea
     return null;
   }
   return openableHttpUrl(value);
+}
+
+/** Removes visual row boundaries inside copied HTTP(S) links while retaining hard line breaks. */
+export function normalizeMobileTerminalCopyText(selection: string) {
+  const lines = selection.replace(/\r\n?/gu, "\n").split("\n");
+  const logicalLines: string[] = [];
+  let currentLine = lines[0] ?? "";
+
+  for (const nextLine of lines.slice(1)) {
+    const url = currentLine.match(TRAILING_URL_PATTERN)?.[0] ?? "";
+    const trimmedNextLine = nextLine.trimStart();
+    const continuation = trimmedNextLine.match(URL_CONTINUATION_PATTERN)?.[0] ?? "";
+    if (
+      url &&
+      continuation.length === trimmedNextLine.length &&
+      shouldJoinWrappedUrl(url, continuation)
+    ) {
+      currentLine += trimmedNextLine;
+    } else {
+      logicalLines.push(currentLine);
+      currentLine = nextLine;
+    }
+  }
+
+  logicalLines.push(currentLine);
+  return logicalLines.join("\n");
 }
 
 export function normalizeSelectionForUrl(selection: string) {

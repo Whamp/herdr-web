@@ -18,6 +18,9 @@
 
 ### Fixed
 
+- Mobile terminal copies now remove visual row boundaries that split HTTP(S) links while preserving
+  ordinary copied line breaks and spaces.
+
 ### Removed
 
 ## [0.4.3] - 2026-08-17
