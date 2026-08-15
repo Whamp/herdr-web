@@ -11,6 +11,9 @@
 
 ### Changed
 
+- Mobile terminals now use a static visible cursor instead of a blinking cursor, reducing continuous
+  canvas redraw work on resource-constrained devices. Desktop cursors continue to blink.
+
 ### Fixed
 
 ### Removed
