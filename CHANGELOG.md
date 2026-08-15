@@ -20,8 +20,8 @@
 
 - Incremented the Android package version so this debug APK can update existing `dev.herdr.web`
   installations signed with the same development certificate.
-- Mobile terminal copies now remove visual row boundaries that split HTTP(S) links while preserving
-  ordinary copied line breaks and spaces.
+- Mobile terminal copies now remove visual row boundaries that split HTTP(S) links, including
+  alphanumeric continuations at the terminal's right edge, while preserving ordinary line breaks.
 
 ### Removed
 

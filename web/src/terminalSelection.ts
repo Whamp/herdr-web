@@ -74,20 +74,24 @@ export function terminalUrlTapTarget(value: string | null, mouseTracking: boolea
   return openableHttpUrl(value);
 }
 
-/** Removes visual row boundaries inside copied HTTP(S) links while retaining hard line breaks. */
-export function normalizeMobileTerminalCopyText(selection: string) {
+/** Rejoins copied mobile URL rows; right-edge flags align one-for-one with selection newlines. */
+export function normalizeMobileTerminalCopyText(
+  selection: string,
+  lineBreaksAtTerminalRightEdge: readonly boolean[] = [],
+) {
   const lines = selection.replace(/\r\n?/gu, "\n").split("\n");
   const logicalLines: string[] = [];
   let currentLine = lines[0] ?? "";
 
-  for (const nextLine of lines.slice(1)) {
+  for (const [lineBreakIndex, nextLine] of lines.slice(1).entries()) {
     const url = currentLine.match(TRAILING_URL_PATTERN)?.[0] ?? "";
     const trimmedNextLine = nextLine.trimStart();
     const continuation = trimmedNextLine.match(URL_CONTINUATION_PATTERN)?.[0] ?? "";
+    const hasVisualWrapEvidence = lineBreaksAtTerminalRightEdge[lineBreakIndex] === true;
     if (
       url &&
       continuation.length === trimmedNextLine.length &&
-      shouldJoinWrappedUrl(url, continuation)
+      (hasVisualWrapEvidence || shouldJoinWrappedUrl(url, continuation))
     ) {
       currentLine += trimmedNextLine;
     } else {
