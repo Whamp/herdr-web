@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findFirstUrlInSelection,
+  normalizeMobileTerminalCopyText,
   normalizeSelectionForUrl,
   openableHttpUrl,
   selectedTextFromVisibleRows,
@@ -30,6 +31,32 @@ describe("terminal selection helpers", () => {
   it("does not trim balanced URL closing delimiters", () => {
     expect(findFirstUrlInSelection("https://example.com/a_(b)")).toBe(
       "https://example.com/a_(b)",
+    );
+  });
+
+  it("removes a visual row boundary from a copied mobile URL", () => {
+    expect(
+      normalizeMobileTerminalCopyText(
+        "http://100.112.72.93:8765/herdr-hollow-centered\n-handle-d872ae6.apk",
+      ),
+    ).toBe("http://100.112.72.93:8765/herdr-hollow-centered-handle-d872ae6.apk");
+  });
+
+  it("preserves copied prose line boundaries and spaces", () => {
+    expect(normalizeMobileTerminalCopyText("first line\nsecond line with spaces")).toBe(
+      "first line\nsecond line with spaces",
+    );
+  });
+
+  it("preserves a hard line boundary after a complete URL", () => {
+    expect(normalizeMobileTerminalCopyText("https://example.com/release\nNext step")).toBe(
+      "https://example.com/release\nNext step",
+    );
+  });
+
+  it("preserves a hard line boundary before list prose", () => {
+    expect(normalizeMobileTerminalCopyText("https://example.com/release/\n- Next step")).toBe(
+      "https://example.com/release/\n- Next step",
     );
   });
 
