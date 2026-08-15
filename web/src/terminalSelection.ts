@@ -91,7 +91,7 @@ export function normalizeMobileTerminalCopyText(
     if (
       url &&
       continuation.length === trimmedNextLine.length &&
-      (hasVisualWrapEvidence || shouldJoinWrappedUrl(url, continuation))
+      (hasVisualWrapEvidence || shouldJoinCanvasWrappedUrl(nextLine, url, continuation))
     ) {
       currentLine += trimmedNextLine;
     } else {
@@ -159,4 +159,13 @@ function countChars(value: string, char: string) {
     }
   }
   return count;
+}
+
+const INDENTED_URL_CONTINUATION_EVIDENCE = /[0-9/?#&=._~%+-]/u;
+
+function shouldJoinCanvasWrappedUrl(nextLine: string, url: string, continuation: string) {
+  return (
+    (/^[ \t]+/u.test(nextLine) && INDENTED_URL_CONTINUATION_EVIDENCE.test(continuation)) ||
+    shouldJoinWrappedUrl(url, continuation)
+  );
 }

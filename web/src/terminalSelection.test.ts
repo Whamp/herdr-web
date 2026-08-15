@@ -51,13 +51,28 @@ describe("terminal selection helpers", () => {
     ).toBe("http://100.112.72.93:4100/herdr-web-rebased-v2-ab689b6-android-debug.apk");
   });
 
-  it("preserves an alphanumeric hard line break without terminal right-edge evidence", () => {
+  it("rejoins an indented URL continuation when canvas row evidence is unavailable", () => {
     expect(
       normalizeMobileTerminalCopyText(
-        "http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n 689b6-android-debug.apk",
+        "http://100.112.72.93:4100/herdr-web-copy-fix-v3-9\n 1c39e1.apk",
         [false],
       ),
-    ).toBe("http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n 689b6-android-debug.apk");
+    ).toBe("http://100.112.72.93:4100/herdr-web-copy-fix-v3-91c39e1.apk");
+  });
+
+  it("preserves an unindented alphanumeric hard line break without right-edge evidence", () => {
+    expect(
+      normalizeMobileTerminalCopyText(
+        "http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n689b6-android-debug.apk",
+        [false],
+      ),
+    ).toBe("http://100.112.72.93:4100/herdr-web-rebased-v2-ab\n689b6-android-debug.apk");
+  });
+
+  it("preserves an indented prose word after a URL", () => {
+    expect(
+      normalizeMobileTerminalCopyText("https://example.com/release\n Next", [false]),
+    ).toBe("https://example.com/release\n Next");
   });
 
   it("preserves copied prose line boundaries and spaces", () => {
