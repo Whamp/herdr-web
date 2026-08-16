@@ -153,8 +153,9 @@ function LatchVariant({ onSend }: { onSend: (key: ArrowKey, modifiers: Modifier[
 }
 
 function ComposerVariant({ onSend }: { onSend: (key: ArrowKey, modifiers: Modifier[]) => void }) {
+  const [isComposing, setIsComposing] = useState(false);
   const [modifiers, setModifiers] = useState<Modifier[]>([]);
-  const [key, setKey] = useState<ArrowKey>("Up");
+  const [key, setKey] = useState<ArrowKey | null>(null);
   const toggleModifier = (modifier: Modifier) => {
     setModifiers((current) =>
       current.includes(modifier)
@@ -162,30 +163,71 @@ function ComposerVariant({ onSend }: { onSend: (key: ArrowKey, modifiers: Modifi
         : [...current, modifier],
     );
   };
-  const chordLabel = [...modifiers, key].join(" + ");
+  const chordLabel = key ? [...modifiers, key].join(" + ") : null;
+  const closeComposer = () => {
+    setIsComposing(false);
+    setModifiers([]);
+    setKey(null);
+  };
 
   return (
     <section className="modifier-prototype-controls composer-variant">
-      <div className="composer-preview">
-        <span>Compose terminal chord</span>
-        <strong>{chordLabel}</strong>
-      </div>
-      <div className="composer-builder">
-        <div className="composer-modifiers">
-          {(["Ctrl", "Shift", "Alt"] as Modifier[]).map((modifier) => (
-            <PrototypeKey
-              key={modifier}
-              label={modifier}
-              active={modifiers.includes(modifier)}
-              onClick={() => toggleModifier(modifier)}
-            />
-          ))}
+      <p className="modifier-prototype-instruction">
+        {isComposing
+          ? "Build a chord, then tap Compose again to send it."
+          : "Use normal keys directly, or open Compose for a modified chord."}
+      </p>
+      <div className="composer-toolbar">
+        <div className="prototype-scroll-row">
+          <PrototypeKey label="Esc" />
+          <PrototypeKey label="Ctrl" />
+          <PrototypeKey label="Tab" />
+          <PrototypeKey label="C-c" />
         </div>
-        <ArrowKeyGrid selectedKey={key} onSelect={setKey} />
+        <button
+          className="composer-toggle"
+          type="button"
+          data-active={isComposing ? "true" : "false"}
+          disabled={isComposing && !key}
+          onClick={() => {
+            if (!isComposing) {
+              setIsComposing(true);
+              return;
+            }
+            if (!key) return;
+            onSend(key, modifiers);
+            closeComposer();
+          }}
+        >
+          {isComposing && key ? <Send size={16} /> : <Keyboard size={16} />}
+          <span>Compose</span>
+          {chordLabel ? <kbd>{chordLabel}</kbd> : null}
+        </button>
       </div>
-      <button className="composer-send" type="button" onClick={() => onSend(key, modifiers)}>
-        <Send size={17} /> Send {chordLabel}
-      </button>
+      {isComposing ? (
+        <div className="composer-panel">
+          <div className="composer-preview">
+            <span>Building terminal chord</span>
+            <strong>{chordLabel ?? "Choose a key"}</strong>
+          </div>
+          <div className="composer-builder">
+            <div className="composer-modifiers">
+              {(["Ctrl", "Shift", "Alt"] as Modifier[]).map((modifier) => (
+                <PrototypeKey
+                  key={modifier}
+                  label={modifier}
+                  active={modifiers.includes(modifier)}
+                  onClick={() => toggleModifier(modifier)}
+                />
+              ))}
+            </div>
+            <ArrowKeyGrid selectedKey={key ?? undefined} onSelect={setKey} />
+          </div>
+          <button className="composer-cancel" type="button" onClick={closeComposer}>Cancel</button>
+        </div>
+      ) : (
+        <ArrowKeyGrid onSend={(selectedKey) => onSend(selectedKey, [])} />
+      )}
       <PrototypeCommandRow />
     </section>
   );
