@@ -6,6 +6,8 @@
 
 ### Added
 
+- Added a mobile terminal key composer for Ctrl, Shift, and Alt chords with special keys and
+  printable keyboard input such as `Alt+P`. [PR #63](https://github.com/kcosr/herdr-web/pull/63)
 - Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different
   scheme or port.
 
