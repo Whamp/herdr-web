@@ -63,8 +63,8 @@ const DEFAULT_PORT: u16 = 8787;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_STATIC_DIR: &str = "web/dist";
-const MIN_HERDR_VERSION: (u64, u64, u64) = (0, 8, 0);
-const MIN_HERDR_VERSION_LABEL: &str = "0.8.0";
+const MIN_HERDR_VERSION: (u64, u64, u64) = (0, 8, 2);
+const MIN_HERDR_VERSION_LABEL: &str = "0.8.2";
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const MAX_NOTES_REQUEST_BYTES: usize = 512 * 1024;
 const MAX_TERMINAL_INPUT_CHUNK_BYTES: usize = 768 * 1024;
@@ -1690,6 +1690,7 @@ fn validate_web_command(method: &Method) -> Result<(), BridgeError> {
             if params.workspace_id.is_some()
                 || params.ratio.is_some()
                 || params.cwd.is_some()
+                || params.right_click != Default::default()
                 || !params.env.is_empty()
             {
                 return Err(BridgeError::BadRequest(
@@ -2190,6 +2191,7 @@ fn launch_builtin_shell_split(
             ratio: None,
             cwd: None,
             focus: true,
+            right_click: Default::default(),
             env: HashMap::new(),
         }),
     )?;
@@ -2269,6 +2271,7 @@ fn launch_managed_agent_split(
             ratio: None,
             cwd: None,
             focus: true,
+            right_click: Default::default(),
             env: HashMap::new(),
         }),
     )?;
@@ -4430,8 +4433,11 @@ fn open_terminal_attach(
                 | ServerMessage::MouseCapture { .. }
                 | ServerMessage::KittyKeyboardReportAll { .. }
                 | ServerMessage::PrefixInputSource { .. }
+                | ServerMessage::TerminalBell { .. }
                 | ServerMessage::Frame(_)
-                | ServerMessage::Graphics { .. } => {}
+                | ServerMessage::Graphics { .. }
+                | ServerMessage::GraphicsFile { .. }
+                | ServerMessage::GraphicsTransmissionRetired { .. } => {}
             }
         }
         // By this point the Detach (if any) has been flushed and the socket
@@ -5401,7 +5407,7 @@ mod tests {
 
     fn test_session_snapshot() -> SessionSnapshot {
         SessionSnapshot {
-            version: "0.8.0".to_string(),
+            version: "0.8.2".to_string(),
             protocol: PROTOCOL_VERSION,
             focused_workspace_id: Some("workspace-1".to_string()),
             focused_tab_id: Some("tab-1".to_string()),
@@ -6002,6 +6008,19 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_web_command(&request.method).is_err());
+
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "id": "test",
+            "method": "pane.split",
+            "params": {
+                "target_pane_id": "1-1",
+                "direction": "down",
+                "focus": true,
+                "right_click": "pane"
+            }
+        }))
+        .unwrap();
+        assert!(validate_web_command(&request.method).is_err());
     }
 
     #[test]
@@ -6097,7 +6116,7 @@ mod tests {
     #[test]
     fn daemon_status_accepts_minimum_version_and_exact_protocol() {
         assert_eq!(
-            validated_daemon_protocol(runtime_status("0.8.0", PROTOCOL_VERSION)).unwrap(),
+            validated_daemon_protocol(runtime_status("0.8.2", PROTOCOL_VERSION)).unwrap(),
             PROTOCOL_VERSION
         );
         assert_eq!(
@@ -6107,10 +6126,10 @@ mod tests {
     }
 
     #[test]
-    fn daemon_status_accepts_herdr_0_8_protocol_19() {
+    fn daemon_status_accepts_herdr_0_8_2_protocol_20() {
         assert_eq!(
-            validated_daemon_protocol(runtime_status("0.8.0", 19)).unwrap(),
-            19
+            validated_daemon_protocol(runtime_status("0.8.2", 20)).unwrap(),
+            20
         );
     }
 
@@ -6151,7 +6170,7 @@ mod tests {
 
     #[test]
     fn daemon_status_accepts_version_prefix_and_build_metadata() {
-        for version in ["v0.8.0", "0.8.0+linux-x86-64"] {
+        for version in ["v0.8.2", "0.8.2+linux-x86-64"] {
             assert_eq!(
                 validated_daemon_protocol(runtime_status(version, PROTOCOL_VERSION)).unwrap(),
                 PROTOCOL_VERSION
@@ -6160,8 +6179,8 @@ mod tests {
     }
 
     #[test]
-    fn daemon_status_rejects_version_before_0_8_0() {
-        let error = validated_daemon_protocol(runtime_status("0.7.5", PROTOCOL_VERSION))
+    fn daemon_status_rejects_version_before_0_8_2() {
+        let error = validated_daemon_protocol(runtime_status("0.8.0", PROTOCOL_VERSION))
             .unwrap_err()
             .to_string();
         assert!(error.contains("too old"));
@@ -6183,14 +6202,14 @@ mod tests {
 
     #[test]
     fn daemon_status_rejects_any_other_protocol() {
-        let older = validated_daemon_protocol(runtime_status("0.8.0", PROTOCOL_VERSION - 1))
+        let older = validated_daemon_protocol(runtime_status("0.8.2", PROTOCOL_VERSION - 1))
             .unwrap_err()
             .to_string();
         assert!(older.contains("incompatible"));
         assert!(older.contains(&PROTOCOL_VERSION.to_string()));
 
         assert!(
-            validated_daemon_protocol(runtime_status("0.8.0", PROTOCOL_VERSION + 1))
+            validated_daemon_protocol(runtime_status("0.8.2", PROTOCOL_VERSION + 1))
                 .unwrap_err()
                 .to_string()
                 .contains("incompatible")

@@ -4,6 +4,10 @@
 
 ### Breaking Changes
 
+- Herdr `v0.8.2` or newer with terminal protocol exactly `20` is now required. The bridge rejects
+  the previous protocol `19` baseline and other unreviewed protocols instead of attempting a
+  backward-compatible wire fallback.
+
 ### Added
 
 - Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different
@@ -11,6 +15,8 @@
 
 ### Changed
 
+- Refreshed the minimal vendored Herdr compatibility sources to the `v0.8.2`/protocol `20`
+  baseline, including the current API schemas and terminal wire definitions.
 - Mobile terminals now use a static visible cursor instead of a blinking cursor, reducing continuous
   canvas redraw work on resource-constrained devices. Desktop cursors continue to blink.
 - Terminal output now negotiates gzip compression between matching web apps and bridges, while
