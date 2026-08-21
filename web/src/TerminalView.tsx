@@ -27,13 +27,16 @@ import { recordReconnectDiagnostic } from "./reconnectDiagnostics";
 import { shellQuote } from "./shell";
 import {
   isNonRetryableTerminalClose,
-  isTerminalAttachConflictClose,
   MAX_TERMINAL_ATTACH_CONFLICT_RETRIES,
-  parseTerminalCloseReason,
+  parseTerminalCloseMessage,
+  terminalCloseDisposition,
   terminalConnectionCopy,
   terminalConnectionOverlayDelayMs,
 } from "./terminalConnectionStatus";
-import type { TerminalConnectionState } from "./terminalConnectionStatus";
+import type {
+  TerminalCloseMessage,
+  TerminalConnectionState,
+} from "./terminalConnectionStatus";
 import {
   findFirstUrlInSelection,
   normalizeMobileTerminalCopyText,
@@ -202,7 +205,7 @@ export function TerminalView({
   const overlayTerminalIdRef = useRef(pane?.terminal_id ?? null);
   const delayConnectingOverlayRef = useRef(false);
   const [connectionState, setConnectionState] = useState<TerminalConnectionState>("idle");
-  const [closeReason, setCloseReason] = useState<string | null>(null);
+  const [closeReason, setCloseReason] = useState<TerminalCloseMessage | null>(null);
   const [rendererReady, setRendererReady] = useState<TerminalRendererReady | null>(null);
   const [accessibleScreen, setAccessibleScreen] = useState("");
   const [hasAttachedForTerminal, setHasAttachedForTerminal] = useState(false);
@@ -685,7 +688,7 @@ export function TerminalView({
     let reconnectAttempts = 0;
     let foregroundFastAttemptsRemaining = 0;
     let attachConflictRetries = 0;
-    let lastCloseReason: string | null = null;
+    let lastClose: TerminalCloseMessage | null = null;
     let socketGeneration = 0;
     let socketStartedAt = 0;
     let lastForegroundReconnectAt = Number.NEGATIVE_INFINITY;
@@ -780,7 +783,7 @@ export function TerminalView({
           }
         },
         (error) => {
-          lastCloseReason = "terminal output decompression failed";
+          lastClose = { cause: "transport_failed", detail: "output decompression failed" };
           debugReconnect("output-decompression-failed", { error });
           if (socket === nextSocket) {
             nextSocket.close();
@@ -809,7 +812,7 @@ export function TerminalView({
         reconnectAttempts = 0;
         foregroundFastAttemptsRemaining = 0;
         reconnectScheduledForSocket.delete(currentSocketGeneration);
-        lastCloseReason = null;
+        lastClose = null;
         terminalInputBlockedRef.current = false;
         setCloseReason(null);
         setHasAttachedForTerminal(true);
@@ -837,7 +840,7 @@ export function TerminalView({
             gzipOutputAcknowledged = true;
             return;
           }
-          lastCloseReason = parseTerminalCloseReason(event.data) ?? lastCloseReason;
+          lastClose = parseTerminalCloseMessage(event.data) ?? lastClose;
           return;
         }
         if (event.data instanceof ArrayBuffer) {
@@ -876,14 +879,15 @@ export function TerminalView({
         socket = null;
         debugReconnect("close", {
           socketGeneration: currentSocketGeneration,
-          reason: lastCloseReason,
+          cause: lastClose?.cause ?? null,
+          detail: lastClose?.detail || null,
           lifetimeMs: Math.round(performance.now() - socketStartedAt),
         });
-        if (lastCloseReason) {
-          console.warn("terminal websocket closed", lastCloseReason);
+        if (lastClose) {
+          console.warn("terminal websocket closed", lastClose.cause, lastClose.detail);
         }
         if (
-          isTerminalAttachConflictClose(lastCloseReason) &&
+          terminalCloseDisposition(lastClose?.cause ?? "unknown") === "attach-conflict" &&
           attachConflictRetries < MAX_TERMINAL_ATTACH_CONFLICT_RETRIES
         ) {
           // Usually a bridge restart or reattach racing the daemon's cleanup
@@ -894,12 +898,12 @@ export function TerminalView({
           scheduleSocketReconnect("close", currentSocketGeneration);
           return;
         }
-        if (isNonRetryableTerminalClose(lastCloseReason)) {
+        if (isNonRetryableTerminalClose(lastClose)) {
           reconnectStopped = true;
           terminalInputBlockedRef.current = true;
           clearReconnectTimer();
           clearQueuedTerminalInput();
-          setCloseReason(lastCloseReason);
+          setCloseReason(lastClose);
           setConnectionState("closed");
           return;
         }

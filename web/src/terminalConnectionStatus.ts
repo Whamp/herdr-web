@@ -2,10 +2,56 @@ export type TerminalConnectionState = "idle" | "connecting" | "attached" | "clos
 
 export const TERMINAL_CONNECTION_OVERLAY_DELAY_MS = 500;
 
-export function parseTerminalCloseReason(message: string) {
+/**
+ * Machine-readable close causes sent by the bridge in the terminal
+ * `closed` frame. The vocabulary and each cause's retry disposition are
+ * pinned by `protocol/terminal-close-causes.json`, which the Rust
+ * serializer tests also read; do not add or rename a cause without
+ * updating that file.
+ */
+export type TerminalCloseCause =
+  | "attach_conflict"
+  | "taken_over"
+  | "terminal_gone"
+  | "pending_detach"
+  | "daemon_closed"
+  | "output_lagged"
+  | "transport_failed";
+
+const KNOWN_TERMINAL_CLOSE_CAUSES: ReadonlySet<string> = new Set<TerminalCloseCause>([
+  "attach_conflict",
+  "taken_over",
+  "terminal_gone",
+  "pending_detach",
+  "daemon_closed",
+  "output_lagged",
+  "transport_failed",
+]);
+
+/** What the client should do after a close with a given cause. */
+export type TerminalCloseDisposition = "attach-conflict" | "reconnect" | "stop";
+
+export interface TerminalCloseMessage {
+  /** `"unknown"` for causes from a newer bridge this build does not know. */
+  cause: TerminalCloseCause | "unknown";
+  detail: string;
+}
+
+export function parseTerminalCloseMessage(message: string): TerminalCloseMessage | null {
   try {
-    const parsed = JSON.parse(message) as { type?: unknown; reason?: unknown };
-    return parsed.type === "closed" && typeof parsed.reason === "string" ? parsed.reason : null;
+    const parsed = JSON.parse(message) as {
+      type?: unknown;
+      cause?: unknown;
+      detail?: unknown;
+    };
+    if (parsed.type !== "closed") {
+      return null;
+    }
+    const cause =
+      typeof parsed.cause === "string" && KNOWN_TERMINAL_CLOSE_CAUSES.has(parsed.cause)
+        ? (parsed.cause as TerminalCloseCause)
+        : "unknown";
+    return { cause, detail: typeof parsed.detail === "string" ? parsed.detail : "" };
   } catch {
     return null;
   }
@@ -19,28 +65,35 @@ export function parseTerminalCloseReason(message: string) {
  */
 export const MAX_TERMINAL_ATTACH_CONFLICT_RETRIES = 3;
 
-export function isTerminalAttachConflictClose(reason: string | null) {
-  return reason !== null && reason.includes("already has an attached client");
+export function terminalCloseDisposition(cause: TerminalCloseMessage["cause"]) {
+  switch (cause) {
+    case "attach_conflict":
+      return "attach-conflict" as const;
+    case "taken_over":
+    case "terminal_gone":
+      // A takeover or a vanished terminal is final for this attach; only a
+      // human starting a new session should bring the terminal back.
+      return "stop" as const;
+    default:
+      // Everything else — including unknown future causes — follows the
+      // normal reconnection path with backoff.
+      return "reconnect" as const;
+  }
 }
 
-export function isNonRetryableTerminalClose(reason: string | null) {
-  return (
-    reason !== null &&
-    (isTerminalAttachConflictClose(reason) ||
-      reason.includes("terminal attach taken over") ||
-      reason.includes("terminal attach failed: terminal"))
-  );
+export function isNonRetryableTerminalClose(close: TerminalCloseMessage | null) {
+  return close !== null && terminalCloseDisposition(close.cause) === "stop";
 }
 
 export function terminalConnectionCopy(
   state: TerminalConnectionState,
-  reason: string | null,
+  close: TerminalCloseMessage | null,
   hasAttachedForTerminal = false,
 ) {
-  if (reason?.includes("already has an attached client")) {
+  if (close?.cause === "attach_conflict") {
     return "Attached elsewhere";
   }
-  if (reason?.includes("terminal attach taken over")) {
+  if (close?.cause === "taken_over") {
     return "Detached elsewhere";
   }
   switch (state) {
