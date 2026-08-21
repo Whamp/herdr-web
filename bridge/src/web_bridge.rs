@@ -3454,9 +3454,14 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
                 error = %err,
                 "terminal websocket attach failed"
             );
-            let _ = ws_sender
-                .send(Message::Text(close_message(&err.to_string()).into()))
-                .await;
+            let close = match err {
+                TerminalAttachError::Rejected(close) => close,
+                TerminalAttachError::Transport(detail) => TerminalClose {
+                    cause: TerminalCloseCause::TransportFailed,
+                    detail,
+                },
+            };
+            let _ = ws_sender.send(Message::Text(close.message().into())).await;
             return;
         }
     };
@@ -3581,6 +3586,99 @@ enum TerminalSessionExit {
     OutputChannelClosed,
 }
 
+/// Machine-readable close cause sent to the web client in the `closed` frame.
+/// The vocabulary is pinned by `protocol/terminal-close-causes.json`, which
+/// both the Rust serializer tests and the TypeScript decoder tests read. The
+/// web client owns retry policy per cause; this side only classifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalCloseCause {
+    /// Another client holds the terminal attach; usually transient.
+    AttachConflict,
+    /// This connection was taken over by a newer attach elsewhere.
+    TakenOver,
+    /// The daemon refused the attach because the terminal is gone.
+    TerminalGone,
+    /// The bridge gave up attaching amid sustained detach churn.
+    PendingDetach,
+    /// The daemon closed the attach mid-session (e.g. terminal exited).
+    DaemonClosed,
+    /// The client lagged the output broadcast; reconnect for a clean repaint.
+    OutputLagged,
+    /// The bridge could not reach or speak to the daemon.
+    TransportFailed,
+}
+
+impl TerminalCloseCause {
+    fn wire_name(self) -> &'static str {
+        match self {
+            TerminalCloseCause::AttachConflict => "attach_conflict",
+            TerminalCloseCause::TakenOver => "taken_over",
+            TerminalCloseCause::TerminalGone => "terminal_gone",
+            TerminalCloseCause::PendingDetach => "pending_detach",
+            TerminalCloseCause::DaemonClosed => "daemon_closed",
+            TerminalCloseCause::OutputLagged => "output_lagged",
+            TerminalCloseCause::TransportFailed => "transport_failed",
+        }
+    }
+
+    /// Classifies the daemon's attach-rejection prose. Protocol 20 carries no
+    /// typed error codes, so `Welcome.error` text is the only signal; this is
+    /// the single place in either codebase allowed to match on it.
+    fn from_daemon_attach_error(prose: &str) -> Self {
+        if prose.contains("already has an attached client") {
+            TerminalCloseCause::AttachConflict
+        } else if prose.contains("terminal attach taken over") {
+            TerminalCloseCause::TakenOver
+        } else if prose.contains("terminal attach failed: terminal") {
+            TerminalCloseCause::TerminalGone
+        } else {
+            TerminalCloseCause::DaemonClosed
+        }
+    }
+}
+
+/// A typed close frame for the web client: stable `cause` plus human-readable
+/// `detail` for logs and diagnostics.
+#[derive(Debug, Clone)]
+struct TerminalClose {
+    cause: TerminalCloseCause,
+    detail: String,
+}
+
+impl TerminalClose {
+    fn message(&self) -> String {
+        close_message(self.cause, &self.detail)
+    }
+}
+
+fn close_message(cause: TerminalCloseCause, detail: &str) -> String {
+    format!(
+        r#"{{"type":"closed","cause":{},"detail":{}}}"#,
+        serde_json::to_string(cause.wire_name()).unwrap_or_else(|_| "\"daemon_closed\"".into()),
+        serde_json::to_string(detail).unwrap_or_else(|_| "\"\"".into())
+    )
+}
+
+/// Why a terminal websocket attach attempt failed. Rejections carry a typed
+/// close cause for the browser; transport problems classify as
+/// `transport_failed` at the send site.
+#[derive(Debug)]
+enum TerminalAttachError {
+    Rejected(TerminalClose),
+    Transport(String),
+}
+
+impl fmt::Display for TerminalAttachError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TerminalAttachError::Rejected(close) => {
+                write!(f, "{} ({})", close.detail, close.cause.wire_name())
+            }
+            TerminalAttachError::Transport(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
 async fn handle_terminal_output_deadline(
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     output_coalescer: &mut TerminalOutputCoalescer,
@@ -3646,16 +3744,29 @@ async fn handle_terminal_output_message(
                 }
             }
             let _ = ws_sender
-                .send(Message::Text(close_message(&reason).into()))
+                .send(Message::Text(TerminalClose {
+                    cause: TerminalCloseCause::DaemonClosed,
+                    detail: reason.clone(),
+                }
+                .message()
+                .into()))
                 .await;
             Some(TerminalSessionExit::DaemonClosed(reason))
         }
         Err(tokio::sync::broadcast::error::RecvError::Lagged(frames)) => {
             // Dropped frames would silently corrupt the stateful ANSI stream.
-            // Close the socket without a "closed" frame so the client
-            // reconnects and gets a clean repaint from a fresh attach.
+            // Tell the client why (it reconnects and gets a clean repaint from
+            // a fresh attach), then close without draining further output.
             output_coalescer.record_lagged(frames);
             warn!(frames, "terminal output lagged; closing socket for resync");
+            let _ = ws_sender
+                .send(Message::Text(TerminalClose {
+                    cause: TerminalCloseCause::OutputLagged,
+                    detail: format!("output lagged by {frames} frames"),
+                }
+                .message()
+                .into()))
+                .await;
             Some(TerminalSessionExit::OutputLagged(frames))
         }
         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -3689,7 +3800,7 @@ async fn acquire_terminal_session(
     cols: u16,
     rows: u16,
     takeover: bool,
-) -> Result<SharedTerminalSession, BridgeError> {
+) -> Result<SharedTerminalSession, TerminalAttachError> {
     tokio::task::spawn_blocking(move || {
         // What to do after inspecting the maps under one lock hold.
         enum AttachStep {
@@ -3711,7 +3822,7 @@ async fn acquire_terminal_session(
             // it as a second concurrent client.
             let step = {
                 let mut sessions = state.terminal_sessions.lock().map_err(|_| {
-                    BridgeError::Protocol("terminal session lock poisoned".to_string())
+                    TerminalAttachError::Transport("terminal session lock poisoned".to_string())
                 })?;
                 if let Some(session) = sessions.active.get(&terminal_id) {
                     session.client_count.fetch_add(1, Ordering::AcqRel);
@@ -3772,7 +3883,9 @@ async fn acquire_terminal_session(
                         );
                     }
                     let mut sessions = state.terminal_sessions.lock().map_err(|_| {
-                        BridgeError::Protocol("terminal session lock poisoned".to_string())
+                        TerminalAttachError::Transport(
+                            "terminal session lock poisoned".to_string(),
+                        )
                     })?;
                     if sessions
                         .draining
@@ -3790,8 +3903,9 @@ async fn acquire_terminal_session(
             // stalled daemon cannot wedge every other terminal client. The
             // gate keeps concurrent acquires for this terminal waiting; they
             // join the published session once it opens.
-            let handshake = || -> Result<SharedTerminalSession, BridgeError> {
-                let protocol_version = terminal_attach_protocol(&state.api)?;
+            let handshake = || -> Result<SharedTerminalSession, TerminalAttachError> {
+                let protocol_version = terminal_attach_protocol(&state.api)
+                    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
                 let (output_tx, _) = tokio::sync::broadcast::channel(256);
                 let attach = open_terminal_attach(
                     state.client_socket_path.clone(),
@@ -3820,7 +3934,7 @@ async fn acquire_terminal_session(
             let Ok(mut sessions) = state.terminal_sessions.lock() else {
                 let _ = session.write_tx.send(ClientMessage::Detach);
                 gate.mark_closed();
-                return Err(BridgeError::Protocol(
+                return Err(TerminalAttachError::Transport(
                     "terminal session lock poisoned".to_string(),
                 ));
             };
@@ -3852,9 +3966,11 @@ async fn acquire_terminal_session(
                     terminal_id = %terminal_id,
                     "giving up terminal attach amid sustained detach churn"
                 );
-                return Err(BridgeError::Protocol(
-                    "terminal attach conflicted with a pending detach; retry shortly".to_string(),
-                ));
+                return Err(TerminalAttachError::Rejected(TerminalClose {
+                    cause: TerminalCloseCause::PendingDetach,
+                    detail: "terminal attach conflicted with a pending detach; retry shortly"
+                        .to_string(),
+                }));
             }
             session.client_count.fetch_add(1, Ordering::AcqRel);
             sessions.active.insert(terminal_id.clone(), session.clone());
@@ -3871,7 +3987,7 @@ async fn acquire_terminal_session(
         }
     })
     .await
-    .map_err(|err| BridgeError::Protocol(err.to_string()))?
+    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?
 }
 
 fn release_terminal_session(
@@ -3996,13 +4112,6 @@ fn event_may_close_terminal_session(event: &str) -> bool {
     event.contains("workspace.closed")
         || event.contains("tab.closed")
         || event.contains("pane.closed")
-}
-
-fn close_message(reason: &str) -> String {
-    format!(
-        r#"{{"type":"closed","reason":{}}}"#,
-        serde_json::to_string(reason).unwrap_or_else(|_| "\"closed\"".into())
-    )
 }
 
 fn spawn_agent_activity_watcher(state: BridgeState) {
@@ -4398,8 +4507,9 @@ fn open_terminal_attach(
     takeover: bool,
     protocol_version: u32,
     output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
-) -> Result<TerminalAttach, BridgeError> {
-    let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)?;
+) -> Result<TerminalAttach, TerminalAttachError> {
+    let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)
+        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
     protocol::write_message(
         &mut stream,
         &ClientMessage::Hello {
@@ -4413,17 +4523,26 @@ fn open_terminal_attach(
             launch_mode: ClientLaunchMode::TerminalAttach,
         },
     )
-    .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
 
     let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
-        .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
     match welcome {
         ServerMessage::Welcome { error: None, .. } => {}
         ServerMessage::Welcome {
             error: Some(error), ..
-        } => return Err(BridgeError::Protocol(error)),
+        } => {
+            // The only prose-classification point in the system: the daemon's
+            // protocol carries no typed error codes, so the attach rejection
+            // is classified here once and travels as a typed cause from now
+            // on (see protocol/terminal-close-causes.json).
+            return Err(TerminalAttachError::Rejected(TerminalClose {
+                cause: TerminalCloseCause::from_daemon_attach_error(&error),
+                detail: error,
+            }));
+        }
         other => {
-            return Err(BridgeError::Protocol(format!(
+            return Err(TerminalAttachError::Transport(format!(
                 "expected welcome, got {other:?}"
             )))
         }
@@ -4436,9 +4555,11 @@ fn open_terminal_attach(
             takeover,
         },
     )
-    .map_err(|err| BridgeError::Protocol(err.to_string()))?;
+    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
 
-    let mut read_stream = stream.try_clone()?;
+    let mut read_stream = stream.try_clone().map_err(|err| {
+        TerminalAttachError::Transport(err.to_string())
+    })?;
     let (write_tx, write_rx) = mpsc::channel::<ClientMessage>();
     let queued_input_bytes = Arc::new(AtomicUsize::new(0));
     let writer_queued_input_bytes = queued_input_bytes.clone();
@@ -6825,6 +6946,122 @@ mod tests {
             allowed_origins: Vec::new(),
             public_origins: Vec::new(),
             allowed_connect_sources: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_close_contract_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// The shared contract fixture both the Rust serializer and the
+    /// TypeScript decoder are tested against.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    struct CloseCauseFixture {
+        causes: Vec<FixtureCause>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    struct FixtureCause {
+        cause: String,
+        retry: String,
+        example_daemon_prose: Option<String>,
+    }
+
+    fn fixture() -> CloseCauseFixture {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../protocol/terminal-close-causes.json"
+        );
+        serde_json::from_str(
+            &std::fs::read_to_string(path)
+                .expect("failed to read protocol/terminal-close-causes.json"),
+        )
+        .expect("invalid terminal close cause fixture")
+    }
+
+    fn cause_by_wire_name() -> BTreeMap<&'static str, TerminalCloseCause> {
+        BTreeMap::from([
+            ("attach_conflict", TerminalCloseCause::AttachConflict),
+            ("taken_over", TerminalCloseCause::TakenOver),
+            ("terminal_gone", TerminalCloseCause::TerminalGone),
+            ("pending_detach", TerminalCloseCause::PendingDetach),
+            ("daemon_closed", TerminalCloseCause::DaemonClosed),
+            ("output_lagged", TerminalCloseCause::OutputLagged),
+            ("transport_failed", TerminalCloseCause::TransportFailed),
+        ])
+    }
+
+    #[test]
+    fn fixture_covers_every_cause_the_serializer_can_emit() {
+        let fixture = fixture();
+        let wire_names: Vec<&str> = fixture
+            .causes
+            .iter()
+            .map(|entry| entry.cause.as_str())
+            .collect();
+        for (wire_name, _) in cause_by_wire_name() {
+            assert!(
+                wire_names.contains(&wire_name),
+                "fixture is missing serializer cause {wire_name}"
+            );
+        }
+        assert_eq!(wire_names.len(), cause_by_wire_name().len());
+    }
+
+    #[test]
+    fn classifier_maps_every_fixture_daemon_prose_to_its_cause() {
+        let fixture = fixture();
+        let by_name = cause_by_wire_name();
+        for entry in &fixture.causes {
+            let Some(prose) = &entry.example_daemon_prose else {
+                continue;
+            };
+            let classified = TerminalCloseCause::from_daemon_attach_error(prose);
+            assert_eq!(
+                classified.wire_name(),
+                entry.cause,
+                "daemon prose {prose:?} must classify as {}",
+                entry.cause
+            );
+            let _ = by_name.get(entry.cause.as_str()).unwrap_or_else(|| {
+                panic!("fixture cause {} has no Rust variant", entry.cause)
+            });
+        }
+    }
+
+    #[test]
+    fn classifier_sends_unrecognized_daemon_prose_to_daemon_closed() {
+        assert_eq!(
+            TerminalCloseCause::from_daemon_attach_error(
+                "terminal attach failed: something novel"
+            ),
+            TerminalCloseCause::DaemonClosed
+        );
+    }
+
+    #[test]
+    fn close_message_serializes_typed_cause_with_human_detail() {
+        let message = close_message(TerminalCloseCause::AttachConflict, "busy \"terminal\" ✨");
+        let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid JSON");
+        assert_eq!(parsed["type"], "closed");
+        assert_eq!(parsed["cause"], "attach_conflict");
+        assert_eq!(parsed["detail"], "busy \"terminal\" ✨");
+    }
+
+    #[test]
+    fn close_message_round_trips_every_fixture_cause() {
+        let fixture = fixture();
+        for entry in &fixture.causes {
+            let message = close_message(
+                cause_by_wire_name()[entry.cause.as_str()],
+                &format!("detail for {}", entry.cause),
+            );
+            let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid JSON");
+            assert_eq!(parsed["cause"], entry.cause.as_str());
         }
     }
 }

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "description": "Terminal close causes sent by the bridge on the terminal websocket and decoded by the web client. The Rust serializer (bridge/src/web_bridge.rs) and the TypeScript decoder (web/src/terminalConnectionStatus.ts) must both agree with this file; tests on both sides read it as the contract.",
+  "retry_values": {
+    "attach-conflict": "Bounded fast retries (client keeps a separate counter) before treating the conflict as genuine.",
+    "reconnect": "Normal reconnection with exponential backoff.",
+    "stop": "Do not reconnect; show the closed state and block input."
+  },
+  "causes": [
+    {
+      "cause": "attach_conflict",
+      "origin": "daemon",
+      "retry": "attach-conflict",
+      "example_daemon_prose": "terminal attach failed: terminal term_ab12 already has an attached client"
+    },
+    {
+      "cause": "taken_over",
+      "origin": "daemon",
+      "retry": "stop",
+      "example_daemon_prose": "terminal attach taken over by another client"
+    },
+    {
+      "cause": "terminal_gone",
+      "origin": "daemon",
+      "retry": "stop",
+      "example_daemon_prose": "terminal attach failed: terminal term_ab12 not found"
+    },
+    {
+      "cause": "pending_detach",
+      "origin": "bridge",
+      "retry": "reconnect",
+      "example_daemon_prose": null
+    },
+    {
+      "cause": "daemon_closed",
+      "origin": "bridge",
+      "retry": "reconnect",
+      "example_daemon_prose": null
+    },
+    {
+      "cause": "output_lagged",
+      "origin": "bridge",
+      "retry": "reconnect",
+      "example_daemon_prose": null
+    },
+    {
+      "cause": "transport_failed",
+      "origin": "bridge",
+      "retry": "reconnect",
+      "example_daemon_prose": null
+    }
+  ]
+}
