@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTerminalConnection } from "./terminalConnection";
-import type { TerminalConnectionHooks, TerminalConnectionTimers } from "./terminalConnection";
+import type { TerminalConnectionTimers } from "./terminalConnection";
 import type { TerminalCloseMessage, TerminalConnectionState } from "./terminalConnectionStatus";
 
 class FakeSocket {
@@ -97,8 +97,6 @@ class FakeClock implements TerminalConnectionTimers {
     return this.pending.size;
   }
 }
-
-type Harness = ReturnType<typeof createHarness>;
 
 function createHarness(overrides?: {
   measureSize?: (refresh?: boolean) => { cols: number; rows: number } | null;
