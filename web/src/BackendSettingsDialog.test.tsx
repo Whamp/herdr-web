@@ -5,6 +5,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BackendSettingsDialog } from "./BackendSettingsDialog";
+import type { DisplayPrefs } from "./appPreferences";
 
 const bridge = vi.hoisted(() => ({
   store: {
@@ -74,63 +75,69 @@ describe("BackendSettingsDialog terminal accessibility", () => {
 });
 
 function SettingsHarness({ onChange }: { onChange: (enabled: boolean) => void }) {
-  const [terminalScreenReaderText, setTerminalScreenReaderText] = useState(false);
+  const [prefs, setPrefs] = useState<DisplayPrefs>(() => ({
+    ...settingsProps().preferences,
+    terminalScreenReaderText: false,
+  }));
   return (
     <BackendSettingsDialog
-      {...settingsProps()}
-      terminalScreenReaderText={terminalScreenReaderText}
-      onTerminalScreenReaderText={(enabled) => {
-        onChange(enabled);
-        setTerminalScreenReaderText(enabled);
-      }}
+      showMobileTerminalSettings
+      showMobileKeyboardHideRefit
+      preferences={prefs}
+      onUpdatePrefs={(patch) =>
+        setPrefs((current) => {
+          const resolved = typeof patch === "function" ? patch(current) : patch;
+          if ("terminalScreenReaderText" in resolved) {
+            onChange(resolved.terminalScreenReaderText as boolean);
+          }
+          return { ...current, ...resolved };
+        })
+      }
+      navigationSyncMode="shared"
+      onNavigationSyncMode={vi.fn()}
+      onClose={vi.fn()}
     />
   );
 }
 
-function settingsProps() {
+function settingsProps(): { preferences: DisplayPrefs } {
   return {
-    showMobileTerminalSettings: true,
-    notesEnabled: true,
-    onNotesEnabled: vi.fn(),
-    navigationSyncMode: "shared" as const,
-    onNavigationSyncMode: vi.fn(),
-    agentFeaturesInTabs: true,
-    onAgentFeaturesInTabs: vi.fn(),
-    combineMatchingWorkspaceNames: false,
-    onCombineMatchingWorkspaceNames: vi.fn(),
-    multiHostSpaceSelection: true,
-    onMultiHostSpaceSelection: vi.fn(),
-    terminalFontSizePx: 13,
-    onTerminalFontSizePx: vi.fn(),
-    terminalScreenReaderText: false,
-    onTerminalScreenReaderText: vi.fn(),
-    terminalInputTransport: "json" as const,
-    onTerminalInputTransport: vi.fn(),
-    terminalInputBatchDelayMs: 0,
-    onTerminalInputBatchDelayMs: vi.fn(),
-    terminalOutputCoalesceMs: 16,
-    onTerminalOutputCoalesceMs: vi.fn(),
-    contentInsetTopPx: 0,
-    onContentInsetTopPx: vi.fn(),
-    contentInsetBottomPx: 0,
-    onContentInsetBottomPx: vi.fn(),
-    mobileControlsScalePercent: 100,
-    onMobileControlsScalePercent: vi.fn(),
-    mobileTerminalTapTarget: "command-input" as const,
-    onMobileTerminalTapTarget: vi.fn(),
-    mobileLongPressBehavior: "off" as const,
-    onMobileLongPressBehavior: vi.fn(),
-    mobileTouchSelectionEndpointTimeoutMs: 1500 as const,
-    onMobileTouchSelectionEndpointTimeoutMs: vi.fn(),
-    mobileCommandExpandingInput: true,
-    onMobileCommandExpandingInput: vi.fn(),
-    mobileCommandEnterNewline: false,
-    onMobileCommandEnterNewline: vi.fn(),
-    showMobileKeyboardHideRefit: true,
-    mobileKeyboardHideRefit: true,
-    onMobileKeyboardHideRefit: vi.fn(),
-    onClose: vi.fn(),
-  };
+    preferences: {
+      hostScope: "selected",
+      scope: "space",
+      sidebarView: "agents",
+      agentSort: "attention",
+      agentGroup: "none",
+      combineMatchingWorkspaceNames: false,
+      collapsedSidebarGroups: [],
+      spaceGroup: "none",
+      agentPinnedOnly: false,
+      agentActiveOnly: false,
+      agentFeaturesInTabs: true,
+      multiHostSpaceSelection: true,
+      sidebarWidth: 320,
+      notesPanelWidth: 560,
+      notesListPaneWidth: 240,
+      notesListPaneCollapsed: false,
+      notesEnabled: true,
+      notesPanelOpen: true,
+      sidebarOpen: true,
+      terminalFontSizePx: 13,
+      terminalScreenReaderText: false,
+      terminalInputTransport: "json",
+      terminalInputBatchDelayMs: 0,
+      terminalOutputCoalesceMs: 16,
+      contentInsetTopPx: 0,
+      contentInsetBottomPx: 0,
+      mobileControlsScalePercent: 100,
+      mobileTerminalTapTarget: "command-input",
+      mobileLongPressBehavior: "copy",
+      mobileTouchSelectionEndpointTimeoutMs: 1500,
+      mobileKeyboardHideRefit: true,
+      mobileCommandExpandingInput: true,
+      mobileCommandEnterNewline: false,
+    },
+  }
 }
 
 async function render(node: React.ReactNode) {

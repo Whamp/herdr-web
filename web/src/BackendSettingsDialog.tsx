@@ -47,11 +47,7 @@ import {
 import {
   MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_OPTIONS_MS,
 } from "./mobileTerminalPrefs";
-import type {
-  MobileLongPressBehavior,
-  MobileTerminalTapTarget,
-  MobileTouchSelectionEndpointTimeoutMs,
-} from "./mobileTerminalPrefs";
+
 import type { NavigationSyncMode } from "./navigationPrefs";
 import { trapFocusWithin, useFocusReturn } from "./overlayFocus";
 import { copyTextToClipboard } from "./clipboard";
@@ -61,52 +57,18 @@ import {
   loadReconnectDiagnosticEvents,
 } from "./reconnectDiagnostics";
 import { TERMINAL_INPUT_BATCH_DELAY_OPTIONS_MS } from "./terminalInputTransport";
-import type { TerminalInputTransport } from "./terminalInputTransport";
 import { TERMINAL_OUTPUT_COALESCE_OPTIONS_MS } from "./terminalOutputCoalescing";
+import type { DisplayPrefs } from "./appPreferences";
 
 type Props = {
   showMobileTerminalSettings: boolean;
-  notesEnabled: boolean;
-  onNotesEnabled: (enabled: boolean) => void;
+  showMobileKeyboardHideRefit: boolean;
+  preferences: DisplayPrefs;
+  onUpdatePrefs(
+    patch: Partial<DisplayPrefs> | ((current: DisplayPrefs) => Partial<DisplayPrefs>),
+  ): void;
   navigationSyncMode: NavigationSyncMode;
   onNavigationSyncMode: (mode: NavigationSyncMode) => void;
-  agentFeaturesInTabs: boolean;
-  onAgentFeaturesInTabs: (enabled: boolean) => void;
-  combineMatchingWorkspaceNames: boolean;
-  onCombineMatchingWorkspaceNames: (enabled: boolean) => void;
-  multiHostSpaceSelection: boolean;
-  onMultiHostSpaceSelection: (enabled: boolean) => void;
-  terminalFontSizePx: number;
-  onTerminalFontSizePx: (value: number) => void;
-  terminalScreenReaderText: boolean;
-  onTerminalScreenReaderText: (enabled: boolean) => void;
-  terminalInputTransport: TerminalInputTransport;
-  onTerminalInputTransport: (transport: TerminalInputTransport) => void;
-  terminalInputBatchDelayMs: number;
-  onTerminalInputBatchDelayMs: (delayMs: number) => void;
-  terminalOutputCoalesceMs: number;
-  onTerminalOutputCoalesceMs: (delayMs: number) => void;
-  contentInsetTopPx: number;
-  onContentInsetTopPx: (value: number) => void;
-  contentInsetBottomPx: number;
-  onContentInsetBottomPx: (value: number) => void;
-  mobileControlsScalePercent: number;
-  onMobileControlsScalePercent: (value: number) => void;
-  mobileTerminalTapTarget: MobileTerminalTapTarget;
-  onMobileTerminalTapTarget: (target: MobileTerminalTapTarget) => void;
-  mobileLongPressBehavior: MobileLongPressBehavior;
-  onMobileLongPressBehavior: (behavior: MobileLongPressBehavior) => void;
-  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
-  onMobileTouchSelectionEndpointTimeoutMs: (
-    timeoutMs: MobileTouchSelectionEndpointTimeoutMs,
-  ) => void;
-  mobileCommandExpandingInput: boolean;
-  onMobileCommandExpandingInput: (enabled: boolean) => void;
-  mobileCommandEnterNewline: boolean;
-  onMobileCommandEnterNewline: (enabled: boolean) => void;
-  showMobileKeyboardHideRefit: boolean;
-  mobileKeyboardHideRefit: boolean;
-  onMobileKeyboardHideRefit: (enabled: boolean) => void;
   onClose: () => void;
 };
 
@@ -122,47 +84,34 @@ type SettingsArea = "bridge" | "features" | "display" | "terminal" | "mobile";
 
 export function BackendSettingsDialog({
   showMobileTerminalSettings,
-  notesEnabled,
-  onNotesEnabled,
+  showMobileKeyboardHideRefit,
+  preferences,
+  onUpdatePrefs,
   navigationSyncMode,
   onNavigationSyncMode,
-  agentFeaturesInTabs,
-  onAgentFeaturesInTabs,
-  combineMatchingWorkspaceNames,
-  onCombineMatchingWorkspaceNames,
-  multiHostSpaceSelection,
-  onMultiHostSpaceSelection,
-  terminalFontSizePx,
-  onTerminalFontSizePx,
-  terminalScreenReaderText,
-  onTerminalScreenReaderText,
-  terminalInputTransport,
-  onTerminalInputTransport,
-  terminalInputBatchDelayMs,
-  onTerminalInputBatchDelayMs,
-  terminalOutputCoalesceMs,
-  onTerminalOutputCoalesceMs,
-  contentInsetTopPx,
-  onContentInsetTopPx,
-  contentInsetBottomPx,
-  onContentInsetBottomPx,
-  mobileControlsScalePercent,
-  onMobileControlsScalePercent,
-  mobileTerminalTapTarget,
-  onMobileTerminalTapTarget,
-  mobileLongPressBehavior,
-  onMobileLongPressBehavior,
-  mobileTouchSelectionEndpointTimeoutMs,
-  onMobileTouchSelectionEndpointTimeoutMs,
-  mobileCommandExpandingInput,
-  onMobileCommandExpandingInput,
-  mobileCommandEnterNewline,
-  onMobileCommandEnterNewline,
-  showMobileKeyboardHideRefit,
-  mobileKeyboardHideRefit,
-  onMobileKeyboardHideRefit,
   onClose,
 }: Props) {
+  const {
+    notesEnabled,
+    agentFeaturesInTabs,
+    combineMatchingWorkspaceNames,
+    multiHostSpaceSelection,
+    terminalFontSizePx,
+    terminalScreenReaderText,
+    terminalInputTransport,
+    terminalInputBatchDelayMs,
+    terminalOutputCoalesceMs,
+    contentInsetTopPx,
+    contentInsetBottomPx,
+    mobileControlsScalePercent,
+    mobileTerminalTapTarget,
+    mobileLongPressBehavior,
+    mobileTouchSelectionEndpointTimeoutMs,
+    mobileCommandExpandingInput,
+    mobileCommandEnterNewline,
+    mobileKeyboardHideRefit,
+  } = preferences;
+
   const bridge = useBridge();
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -567,7 +516,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!notesEnabled}
                       aria-pressed={!notesEnabled}
-                      onClick={() => onNotesEnabled(false)}
+                      onClick={() => onUpdatePrefs({ notesEnabled: false })}
                     >
                       Off
                     </button>
@@ -575,7 +524,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={notesEnabled}
                       aria-pressed={notesEnabled}
-                      onClick={() => onNotesEnabled(true)}
+                      onClick={() => onUpdatePrefs({ notesEnabled: true })}
                     >
                       On
                     </button>
@@ -625,7 +574,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!agentFeaturesInTabs}
                       aria-pressed={!agentFeaturesInTabs}
-                      onClick={() => onAgentFeaturesInTabs(false)}
+                      onClick={() => onUpdatePrefs({ agentFeaturesInTabs: false })}
                     >
                       Off
                     </button>
@@ -633,7 +582,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={agentFeaturesInTabs}
                       aria-pressed={agentFeaturesInTabs}
-                      onClick={() => onAgentFeaturesInTabs(true)}
+                      onClick={() => onUpdatePrefs({ agentFeaturesInTabs: true })}
                     >
                       On
                     </button>
@@ -652,7 +601,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!combineMatchingWorkspaceNames}
                       aria-pressed={!combineMatchingWorkspaceNames}
-                      onClick={() => onCombineMatchingWorkspaceNames(false)}
+                      onClick={() => onUpdatePrefs({ combineMatchingWorkspaceNames: false })}
                     >
                       Off
                     </button>
@@ -660,7 +609,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={combineMatchingWorkspaceNames}
                       aria-pressed={combineMatchingWorkspaceNames}
-                      onClick={() => onCombineMatchingWorkspaceNames(true)}
+                      onClick={() => onUpdatePrefs({ combineMatchingWorkspaceNames: true })}
                     >
                       On
                     </button>
@@ -677,7 +626,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!multiHostSpaceSelection}
                       aria-pressed={!multiHostSpaceSelection}
-                      onClick={() => onMultiHostSpaceSelection(false)}
+                      onClick={() => onUpdatePrefs({ multiHostSpaceSelection: false })}
                     >
                       Off
                     </button>
@@ -685,7 +634,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={multiHostSpaceSelection}
                       aria-pressed={multiHostSpaceSelection}
-                      onClick={() => onMultiHostSpaceSelection(true)}
+                      onClick={() => onUpdatePrefs({ multiHostSpaceSelection: true })}
                     >
                       On
                     </button>
@@ -701,7 +650,7 @@ export function BackendSettingsDialog({
                     max={MAX_CONTENT_INSET_TOP_PX}
                     unit="px"
                     defaultValue={DEFAULT_CONTENT_INSET_TOP_PX}
-                    onChange={(value) => onContentInsetTopPx(parseContentInsetTopPx(value))}
+                    onChange={(value) => onUpdatePrefs({ contentInsetTopPx: parseContentInsetTopPx(value) })}
                   />
                 </div>
                 <div className="settings-row">
@@ -713,7 +662,7 @@ export function BackendSettingsDialog({
                     max={MAX_CONTENT_INSET_BOTTOM_PX}
                     unit="px"
                     defaultValue={DEFAULT_CONTENT_INSET_BOTTOM_PX}
-                    onChange={(value) => onContentInsetBottomPx(parseContentInsetBottomPx(value))}
+                    onChange={(value) => onUpdatePrefs({ contentInsetBottomPx: parseContentInsetBottomPx(value) })}
                   />
                 </div>
                 {showMobileTerminalSettings ? (
@@ -728,7 +677,7 @@ export function BackendSettingsDialog({
                       unit="%"
                       defaultValue={DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT}
                       onChange={(value) =>
-                        onMobileControlsScalePercent(parseMobileControlsScalePercent(value))
+                        onUpdatePrefs({ mobileControlsScalePercent: parseMobileControlsScalePercent(value) })
                       }
                     />
                   </div>
@@ -748,7 +697,7 @@ export function BackendSettingsDialog({
                     max={MAX_TERMINAL_FONT_SIZE_PX}
                     unit="px"
                     defaultValue={DEFAULT_TERMINAL_FONT_SIZE_PX}
-                    onChange={(value) => onTerminalFontSizePx(parseTerminalFontSizePx(value))}
+                    onChange={(value) => onUpdatePrefs({ terminalFontSizePx: parseTerminalFontSizePx(value) })}
                   />
                 </div>
                 <div className="settings-label">Accessibility</div>
@@ -765,7 +714,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!terminalScreenReaderText}
                       aria-pressed={!terminalScreenReaderText}
-                      onClick={() => onTerminalScreenReaderText(false)}
+                      onClick={() => onUpdatePrefs({ terminalScreenReaderText: false })}
                     >
                       Off
                     </button>
@@ -773,7 +722,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={terminalScreenReaderText}
                       aria-pressed={terminalScreenReaderText}
-                      onClick={() => onTerminalScreenReaderText(true)}
+                      onClick={() => onUpdatePrefs({ terminalScreenReaderText: true })}
                     >
                       On
                     </button>
@@ -787,7 +736,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={terminalInputTransport === "json"}
                       aria-pressed={terminalInputTransport === "json"}
-                      onClick={() => onTerminalInputTransport("json")}
+                      onClick={() => onUpdatePrefs({ terminalInputTransport: "json" })}
                     >
                       JSON
                     </button>
@@ -795,7 +744,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={terminalInputTransport === "binary"}
                       aria-pressed={terminalInputTransport === "binary"}
-                      onClick={() => onTerminalInputTransport("binary")}
+                      onClick={() => onUpdatePrefs({ terminalInputTransport: "binary" })}
                     >
                       Binary
                     </button>
@@ -810,7 +759,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={terminalInputBatchDelayMs === delayMs}
                         aria-pressed={terminalInputBatchDelayMs === delayMs}
-                        onClick={() => onTerminalInputBatchDelayMs(delayMs)}
+                        onClick={() => onUpdatePrefs({ terminalInputBatchDelayMs: delayMs })}
                       >
                         {delayMs === 0 ? "Off" : delayMs}
                       </button>
@@ -826,7 +775,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={terminalOutputCoalesceMs === delayMs}
                         aria-pressed={terminalOutputCoalesceMs === delayMs}
-                        onClick={() => onTerminalOutputCoalesceMs(delayMs)}
+                        onClick={() => onUpdatePrefs({ terminalOutputCoalesceMs: delayMs })}
                       >
                         {delayMs === 0 ? "Off" : delayMs}
                       </button>
@@ -846,7 +795,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileTerminalTapTarget === "command-input"}
                       aria-pressed={mobileTerminalTapTarget === "command-input"}
-                      onClick={() => onMobileTerminalTapTarget("command-input")}
+                      onClick={() => onUpdatePrefs({ mobileTerminalTapTarget: "command-input" })}
                     >
                       Text input
                     </button>
@@ -854,7 +803,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileTerminalTapTarget === "terminal"}
                       aria-pressed={mobileTerminalTapTarget === "terminal"}
-                      onClick={() => onMobileTerminalTapTarget("terminal")}
+                      onClick={() => onUpdatePrefs({ mobileTerminalTapTarget: "terminal" })}
                     >
                       Terminal
                     </button>
@@ -867,7 +816,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileLongPressBehavior === "off"}
                       aria-pressed={mobileLongPressBehavior === "off"}
-                      onClick={() => onMobileLongPressBehavior("off")}
+                      onClick={() => onUpdatePrefs({ mobileLongPressBehavior: "off" })}
                     >
                       Off
                     </button>
@@ -875,7 +824,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileLongPressBehavior === "copy"}
                       aria-pressed={mobileLongPressBehavior === "copy"}
-                      onClick={() => onMobileLongPressBehavior("copy")}
+                      onClick={() => onUpdatePrefs({ mobileLongPressBehavior: "copy" })}
                     >
                       Copy
                     </button>
@@ -883,7 +832,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileLongPressBehavior === "loupe"}
                       aria-pressed={mobileLongPressBehavior === "loupe"}
-                      onClick={() => onMobileLongPressBehavior("loupe")}
+                      onClick={() => onUpdatePrefs({ mobileLongPressBehavior: "loupe" })}
                     >
                       Loupe
                     </button>
@@ -903,7 +852,7 @@ export function BackendSettingsDialog({
                           type="button"
                           data-on={mobileTouchSelectionEndpointTimeoutMs === timeoutMs}
                           aria-pressed={mobileTouchSelectionEndpointTimeoutMs === timeoutMs}
-                          onClick={() => onMobileTouchSelectionEndpointTimeoutMs(timeoutMs)}
+                          onClick={() => onUpdatePrefs({ mobileTouchSelectionEndpointTimeoutMs: timeoutMs })}
                         >
                           {timeoutMs}
                         </button>
@@ -922,7 +871,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={!mobileCommandExpandingInput}
                       aria-pressed={!mobileCommandExpandingInput}
-                      onClick={() => onMobileCommandExpandingInput(false)}
+                      onClick={() => onUpdatePrefs({ mobileCommandExpandingInput: false })}
                     >
                       Off
                     </button>
@@ -930,7 +879,7 @@ export function BackendSettingsDialog({
                       type="button"
                       data-on={mobileCommandExpandingInput}
                       aria-pressed={mobileCommandExpandingInput}
-                      onClick={() => onMobileCommandExpandingInput(true)}
+                      onClick={() => onUpdatePrefs({ mobileCommandExpandingInput: true })}
                     >
                       On
                     </button>
@@ -948,7 +897,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={!mobileCommandEnterNewline}
                         aria-pressed={!mobileCommandEnterNewline}
-                        onClick={() => onMobileCommandEnterNewline(false)}
+                        onClick={() => onUpdatePrefs({ mobileCommandEnterNewline: false })}
                       >
                         Off
                       </button>
@@ -956,7 +905,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={mobileCommandEnterNewline}
                         aria-pressed={mobileCommandEnterNewline}
-                        onClick={() => onMobileCommandEnterNewline(true)}
+                        onClick={() => onUpdatePrefs({ mobileCommandEnterNewline: true })}
                       >
                         On
                       </button>
@@ -975,7 +924,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={!mobileKeyboardHideRefit}
                         aria-pressed={!mobileKeyboardHideRefit}
-                        onClick={() => onMobileKeyboardHideRefit(false)}
+                        onClick={() => onUpdatePrefs({ mobileKeyboardHideRefit: false })}
                       >
                         Off
                       </button>
@@ -983,7 +932,7 @@ export function BackendSettingsDialog({
                         type="button"
                         data-on={mobileKeyboardHideRefit}
                         aria-pressed={mobileKeyboardHideRefit}
-                        onClick={() => onMobileKeyboardHideRefit(true)}
+                        onClick={() => onUpdatePrefs({ mobileKeyboardHideRefit: true })}
                       >
                         On
                       </button>

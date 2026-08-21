@@ -16,8 +16,6 @@ import {
   mergeCreatedPaneNoteList,
   mergePendingPaneNotesIntoList,
   noteDraftStorageKey,
-  parseCombineMatchingWorkspaceNames,
-  parseCollapsedSidebarGroups,
   isInFlightNoteSaveVisible,
   launcherEmptyMessage,
   menuItems,
@@ -40,6 +38,10 @@ import {
   stableBridgeRefreshOffsetMs,
   updateCollapsedSidebarGroups,
 } from "./App";
+import {
+  parseCombineMatchingWorkspaceNames,
+  parseCollapsedSidebarGroups,
+} from "./appPreferences";
 import type { BridgeConnectionRef, BridgeConnectionView } from "./App";
 import type { BridgeRuntime } from "./bridge";
 import { agentActivityKey } from "./agentActivity";

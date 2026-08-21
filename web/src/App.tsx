@@ -70,43 +70,29 @@ import type { BridgeId, BridgeRuntime } from "./bridge";
 import { createCommands, createdPaneId } from "./commands";
 import type { LaunchSpec, PaneFocusDirection, SplitDirection } from "./commands";
 import { isConnectionResultCurrent } from "./connectionState";
-import {
-  DEFAULT_CONTENT_INSET_BOTTOM_PX,
-  DEFAULT_CONTENT_INSET_TOP_PX,
-  DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
-  DEFAULT_AGENT_FEATURES_IN_TABS,
-  DEFAULT_MULTI_HOST_SPACE_SELECTION,
-  parseContentInsetBottomPx,
-  parseContentInsetTopPx,
-  parseMobileControlsScalePercent,
-  parseAgentFeaturesInTabs,
-  parseMultiHostSpaceSelection,
-} from "./displayPrefs";
+
+import type {
+  AgentGroup,
+  AgentSort,
+  HostScope,
+  Scope,
+  SidebarView,
+  SpaceGroup,
+} from "./appPreferences";
+import { MAX_COLLAPSED_SIDEBAR_GROUPS } from "./appPreferences";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
 import { fetchLauncherPresets, supportsLauncherPresets } from "./launcherPresets";
 import type { LauncherPresetsResponse } from "./launcherPresets";
 import { fetchWithTimeout } from "./fetchWithTimeout";
-import {
-  DEFAULT_MOBILE_COMMAND_ENTER_NEWLINE,
-  DEFAULT_MOBILE_COMMAND_EXPANDING_INPUT,
-  DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
-  DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
-  DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
-  DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
-  parseMobileCommandEnterNewline,
-  parseMobileCommandExpandingInput,
-  parseMobileKeyboardHideRefit,
-  parseMobileLongPressBehavior,
-  parseMobileTouchSelectionEndpointTimeoutMs,
-  parseMobileTerminalTapTarget,
-} from "./mobileTerminalPrefs";
+
 import type {
   MobileLongPressBehavior,
   MobileTerminalTapTarget,
   MobileTouchSelectionEndpointTimeoutMs,
 } from "./mobileTerminalPrefs";
+import type { TerminalInputTransport } from "./terminalInputTransport";
 import { addNativeBackHandler, addNativeKeyboardHideHandler, isNativeAndroid } from "./native";
 import {
   archiveNote,
@@ -140,27 +126,25 @@ import {
   trapFocusWithin,
   useFocusReturn,
 } from "./overlayFocus";
+import {
+  clampNotesListPaneWidth,
+  clampNotesPanelWidth,
+  clampSidebarWidth,
+  MAX_SIDEBAR_WIDTH,
+  MAX_NOTES_LIST_PANE_WIDTH,
+  MAX_NOTES_PANEL_WIDTH,
+  MIN_NOTES_LIST_PANE_WIDTH,
+  MIN_NOTES_PANEL_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  useAppPreferences,
+} from "./appPreferences";
 import { createSnapshotRefreshController } from "./refreshCoordinator";
 import { TerminalView } from "./TerminalView";
-import {
-  DEFAULT_TERMINAL_SCREEN_READER_TEXT,
-  parseTerminalScreenReaderText,
-} from "./terminalAccessibleText";
-import {
-  DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
-  DEFAULT_TERMINAL_INPUT_TRANSPORT,
-  parseTerminalInputBatchDelayMs,
-  parseTerminalInputTransport,
-} from "./terminalInputTransport";
-import type { TerminalInputTransport } from "./terminalInputTransport";
-import {
-  DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
-  parseTerminalOutputCoalesceMs,
-} from "./terminalOutputCoalescing";
-import {
-  DEFAULT_TERMINAL_FONT_SIZE_PX,
-  parseTerminalFontSizePx,
-} from "./terminalPrefs";
+
+
+
+
+
 import {
   aggregateStatus,
   basename,
@@ -201,12 +185,6 @@ import type { WorkspaceReorderDirection } from "./workspaceReorder";
 const NoteMarkdownPreview = lazy(() => import("./NoteMarkdownPreview"));
 
 type LoadState = "loading" | "ready" | "error";
-type Scope = "space" | "all";
-type HostScope = "selected" | "all";
-type SidebarView = "agents" | "tabs" | "notes";
-type AgentSort = "attention" | "status" | "workspace" | "lastStatusChange";
-type AgentGroup = "none" | "host" | "workspace" | "hostWorkspace";
-type SpaceGroup = "none" | "host";
 type MenuKind = "space" | "tab" | "pane";
 type ScopedPaneRef = {
   bridgeId: BridgeId;
@@ -391,41 +369,6 @@ type DialogState = {
   label: string;
   clearable?: boolean;
 };
-type DisplayPrefs = {
-  hostScope: HostScope;
-  scope: Scope;
-  sidebarView: SidebarView;
-  agentSort: AgentSort;
-  agentGroup: AgentGroup;
-  combineMatchingWorkspaceNames: boolean;
-  collapsedSidebarGroups: string[];
-  spaceGroup: SpaceGroup;
-  agentPinnedOnly: boolean;
-  agentActiveOnly: boolean;
-  agentFeaturesInTabs: boolean;
-  multiHostSpaceSelection: boolean;
-  sidebarWidth: number;
-  notesPanelWidth: number;
-  notesListPaneWidth: number;
-  notesListPaneCollapsed: boolean;
-  notesEnabled: boolean;
-  notesPanelOpen: boolean;
-  sidebarOpen: boolean;
-  terminalFontSizePx: number;
-  terminalScreenReaderText: boolean;
-  terminalInputTransport: TerminalInputTransport;
-  terminalInputBatchDelayMs: number;
-  terminalOutputCoalesceMs: number;
-  contentInsetTopPx: number;
-  contentInsetBottomPx: number;
-  mobileControlsScalePercent: number;
-  mobileTerminalTapTarget: MobileTerminalTapTarget;
-  mobileLongPressBehavior: MobileLongPressBehavior;
-  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
-  mobileKeyboardHideRefit: boolean;
-  mobileCommandExpandingInput: boolean;
-  mobileCommandEnterNewline: boolean;
-};
 type SharedNavigationPrefs = {
   selectedBridgeId: BridgeId | null;
   selectedPane: ScopedPaneRef | null;
@@ -439,86 +382,10 @@ type LegacyDisplaySelectionPrefs = {
 };
 const COMPACT_LAYOUT_QUERY = "(max-width: 820px)";
 const TOUCH_INPUT_QUERY = "(hover: none) and (pointer: coarse)";
-const DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v2";
 const SHARED_NAVIGATION_PREFS_KEY = "herdr.mobileWeb.sharedNavigation.v1";
 const LEGACY_DISPLAY_PREFS_KEY = "herdr.mobileWeb.displayPrefs.v1";
 const MOBILE_SIDEBAR_HISTORY_KEY = "herdrWebMobileSidebar";
 const MOBILE_DETAIL_HISTORY_KEY = "herdrWebMobileDetail";
-const DEFAULT_SIDEBAR_WIDTH = 320;
-const MIN_SIDEBAR_WIDTH = 260;
-const MAX_SIDEBAR_WIDTH = 560;
-const DEFAULT_NOTES_PANEL_WIDTH = 560;
-const MIN_NOTES_PANEL_WIDTH = 420;
-const MAX_NOTES_PANEL_WIDTH = 840;
-const DEFAULT_NOTES_LIST_PANE_WIDTH = 240;
-const MIN_NOTES_LIST_PANE_WIDTH = 200;
-const MAX_NOTES_LIST_PANE_WIDTH = 420;
-
-function readDisplayPrefs(): DisplayPrefs {
-  const fallback: DisplayPrefs = {
-    hostScope: "selected",
-    scope: "space",
-    sidebarView: "agents",
-    agentSort: "attention",
-    agentGroup: "none",
-    combineMatchingWorkspaceNames: false,
-    collapsedSidebarGroups: [],
-    spaceGroup: "none",
-    agentPinnedOnly: false,
-    agentActiveOnly: false,
-    agentFeaturesInTabs: DEFAULT_AGENT_FEATURES_IN_TABS,
-    multiHostSpaceSelection: DEFAULT_MULTI_HOST_SPACE_SELECTION,
-    sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-    notesPanelWidth: DEFAULT_NOTES_PANEL_WIDTH,
-    notesListPaneWidth: DEFAULT_NOTES_LIST_PANE_WIDTH,
-    notesListPaneCollapsed: true,
-    notesEnabled: true,
-    notesPanelOpen: false,
-    sidebarOpen: true,
-    terminalFontSizePx: DEFAULT_TERMINAL_FONT_SIZE_PX,
-    terminalScreenReaderText: DEFAULT_TERMINAL_SCREEN_READER_TEXT,
-    terminalInputTransport: DEFAULT_TERMINAL_INPUT_TRANSPORT,
-    terminalInputBatchDelayMs: DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
-    terminalOutputCoalesceMs: DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
-    contentInsetTopPx: DEFAULT_CONTENT_INSET_TOP_PX,
-    contentInsetBottomPx: DEFAULT_CONTENT_INSET_BOTTOM_PX,
-    mobileControlsScalePercent: DEFAULT_MOBILE_CONTROLS_SCALE_PERCENT,
-    mobileTerminalTapTarget: DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
-    mobileLongPressBehavior: DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
-    mobileTouchSelectionEndpointTimeoutMs: DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
-    mobileKeyboardHideRefit: DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
-    mobileCommandExpandingInput: DEFAULT_MOBILE_COMMAND_EXPANDING_INPUT,
-    mobileCommandEnterNewline: DEFAULT_MOBILE_COMMAND_ENTER_NEWLINE,
-  };
-  try {
-    const raw = window.localStorage.getItem(DISPLAY_PREFS_KEY);
-    if (!raw) {
-      return readLegacyDisplayPrefs(fallback);
-    }
-    const parsed = JSON.parse(raw) as Partial<DisplayPrefs> & {
-      mobileTouchSelection?: unknown;
-    };
-    return parseDisplayPrefsValue(parsed, fallback);
-  } catch {
-    return fallback;
-  }
-}
-
-async function loadDisplayPrefs(): Promise<DisplayPrefs> {
-  const localPrefs = readDisplayPrefs();
-  if (!isNativeApp()) {
-    return localPrefs;
-  }
-  try {
-    const { value } = await Preferences.get({ key: DISPLAY_PREFS_KEY });
-    if (value) {
-      return parseDisplayPrefsValue(JSON.parse(value) as Partial<DisplayPrefs>, localPrefs);
-    }
-  } catch {
-    // Fall back to browser storage backup.
-  }
-  return localPrefs;
-}
 
 function emptySharedNavigationPrefs(): SharedNavigationPrefs {
   return {
@@ -588,119 +455,6 @@ function persistNavigationSyncMode(mode: NavigationSyncMode) {
   }
 }
 
-function parseDisplayPrefsValue(
-  parsed: Partial<DisplayPrefs> & { mobileTouchSelection?: unknown },
-  fallback: DisplayPrefs,
-): DisplayPrefs {
-  const sidebarWidth =
-    typeof parsed.sidebarWidth === "number"
-      ? clampSidebarWidth(parsed.sidebarWidth)
-      : fallback.sidebarWidth;
-  const sidebarOpen =
-    typeof parsed.sidebarOpen === "boolean" ? parsed.sidebarOpen : fallback.sidebarOpen;
-  const notesPanelWidth =
-    typeof parsed.notesPanelWidth === "number"
-      ? clampNotesPanelWidth(parsed.notesPanelWidth, sidebarWidth, sidebarOpen)
-      : fallback.notesPanelWidth;
-  return {
-    hostScope:
-      parsed.hostScope === "selected" || parsed.hostScope === "all"
-        ? parsed.hostScope
-        : fallback.hostScope,
-    scope: parsed.scope === "all" || parsed.scope === "space" ? parsed.scope : fallback.scope,
-    sidebarView:
-      parsed.sidebarView === "agents" ||
-      parsed.sidebarView === "tabs" ||
-      parsed.sidebarView === "notes"
-        ? parsed.sidebarView
-        : fallback.sidebarView,
-    agentSort:
-      parsed.agentSort === "attention" ||
-      parsed.agentSort === "status" ||
-      parsed.agentSort === "workspace" ||
-      parsed.agentSort === "lastStatusChange"
-        ? parsed.agentSort
-        : fallback.agentSort,
-    agentGroup:
-      parsed.agentGroup === "none" ||
-      parsed.agentGroup === "host" ||
-      parsed.agentGroup === "workspace" ||
-      parsed.agentGroup === "hostWorkspace"
-        ? parsed.agentGroup
-        : fallback.agentGroup,
-    combineMatchingWorkspaceNames: parseCombineMatchingWorkspaceNames(
-      parsed.combineMatchingWorkspaceNames,
-      fallback.combineMatchingWorkspaceNames,
-    ),
-    collapsedSidebarGroups: parseCollapsedSidebarGroups(
-      parsed.collapsedSidebarGroups,
-      fallback.collapsedSidebarGroups,
-    ),
-    spaceGroup:
-      parsed.spaceGroup === "none" || parsed.spaceGroup === "host"
-        ? parsed.spaceGroup
-        : fallback.spaceGroup,
-    agentPinnedOnly:
-      typeof parsed.agentPinnedOnly === "boolean"
-        ? parsed.agentPinnedOnly
-        : fallback.agentPinnedOnly,
-    agentActiveOnly:
-      typeof parsed.agentActiveOnly === "boolean"
-        ? parsed.agentActiveOnly
-        : fallback.agentActiveOnly,
-    agentFeaturesInTabs: parseAgentFeaturesInTabs(
-      parsed.agentFeaturesInTabs,
-      fallback.agentFeaturesInTabs,
-    ),
-    multiHostSpaceSelection: parseMultiHostSpaceSelection(
-      parsed.multiHostSpaceSelection,
-      fallback.multiHostSpaceSelection,
-    ),
-    sidebarWidth,
-    notesPanelWidth,
-    notesListPaneWidth:
-      typeof parsed.notesListPaneWidth === "number"
-        ? clampNotesListPaneWidth(parsed.notesListPaneWidth, notesPanelWidth)
-        : fallback.notesListPaneWidth,
-    notesListPaneCollapsed:
-      typeof parsed.notesListPaneCollapsed === "boolean"
-        ? parsed.notesListPaneCollapsed
-        : fallback.notesListPaneCollapsed,
-    notesEnabled:
-      typeof parsed.notesEnabled === "boolean" ? parsed.notesEnabled : fallback.notesEnabled,
-    notesPanelOpen:
-      typeof parsed.notesPanelOpen === "boolean" ? parsed.notesPanelOpen : fallback.notesPanelOpen,
-    sidebarOpen,
-    terminalFontSizePx: parseTerminalFontSizePx(parsed.terminalFontSizePx),
-    terminalScreenReaderText: parseTerminalScreenReaderText(
-      parsed.terminalScreenReaderText,
-      fallback.terminalScreenReaderText,
-    ),
-    terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
-    terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
-    terminalOutputCoalesceMs: parseTerminalOutputCoalesceMs(
-      parsed.terminalOutputCoalesceMs,
-    ),
-    contentInsetTopPx: parseContentInsetTopPx(parsed.contentInsetTopPx),
-    contentInsetBottomPx: parseContentInsetBottomPx(parsed.contentInsetBottomPx),
-    mobileControlsScalePercent: parseMobileControlsScalePercent(
-      parsed.mobileControlsScalePercent,
-    ),
-    mobileTerminalTapTarget: parseMobileTerminalTapTarget(parsed.mobileTerminalTapTarget),
-    mobileLongPressBehavior: parseStoredMobileLongPressBehavior(parsed),
-    mobileTouchSelectionEndpointTimeoutMs: parseMobileTouchSelectionEndpointTimeoutMs(
-      parsed.mobileTouchSelectionEndpointTimeoutMs,
-    ),
-    mobileKeyboardHideRefit: parseMobileKeyboardHideRefit(parsed.mobileKeyboardHideRefit),
-    mobileCommandExpandingInput: parseMobileCommandExpandingInput(
-      parsed.mobileCommandExpandingInput,
-    ),
-    mobileCommandEnterNewline: parseMobileCommandEnterNewline(
-      parsed.mobileCommandEnterNewline,
-    ),
-  };
-}
-
 function readLegacyDisplaySelectionPrefs(): LegacyDisplaySelectionPrefs {
   try {
     const raw = window.localStorage.getItem(LEGACY_DISPLAY_PREFS_KEY);
@@ -714,23 +468,6 @@ function readLegacyDisplaySelectionPrefs(): LegacyDisplaySelectionPrefs {
     };
   } catch {
     return { activeSpaceId: null, selectedPaneId: null };
-  }
-}
-
-function readLegacyDisplayPrefs(fallback: DisplayPrefs): DisplayPrefs {
-  try {
-    const raw = window.localStorage.getItem(LEGACY_DISPLAY_PREFS_KEY);
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = JSON.parse(raw) as {
-      activeSpaceId?: unknown;
-      selectedPaneId?: unknown;
-      mobileTouchSelection?: unknown;
-    } & Partial<DisplayPrefs>;
-    return parseDisplayPrefsValue(parsed, fallback);
-  } catch {
-    return fallback;
   }
 }
 
@@ -762,55 +499,6 @@ function parseStringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(entries);
 }
 
-function clampSidebarWidth(width: number) {
-  const viewportMax =
-    typeof window === "undefined"
-      ? MAX_SIDEBAR_WIDTH
-      : Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 360));
-  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR_WIDTH), viewportMax));
-}
-
-function clampNotesPanelWidth(
-  width: number,
-  sidebarWidth = DEFAULT_SIDEBAR_WIDTH,
-  sidebarOpen = true,
-) {
-  const reservedWidth = sidebarOpen ? sidebarWidth : 0;
-  const viewportMax =
-    typeof window === "undefined"
-      ? MAX_NOTES_PANEL_WIDTH
-      : Math.max(
-          MIN_NOTES_PANEL_WIDTH,
-          Math.min(MAX_NOTES_PANEL_WIDTH, window.innerWidth - reservedWidth - 320),
-        );
-  return Math.round(Math.min(Math.max(width, MIN_NOTES_PANEL_WIDTH), viewportMax));
-}
-
-function clampNotesListPaneWidth(width: number, notesPanelWidth = DEFAULT_NOTES_PANEL_WIDTH) {
-  const maxWidth = Math.max(
-    MIN_NOTES_LIST_PANE_WIDTH,
-    Math.min(MAX_NOTES_LIST_PANE_WIDTH, notesPanelWidth - 260),
-  );
-  return Math.round(Math.min(Math.max(width, MIN_NOTES_LIST_PANE_WIDTH), maxWidth));
-}
-
-async function writeDisplayPrefs(prefs: DisplayPrefs) {
-  const value = JSON.stringify(prefs);
-  if (isNativeApp()) {
-    try {
-      await Preferences.set({ key: DISPLAY_PREFS_KEY, value });
-    } catch {
-      // Browser storage below remains a best-effort backup.
-    }
-  }
-  try {
-    window.localStorage.setItem(DISPLAY_PREFS_KEY, value);
-    window.localStorage.removeItem(LEGACY_DISPLAY_PREFS_KEY);
-  } catch {
-    // Storage can be unavailable in private or locked-down browser contexts.
-  }
-}
-
 async function writeSharedNavigationPrefs(prefs: SharedNavigationPrefs) {
   const value = JSON.stringify(prefs);
   if (isNativeApp()) {
@@ -831,39 +519,7 @@ function isNativeApp() {
   return Capacitor.isNativePlatform();
 }
 
-function parseStoredMobileLongPressBehavior(
-  parsed: Partial<DisplayPrefs> & { mobileTouchSelection?: unknown },
-): MobileLongPressBehavior {
-  if (parsed.mobileLongPressBehavior !== undefined) {
-    return parseMobileLongPressBehavior(parsed.mobileLongPressBehavior);
-  }
-  if (parsed.mobileTouchSelection === true) {
-    return "copy";
-  }
-  if (parsed.mobileTouchSelection === false) {
-    return "off";
-  }
-  return DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR;
-}
-
-export function parseCombineMatchingWorkspaceNames(value: unknown, fallback = false) {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-const MAX_COLLAPSED_SIDEBAR_GROUPS = 4096;
-
-export function parseCollapsedSidebarGroups(value: unknown, fallback: string[] = []) {
-  if (!Array.isArray(value)) {
-    return fallback;
-  }
-  return [
-    ...new Set(
-      value.filter((item): item is string => typeof item === "string" && item.length > 0),
-    ),
-  ].slice(-MAX_COLLAPSED_SIDEBAR_GROUPS);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
@@ -928,12 +584,10 @@ function usePointerDragResize(
 
 export function App() {
   const bridge = useBridge();
-  const initialPrefs = useMemo(readDisplayPrefs, []);
   const initialSharedNavigationPrefs = useMemo(readSharedNavigationPrefs, []);
   const initialNavigationSyncMode = useMemo(readNavigationSyncMode, []);
   const legacySelectionPrefs = useMemo(readLegacyDisplaySelectionPrefs, []);
-  const [displayPrefsLoaded, setDisplayPrefsLoaded] = useState(() => !isNativeApp());
-  const [connectionStates, setConnectionStates] = useState<Record<string, BridgeConnectionState>>({});
+    const [connectionStates, setConnectionStates] = useState<Record<string, BridgeConnectionState>>({});
   const [agentActivityStates, setAgentActivityStates] =
     useState<Record<string, BridgeAgentActivityState>>({});
   const [agentPinsStates, setAgentPinsStates] = useState<Record<string, BridgeAgentPinsState>>({});
@@ -949,13 +603,67 @@ export function App() {
     initialNavigationSyncMode,
   );
   const navigationIsShared = sharesNavigation(navigationSyncMode);
+  // Shared navigation state hydrates asynchronously on native; browser
+  // localStorage is already reflected by the synchronous initial values.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([loadSharedNavigationPrefs(), loadNavigationSyncMode()]).then(
+      ([sharedNavigationPrefs, loadedNavigationSyncMode]) => {
+        if (cancelled) {
+          return;
+        }
+        setNavigationSyncMode(loadedNavigationSyncMode);
+        setSelectedBridgeId(sharedNavigationPrefs.selectedBridgeId);
+        setSelectedPaneRefState(sharedNavigationPrefs.selectedPane);
+        setActiveWorkspaceRefState(sharedNavigationPrefs.activeWorkspace);
+        setSelectedPanesByBridgeId(sharedNavigationPrefs.selectedPanesByBridgeId);
+        setActiveWorkspacesByBridgeId(sharedNavigationPrefs.activeWorkspacesByBridgeId);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [selectedNoteRef, setSelectedNoteRef] = useState<ScopedNoteRef | null>(null);
   const [noteTitleFocusRequest, setNoteTitleFocusRequest] =
     useState<ScopedNoteTitleFocusRequest | null>(null);
-  const [notesPanelOpen, setNotesPanelOpen] = useState(
-    initialPrefs.notesEnabled && initialPrefs.notesPanelOpen,
-  );
-  const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("list");
+    const { prefs, prefsLoaded: displayPrefsLoaded, updatePrefs } = useAppPreferences();
+  const {
+    hostScope,
+    scope,
+    sidebarView,
+    agentSort,
+    agentGroup,
+    combineMatchingWorkspaceNames,
+    collapsedSidebarGroups,
+    spaceGroup,
+    agentPinnedOnly,
+    agentActiveOnly,
+    agentFeaturesInTabs,
+    multiHostSpaceSelection,
+    sidebarWidth,
+    notesPanelWidth,
+    notesListPaneWidth,
+    notesListPaneCollapsed,
+    notesEnabled,
+    notesPanelOpen,
+    sidebarOpen,
+    terminalFontSizePx,
+    terminalScreenReaderText,
+    terminalInputTransport,
+    terminalInputBatchDelayMs,
+    terminalOutputCoalesceMs,
+    contentInsetTopPx,
+    contentInsetBottomPx,
+    mobileControlsScalePercent,
+    mobileTerminalTapTarget,
+    mobileLongPressBehavior,
+    mobileTouchSelectionEndpointTimeoutMs,
+    mobileKeyboardHideRefit,
+    mobileCommandExpandingInput,
+    mobileCommandEnterNewline,
+  } = prefs;
+const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("list");
   const [notesIncludeArchived, setNotesIncludeArchived] = useState(false);
   const [notesIncludeDeleted, setNotesIncludeDeleted] = useState(false);
   const [quickPaneNoteTarget, setQuickPaneNoteTarget] = useState<QuickPaneNoteTarget | null>(null);
@@ -972,59 +680,40 @@ export function App() {
   const [activeWorkspacesByBridgeId, setActiveWorkspacesByBridgeId] = useState<Record<string, string>>(
     initialSharedNavigationPrefs.activeWorkspacesByBridgeId,
   );
-  const [hostScope, setHostScope] = useState<HostScope>(initialPrefs.hostScope);
-  const [scope, setScope] = useState<Scope>(initialPrefs.scope);
-  const [sidebarView, setSidebarView] = useState<SidebarView>(initialPrefs.sidebarView);
-  const [agentSort, setAgentSort] = useState<AgentSort>(initialPrefs.agentSort);
-  const [agentGroup, setAgentGroup] = useState<AgentGroup>(initialPrefs.agentGroup);
-  const [combineMatchingWorkspaceNames, setCombineMatchingWorkspaceNames] = useState(
-    initialPrefs.combineMatchingWorkspaceNames,
-  );
-  const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState(
-    initialPrefs.collapsedSidebarGroups,
-  );
-  const collapsedSidebarGroupKeys = useMemo(
+                const collapsedSidebarGroupKeys = useMemo(
     () => new Set(collapsedSidebarGroups),
     [collapsedSidebarGroups],
   );
   const toggleCollapsedSidebarGroup = useCallback((key: string) => {
-    setCollapsedSidebarGroups((current) =>
-      updateCollapsedSidebarGroups(current, [key], !current.includes(key)),
-    );
+    updatePrefs((current) => ({
+      collapsedSidebarGroups: updateCollapsedSidebarGroups(
+        current.collapsedSidebarGroups,
+        [key],
+        !current.collapsedSidebarGroups.includes(key),
+      ),
+    }));
   }, []);
   const setVisibleSidebarGroupsCollapsed = useCallback(
     (keys: readonly string[], collapsed: boolean) => {
-      setCollapsedSidebarGroups((current) =>
-        updateCollapsedSidebarGroups(current, keys, collapsed),
-      );
+      updatePrefs((current) => ({
+        collapsedSidebarGroups: updateCollapsedSidebarGroups(
+          current.collapsedSidebarGroups,
+          keys,
+          collapsed,
+        ),
+      }));
     },
     [],
   );
-  const [spaceGroup, setSpaceGroup] = useState<SpaceGroup>(initialPrefs.spaceGroup);
-  const [agentPinnedOnly, setAgentPinnedOnly] = useState(initialPrefs.agentPinnedOnly);
-  const [agentActiveOnly, setAgentActiveOnly] = useState(initialPrefs.agentActiveOnly);
-  const [agentFeaturesInTabs, setAgentFeaturesInTabs] = useState(initialPrefs.agentFeaturesInTabs);
-  const [multiHostSpaceSelection, setMultiHostSpaceSelection] = useState(
-    initialPrefs.multiHostSpaceSelection,
-  );
-  const [sidebarWidth, setSidebarWidth] = useState(initialPrefs.sidebarWidth);
-  const [notesPanelWidth, setNotesPanelWidth] = useState(initialPrefs.notesPanelWidth);
-  const [notesListPaneWidth, setNotesListPaneWidth] = useState(initialPrefs.notesListPaneWidth);
-  const [notesListPaneCollapsed, setNotesListPaneCollapsed] = useState(
-    initialPrefs.notesListPaneCollapsed,
-  );
-  const notesEnabledRef = useRef(initialPrefs.notesEnabled);
+                    const notesEnabledRef = useRef(prefs.notesEnabled);
   const pendingCreatedPaneNotesRef = useRef<Record<string, PendingCreatedPaneNote[]>>({});
-  const [notesEnabled, setNotesEnabledState] = useState(initialPrefs.notesEnabled);
-  const setNotesEnabled = useCallback((enabled: boolean) => {
-    notesEnabledRef.current = enabled;
-    setNotesEnabledState(enabled);
-  }, []);
+  useEffect(() => {
+    notesEnabledRef.current = notesEnabled;
+  }, [notesEnabled]);
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [resizingNotesPanel, setResizingNotesPanel] = useState(false);
   const [resizingNotesListPane, setResizingNotesListPane] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(initialPrefs.sidebarOpen);
-  const [showDetail, setShowDetail] = useState(false);
+    const [showDetail, setShowDetail] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [spaceReorderMode, setSpaceReorderMode] = useState<SpaceReorderMode | null>(null);
   const [spaceReorderAnnouncement, setSpaceReorderAnnouncement] = useState("");
@@ -1048,48 +737,7 @@ export function App() {
   const [noteDeleteTarget, setNoteDeleteTarget] = useState<ScopedNoteEntry | null>(null);
   const [deletingNote, setDeletingNote] = useState(false);
   const [backendSettingsOpen, setBackendSettingsOpen] = useState(false);
-  const [terminalFontSizePx, setTerminalFontSizePx] = useState(
-    initialPrefs.terminalFontSizePx,
-  );
-  const [terminalScreenReaderText, setTerminalScreenReaderText] = useState(
-    initialPrefs.terminalScreenReaderText,
-  );
-  const [terminalInputTransport, setTerminalInputTransport] = useState(
-    initialPrefs.terminalInputTransport,
-  );
-  const [terminalInputBatchDelayMs, setTerminalInputBatchDelayMs] = useState(
-    initialPrefs.terminalInputBatchDelayMs,
-  );
-  const [terminalOutputCoalesceMs, setTerminalOutputCoalesceMs] = useState(
-    initialPrefs.terminalOutputCoalesceMs,
-  );
-  const [contentInsetTopPx, setContentInsetTopPx] = useState(initialPrefs.contentInsetTopPx);
-  const [contentInsetBottomPx, setContentInsetBottomPx] = useState(
-    initialPrefs.contentInsetBottomPx,
-  );
-  const [mobileControlsScalePercent, setMobileControlsScalePercent] = useState(
-    initialPrefs.mobileControlsScalePercent,
-  );
-  const [mobileTerminalTapTarget, setMobileTerminalTapTarget] = useState(
-    initialPrefs.mobileTerminalTapTarget,
-  );
-  const [mobileLongPressBehavior, setMobileLongPressBehavior] = useState(
-    initialPrefs.mobileLongPressBehavior,
-  );
-  const [
-    mobileTouchSelectionEndpointTimeoutMs,
-    setMobileTouchSelectionEndpointTimeoutMs,
-  ] = useState(initialPrefs.mobileTouchSelectionEndpointTimeoutMs);
-  const [mobileKeyboardHideRefit, setMobileKeyboardHideRefit] = useState(
-    initialPrefs.mobileKeyboardHideRefit,
-  );
-  const [mobileCommandExpandingInput, setMobileCommandExpandingInput] = useState(
-    initialPrefs.mobileCommandExpandingInput,
-  );
-  const [mobileCommandEnterNewline, setMobileCommandEnterNewline] = useState(
-    initialPrefs.mobileCommandEnterNewline,
-  );
-  const [launchTarget, setLaunchTarget] = useState<ScopedLaunchTarget | null>(null);
+                              const [launchTarget, setLaunchTarget] = useState<ScopedLaunchTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refitToken, setRefitToken] = useState(0);
@@ -1141,67 +789,7 @@ export function App() {
     [clearPendingSharedPaneSelection],
   );
 
-  useEffect(() => {
-    if (displayPrefsLoaded) {
-      return;
-    }
-    let cancelled = false;
-    void Promise.all([
-      loadDisplayPrefs(),
-      loadSharedNavigationPrefs(),
-      loadNavigationSyncMode(),
-    ]).then(
-      ([prefs, sharedNavigationPrefs, loadedNavigationSyncMode]) => {
-      if (cancelled) {
-        return;
-      }
-      setHostScope(prefs.hostScope);
-      setScope(prefs.scope);
-      setSidebarView(prefs.sidebarView);
-      setAgentSort(prefs.agentSort);
-      setAgentGroup(prefs.agentGroup);
-      setCombineMatchingWorkspaceNames(prefs.combineMatchingWorkspaceNames);
-      setCollapsedSidebarGroups(prefs.collapsedSidebarGroups);
-      setSpaceGroup(prefs.spaceGroup);
-      setAgentPinnedOnly(prefs.agentPinnedOnly);
-      setAgentActiveOnly(prefs.agentActiveOnly);
-      setAgentFeaturesInTabs(prefs.agentFeaturesInTabs);
-      setMultiHostSpaceSelection(prefs.multiHostSpaceSelection);
-      setSidebarWidth(prefs.sidebarWidth);
-      setNotesPanelWidth(prefs.notesPanelWidth);
-      setNotesListPaneWidth(prefs.notesListPaneWidth);
-      setNotesListPaneCollapsed(prefs.notesListPaneCollapsed);
-      setNotesEnabled(prefs.notesEnabled);
-      setNotesPanelOpen(prefs.notesEnabled && prefs.notesPanelOpen);
-      setSidebarOpen(prefs.sidebarOpen);
-      setNavigationSyncMode(loadedNavigationSyncMode);
-      setSelectedBridgeId(sharedNavigationPrefs.selectedBridgeId);
-      setSelectedPaneRefState(sharedNavigationPrefs.selectedPane);
-      setActiveWorkspaceRefState(sharedNavigationPrefs.activeWorkspace);
-      setSelectedPanesByBridgeId(sharedNavigationPrefs.selectedPanesByBridgeId);
-      setActiveWorkspacesByBridgeId(sharedNavigationPrefs.activeWorkspacesByBridgeId);
-      setTerminalFontSizePx(prefs.terminalFontSizePx);
-      setTerminalScreenReaderText(prefs.terminalScreenReaderText);
-      setTerminalInputTransport(prefs.terminalInputTransport);
-      setTerminalInputBatchDelayMs(prefs.terminalInputBatchDelayMs);
-      setTerminalOutputCoalesceMs(prefs.terminalOutputCoalesceMs);
-      setContentInsetTopPx(prefs.contentInsetTopPx);
-      setContentInsetBottomPx(prefs.contentInsetBottomPx);
-      setMobileControlsScalePercent(prefs.mobileControlsScalePercent);
-      setMobileTerminalTapTarget(prefs.mobileTerminalTapTarget);
-      setMobileLongPressBehavior(prefs.mobileLongPressBehavior);
-      setMobileTouchSelectionEndpointTimeoutMs(prefs.mobileTouchSelectionEndpointTimeoutMs);
-      setMobileKeyboardHideRefit(prefs.mobileKeyboardHideRefit);
-      setMobileCommandExpandingInput(prefs.mobileCommandExpandingInput);
-      setMobileCommandEnterNewline(prefs.mobileCommandEnterNewline);
-      setDisplayPrefsLoaded(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [displayPrefsLoaded]);
-
+  
   useEffect(() => {
     return addNativeBackHandler(() => {
       if (noteDeleteTarget) {
@@ -1231,7 +819,7 @@ export function App() {
         return true;
       }
       if (notesPanelOpen) {
-        setNotesPanelOpen(false);
+        updatePrefs({ notesPanelOpen: false });
         return true;
       }
       return false;
@@ -1531,7 +1119,7 @@ export function App() {
 
   useEffect(() => {
     if (shouldCollapseHostScope(hostScope, bridge.enabledBridgeIds.length, bridge.storeLoaded)) {
-      setHostScope("selected");
+      updatePrefs({ hostScope: "selected" });
     }
   }, [bridge.enabledBridgeIds.length, bridge.storeLoaded, hostScope]);
 
@@ -1700,82 +1288,6 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!displayPrefsLoaded) {
-      return;
-    }
-    void writeDisplayPrefs({
-      hostScope,
-      scope,
-      sidebarView,
-      agentSort,
-      agentGroup,
-      combineMatchingWorkspaceNames,
-      collapsedSidebarGroups,
-      spaceGroup,
-      agentPinnedOnly,
-      agentActiveOnly,
-      agentFeaturesInTabs,
-      multiHostSpaceSelection,
-      sidebarWidth,
-      notesPanelWidth,
-      notesListPaneWidth,
-      notesListPaneCollapsed,
-      notesEnabled,
-      notesPanelOpen,
-      sidebarOpen,
-      terminalFontSizePx,
-      terminalScreenReaderText,
-      terminalInputTransport,
-      terminalInputBatchDelayMs,
-      terminalOutputCoalesceMs,
-      contentInsetTopPx,
-      contentInsetBottomPx,
-      mobileControlsScalePercent,
-      mobileTerminalTapTarget,
-      mobileLongPressBehavior,
-      mobileTouchSelectionEndpointTimeoutMs,
-      mobileKeyboardHideRefit,
-      mobileCommandExpandingInput,
-      mobileCommandEnterNewline,
-    });
-  }, [
-    displayPrefsLoaded,
-    hostScope,
-    scope,
-    sidebarView,
-    agentSort,
-    agentGroup,
-    combineMatchingWorkspaceNames,
-    collapsedSidebarGroups,
-    spaceGroup,
-    agentPinnedOnly,
-    agentActiveOnly,
-    agentFeaturesInTabs,
-    multiHostSpaceSelection,
-    sidebarWidth,
-    notesPanelWidth,
-    notesListPaneWidth,
-    notesListPaneCollapsed,
-    notesEnabled,
-    notesPanelOpen,
-    sidebarOpen,
-    terminalFontSizePx,
-    terminalScreenReaderText,
-    terminalInputTransport,
-    terminalInputBatchDelayMs,
-    terminalOutputCoalesceMs,
-    contentInsetTopPx,
-    contentInsetBottomPx,
-    mobileControlsScalePercent,
-    mobileTerminalTapTarget,
-    mobileLongPressBehavior,
-    mobileTouchSelectionEndpointTimeoutMs,
-    mobileKeyboardHideRefit,
-    mobileCommandExpandingInput,
-    mobileCommandEnterNewline,
-  ]);
-
-  useEffect(() => {
     if (!mobileKeyboardHideRefit || !showMobileKeyboardHideRefit) {
       return;
     }
@@ -1796,21 +1308,25 @@ export function App() {
   }, [mobileKeyboardHideRefit, showMobileKeyboardHideRefit]);
 
   useEffect(() => {
-    setSidebarWidth((width) => clampSidebarWidth(width));
-    setNotesPanelWidth((width) => clampNotesPanelWidth(width, sidebarWidth, sidebarOpen));
-    setNotesListPaneWidth((width) => clampNotesListPaneWidth(width, notesPanelWidth));
+    updatePrefs({ sidebarWidth: clampSidebarWidth(sidebarWidth) });
+    updatePrefs({
+      notesPanelWidth: clampNotesPanelWidth(notesPanelWidth, sidebarWidth, sidebarOpen),
+    });
+    updatePrefs({
+      notesListPaneWidth: clampNotesListPaneWidth(notesListPaneWidth, notesPanelWidth),
+    });
   }, [isCompactLayout, notesPanelWidth, sidebarOpen, sidebarWidth]);
 
   useEffect(() => {
     if (notesEnabled) {
       return;
     }
-    setNotesPanelOpen(false);
+    updatePrefs({ notesPanelOpen: false });
     setSelectedNoteRef(null);
     setNotesStates({});
     pendingCreatedPaneNotesRef.current = {};
     if (sidebarView === "notes") {
-      setSidebarView("agents");
+      updatePrefs({ sidebarView: "agents" });
     }
   }, [notesEnabled, sidebarView]);
 
@@ -1829,7 +1345,7 @@ export function App() {
   usePointerDragResize(
     resizingSidebar,
     useCallback((event: PointerEvent) => {
-      setSidebarWidth(clampSidebarWidth(event.clientX));
+      updatePrefs({ sidebarWidth: clampSidebarWidth(event.clientX) });
     }, []),
     useCallback(() => setResizingSidebar(false), []),
   );
@@ -1838,9 +1354,9 @@ export function App() {
     resizingNotesPanel,
     useCallback(
       (event: PointerEvent) => {
-        setNotesPanelWidth(
+        updatePrefs({ notesPanelWidth: 
           clampNotesPanelWidth(window.innerWidth - event.clientX, sidebarWidth, sidebarOpen),
-        );
+         });
       },
       [sidebarOpen, sidebarWidth],
     ),
@@ -1851,9 +1367,9 @@ export function App() {
     resizingNotesListPane,
     useCallback(
       (event: PointerEvent) => {
-        setNotesListPaneWidth(
+        updatePrefs({ notesListPaneWidth: 
           clampNotesListPaneWidth(event.clientX - notesListResizeLeftRef.current, notesPanelWidth),
-        );
+         });
       },
       [notesPanelWidth],
     ),
@@ -2434,7 +1950,7 @@ export function App() {
     if (isCompactLayout) {
       setMobileNotesScreen("editor");
     }
-    setNotesPanelOpen(true);
+    updatePrefs({ notesPanelOpen: true });
   };
 
   const openNotesPanel = () => {
@@ -2442,7 +1958,7 @@ export function App() {
       return;
     }
     if (notesPanelOpen) {
-      setNotesPanelOpen(false);
+      updatePrefs({ notesPanelOpen: false });
       return;
     }
     const selectedNoteIsCurrentPaneNote =
@@ -2459,7 +1975,7 @@ export function App() {
       });
     }
     setMobileNotesScreen(isCompactLayout && noteToOpen ? "editor" : "list");
-    setNotesPanelOpen(true);
+    updatePrefs({ notesPanelOpen: true });
   };
 
   const createNoteForCurrentPane = async () => {
@@ -2482,7 +1998,7 @@ export function App() {
       if (isCompactLayout) {
         setMobileNotesScreen("editor");
       }
-      setNotesPanelOpen(true);
+      updatePrefs({ notesPanelOpen: true });
       await refreshBridgeNotes(selectedRuntime, false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create note");
@@ -2509,7 +2025,7 @@ export function App() {
       if (isCompactLayout) {
         setMobileNotesScreen("editor");
       }
-      setNotesPanelOpen(true);
+      updatePrefs({ notesPanelOpen: true });
       await refreshBridgeNotes(runtime, false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create note");
@@ -2857,7 +2373,7 @@ export function App() {
     openPane(entry.bridgeId, entry.pane);
     if (isCompactLayout) {
       setMobileNotesScreen("list");
-      setNotesPanelOpen(false);
+      updatePrefs({ notesPanelOpen: false });
     }
   };
 
@@ -3814,18 +3330,18 @@ export function App() {
           activeSpace={activeSpace}
           activeWorkspacesByBridgeId={activeWorkspacesByBridgeId}
           selectedPane={selectedPane}
-          onHostScope={setHostScope}
-          onScope={setScope}
-          onSidebarView={setSidebarView}
+          onHostScope={(value) => updatePrefs({ hostScope: value })}
+          onScope={(value) => updatePrefs({ scope: value })}
+          onSidebarView={(value) => updatePrefs({ sidebarView: value })}
           onSelectNote={selectNote}
           onCreateNote={() => void createDetachedBridgeNote()}
-          onAgentPinnedOnly={setAgentPinnedOnly}
-          onAgentActiveOnly={setAgentActiveOnly}
-          onAgentSort={setAgentSort}
-          onAgentGroup={setAgentGroup}
+          onAgentPinnedOnly={(value) => updatePrefs({ agentPinnedOnly: value })}
+          onAgentActiveOnly={(value) => updatePrefs({ agentActiveOnly: value })}
+          onAgentSort={(value) => updatePrefs({ agentSort: value })}
+          onAgentGroup={(value) => updatePrefs({ agentGroup: value })}
           onToggleCollapsedGroup={toggleCollapsedSidebarGroup}
           onSetCollapsedGroups={setVisibleSidebarGroupsCollapsed}
-          onSpaceGroup={setSpaceGroup}
+          onSpaceGroup={(value) => updatePrefs({ spaceGroup: value })}
           onCancelSpaceReorder={cancelSpaceReorder}
           onAnnounceSpaceReorder={announceSpaceReorder}
           onReorderSpace={(bridgeId, workspaceId, beforeWorkspaceId, keepMode) =>
@@ -3885,7 +3401,7 @@ export function App() {
               if (target.hasPointerCapture(pointerId)) {
                 target.releasePointerCapture(pointerId);
               }
-              setSidebarWidth(clampSidebarWidth(x));
+              updatePrefs({ sidebarWidth: clampSidebarWidth(x) });
               setResizingSidebar(true);
             }, 360);
             sidebarResizePressRef.current = { timer, pointerId, x, y, target };
@@ -3908,15 +3424,17 @@ export function App() {
             if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
               event.preventDefault();
               const step = event.shiftKey ? 32 : 12;
-              setSidebarWidth((width) =>
-                clampSidebarWidth(width + (event.key === "ArrowRight" ? step : -step)),
-              );
+              updatePrefs((current) => ({
+                sidebarWidth: clampSidebarWidth(
+                  current.sidebarWidth + (event.key === "ArrowRight" ? step : -step),
+                ),
+              }));
             } else if (event.key === "Home") {
               event.preventDefault();
-              setSidebarWidth(MIN_SIDEBAR_WIDTH);
+              updatePrefs({ sidebarWidth: MIN_SIDEBAR_WIDTH });
             } else if (event.key === "End") {
               event.preventDefault();
-              setSidebarWidth(MAX_SIDEBAR_WIDTH);
+              updatePrefs({ sidebarWidth: MAX_SIDEBAR_WIDTH });
             }
           }}
         />
@@ -3943,7 +3461,11 @@ export function App() {
             type="button"
             aria-label={isCompactLayout ? "Back to switcher" : "Toggle sidebar"}
             title={isCompactLayout ? "Back" : "Toggle sidebar"}
-            onClick={() => (isCompactLayout ? closeMobileDetail() : setSidebarOpen((open) => !open))}
+            onClick={() =>
+            isCompactLayout
+              ? closeMobileDetail()
+              : updatePrefs((current) => ({ sidebarOpen: !current.sidebarOpen }))
+          }
           >
             {isCompactLayout ? <ChevronLeft size={20} /> : <PanelLeft size={18} />}
           </button>
@@ -4158,7 +3680,7 @@ export function App() {
               selectedScopedNote &&
               selectedScopedNote.bridgeId === selectedRuntime.id,
           )}
-          onClose={() => setNotesPanelOpen(false)}
+          onClose={() => updatePrefs({ notesPanelOpen: false })}
           onShowNotesList={() => setMobileNotesScreen("list")}
           onSelectNote={selectNote}
           onCreatePaneNote={() => void createNoteForCurrentPane()}
@@ -4175,14 +3697,14 @@ export function App() {
           width={notesPanelWidth}
           listWidth={notesListPaneWidth}
           listCollapsed={notesListPaneCollapsed}
-          onListCollapsed={setNotesListPaneCollapsed}
+          onListCollapsed={(value) => updatePrefs({ notesListPaneCollapsed: value })}
           onResizeStart={(clientX) => {
             if (isCompactLayout) {
               return;
             }
-            setNotesPanelWidth(
+            updatePrefs({ notesPanelWidth: 
               clampNotesPanelWidth(window.innerWidth - clientX, sidebarWidth, sidebarOpen),
-            );
+             });
             setResizingNotesPanel(true);
           }}
           onResizeKeyDown={(event) => {
@@ -4192,21 +3714,21 @@ export function App() {
             if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
               event.preventDefault();
               const step = event.shiftKey ? 32 : 12;
-              setNotesPanelWidth((width) =>
-                clampNotesPanelWidth(
-                  width + (event.key === "ArrowLeft" ? step : -step),
-                  sidebarWidth,
-                  sidebarOpen,
+              updatePrefs((current) => ({
+                notesPanelWidth: clampNotesPanelWidth(
+                  current.notesPanelWidth + (event.key === "ArrowLeft" ? step : -step),
+                  current.sidebarWidth,
+                  current.sidebarOpen,
                 ),
-              );
+              }));
             } else if (event.key === "Home") {
               event.preventDefault();
-              setNotesPanelWidth(MIN_NOTES_PANEL_WIDTH);
+              updatePrefs({ notesPanelWidth: MIN_NOTES_PANEL_WIDTH });
             } else if (event.key === "End") {
               event.preventDefault();
-              setNotesPanelWidth(
+              updatePrefs({ notesPanelWidth: 
                 clampNotesPanelWidth(MAX_NOTES_PANEL_WIDTH, sidebarWidth, sidebarOpen),
-              );
+               });
             }
           }}
           onListResizeStart={(surfaceLeft, clientX) => {
@@ -4214,7 +3736,7 @@ export function App() {
               return;
             }
             notesListResizeLeftRef.current = surfaceLeft;
-            setNotesListPaneWidth(clampNotesListPaneWidth(clientX - surfaceLeft, notesPanelWidth));
+            updatePrefs({ notesListPaneWidth: clampNotesListPaneWidth(clientX - surfaceLeft, notesPanelWidth) });
             setResizingNotesListPane(true);
           }}
           onListResizeKeyDown={(event) => {
@@ -4224,20 +3746,20 @@ export function App() {
             if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
               event.preventDefault();
               const step = event.shiftKey ? 32 : 12;
-              setNotesListPaneWidth((width) =>
-                clampNotesListPaneWidth(
-                  width + (event.key === "ArrowRight" ? step : -step),
-                  notesPanelWidth,
+              updatePrefs((current) => ({
+                notesListPaneWidth: clampNotesListPaneWidth(
+                  current.notesListPaneWidth + (event.key === "ArrowRight" ? step : -step),
+                  current.notesPanelWidth,
                 ),
-              );
+              }));
             } else if (event.key === "Home") {
               event.preventDefault();
-              setNotesListPaneWidth(MIN_NOTES_LIST_PANE_WIDTH);
+              updatePrefs({ notesListPaneWidth: MIN_NOTES_LIST_PANE_WIDTH });
             } else if (event.key === "End") {
               event.preventDefault();
-              setNotesListPaneWidth(
+              updatePrefs({ notesListPaneWidth: 
                 clampNotesListPaneWidth(MAX_NOTES_LIST_PANE_WIDTH, notesPanelWidth),
-              );
+               });
             }
           }}
         />
@@ -4319,47 +3841,11 @@ export function App() {
       {backendSettingsOpen ? (
         <BackendSettingsDialog
           showMobileTerminalSettings={isTouchInput}
-          notesEnabled={notesEnabled}
-          onNotesEnabled={setNotesEnabled}
+          showMobileKeyboardHideRefit={showMobileKeyboardHideRefit}
+          preferences={prefs}
+          onUpdatePrefs={updatePrefs}
           navigationSyncMode={navigationSyncMode}
           onNavigationSyncMode={changeNavigationSyncMode}
-          agentFeaturesInTabs={agentFeaturesInTabs}
-          onAgentFeaturesInTabs={setAgentFeaturesInTabs}
-          combineMatchingWorkspaceNames={combineMatchingWorkspaceNames}
-          onCombineMatchingWorkspaceNames={setCombineMatchingWorkspaceNames}
-          multiHostSpaceSelection={multiHostSpaceSelection}
-          onMultiHostSpaceSelection={setMultiHostSpaceSelection}
-          terminalFontSizePx={terminalFontSizePx}
-          onTerminalFontSizePx={setTerminalFontSizePx}
-          terminalScreenReaderText={terminalScreenReaderText}
-          onTerminalScreenReaderText={setTerminalScreenReaderText}
-          terminalInputTransport={terminalInputTransport}
-          onTerminalInputTransport={setTerminalInputTransport}
-          terminalInputBatchDelayMs={terminalInputBatchDelayMs}
-          onTerminalInputBatchDelayMs={setTerminalInputBatchDelayMs}
-          terminalOutputCoalesceMs={terminalOutputCoalesceMs}
-          onTerminalOutputCoalesceMs={setTerminalOutputCoalesceMs}
-          contentInsetTopPx={contentInsetTopPx}
-          onContentInsetTopPx={setContentInsetTopPx}
-          contentInsetBottomPx={contentInsetBottomPx}
-          onContentInsetBottomPx={setContentInsetBottomPx}
-          mobileControlsScalePercent={mobileControlsScalePercent}
-          onMobileControlsScalePercent={setMobileControlsScalePercent}
-          mobileTerminalTapTarget={mobileTerminalTapTarget}
-          onMobileTerminalTapTarget={setMobileTerminalTapTarget}
-          mobileLongPressBehavior={mobileLongPressBehavior}
-          onMobileLongPressBehavior={setMobileLongPressBehavior}
-          mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
-          onMobileTouchSelectionEndpointTimeoutMs={
-            setMobileTouchSelectionEndpointTimeoutMs
-          }
-          mobileCommandExpandingInput={mobileCommandExpandingInput}
-          onMobileCommandExpandingInput={setMobileCommandExpandingInput}
-          mobileCommandEnterNewline={mobileCommandEnterNewline}
-          onMobileCommandEnterNewline={setMobileCommandEnterNewline}
-          showMobileKeyboardHideRefit={showMobileKeyboardHideRefit}
-          mobileKeyboardHideRefit={mobileKeyboardHideRefit}
-          onMobileKeyboardHideRefit={setMobileKeyboardHideRefit}
           onClose={() => setBackendSettingsOpen(false)}
         />
       ) : null}
