@@ -1,32 +1,14 @@
+import { TerminalCloseCause } from "./enums";
+
+export { TerminalCloseCause };
+
 export type TerminalConnectionState = "idle" | "connecting" | "attached" | "closed" | "error";
 
 export const TERMINAL_CONNECTION_OVERLAY_DELAY_MS = 500;
 
-/**
- * Machine-readable close causes sent by the bridge in the terminal
- * `closed` frame. The vocabulary and each cause's retry disposition are
- * pinned by `protocol/terminal-close-causes.json`, which the Rust
- * serializer tests also read; do not add or rename a cause without
- * updating that file.
- */
-export type TerminalCloseCause =
-  | "attach_conflict"
-  | "taken_over"
-  | "terminal_gone"
-  | "pending_detach"
-  | "daemon_closed"
-  | "output_lagged"
-  | "transport_failed";
-
-const KNOWN_TERMINAL_CLOSE_CAUSES: ReadonlySet<string> = new Set<TerminalCloseCause>([
-  "attach_conflict",
-  "taken_over",
-  "terminal_gone",
-  "pending_detach",
-  "daemon_closed",
-  "output_lagged",
-  "transport_failed",
-]);
+const KNOWN_TERMINAL_CLOSE_CAUSES: ReadonlySet<string> = new Set<string>(
+  Object.values(TerminalCloseCause),
+);
 
 /** What the client should do after a close with a given cause. */
 export type TerminalCloseDisposition = "attach-conflict" | "reconnect" | "stop";
@@ -67,10 +49,10 @@ export const MAX_TERMINAL_ATTACH_CONFLICT_RETRIES = 3;
 
 export function terminalCloseDisposition(cause: TerminalCloseMessage["cause"]) {
   switch (cause) {
-    case "attach_conflict":
+    case TerminalCloseCause.AttachConflict:
       return "attach-conflict" as const;
-    case "taken_over":
-    case "terminal_gone":
+    case TerminalCloseCause.TakenOver:
+    case TerminalCloseCause.TerminalGone:
       // A takeover or a vanished terminal is final for this attach; only a
       // human starting a new session should bring the terminal back.
       return "stop" as const;
@@ -90,10 +72,10 @@ export function terminalConnectionCopy(
   close: TerminalCloseMessage | null,
   hasAttachedForTerminal = false,
 ) {
-  if (close?.cause === "attach_conflict") {
+  if (close?.cause === TerminalCloseCause.AttachConflict) {
     return "Attached elsewhere";
   }
-  if (close?.cause === "taken_over") {
+  if (close?.cause === TerminalCloseCause.TakenOver) {
     return "Detached elsewhere";
   }
   switch (state) {

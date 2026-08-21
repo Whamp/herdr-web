@@ -48,17 +48,42 @@ import {
   shouldSendTerminalInputImmediately,
 } from "./terminalInputTransport";
 import type { TerminalInputTransport } from "./terminalInputTransport";
-import {
-  DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
-} from "./terminalOutputCoalescing";
-import { DEFAULT_TERMINAL_FONT_SIZE_PX } from "./terminalPrefs";
-import { DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS } from "./mobileTerminalPrefs";
 import type {
   MobileLongPressBehavior,
   MobileTerminalTapTarget,
   MobileTouchSelectionEndpointTimeoutMs,
 } from "./mobileTerminalPrefs";
 import type { PaneInfo } from "./types";
+
+/** Terminal renderer and transport preferences, passed as one group. */
+export interface TerminalViewTerminalOptions {
+  /** Terminal renderer font size in CSS pixels. */
+  fontSizePx: number;
+  /** Whether to maintain a hidden plain-text mirror of the visible terminal viewport. */
+  screenReaderText: boolean;
+  /** Browser-to-bridge transport for terminal input payloads. */
+  inputTransport: TerminalInputTransport;
+  /** Delay for coalescing short terminal input payloads. Zero disables batching. */
+  inputBatchDelayMs: number;
+  /** Delay for coalescing terminal output frames. Zero disables output batching. */
+  outputCoalesceMs: number;
+}
+
+/** Touch-screen behavior preferences, passed as one group. */
+export interface TerminalViewMobileOptions {
+  /** Percentage scale applied to mobile terminal controls. */
+  controlsScalePercent: number;
+  /** Where terminal taps should send focus on mobile. */
+  tapTarget: MobileTerminalTapTarget;
+  /** Gesture behavior for long-presses on touch terminals. */
+  longPressBehavior: MobileLongPressBehavior;
+  /** How long the loupe endpoint waits for a second drag. */
+  touchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
+  /** Whether the mobile command input wraps and grows while editing. */
+  commandExpandingInput: boolean;
+  /** Whether Enter inserts a newline in the expanding mobile command input. */
+  commandEnterNewline: boolean;
+}
 
 type Props = {
   pane: PaneInfo | null;
@@ -72,32 +97,14 @@ type Props = {
   scrollSensitivity?: number;
   /** Supplemental browser-native input controls for narrow touch screens. */
   mobileControls?: boolean;
-  /** Terminal renderer font size in CSS pixels. */
-  terminalFontSizePx?: number;
-  /** Percentage scale applied to mobile terminal controls. */
-  mobileControlsScalePercent?: number;
-  /** Where terminal taps should send focus on mobile. */
-  mobileTapTarget?: MobileTerminalTapTarget;
-  /** Gesture behavior for long-presses on touch terminals. */
-  mobileLongPressBehavior?: MobileLongPressBehavior;
-  /** How long the loupe endpoint waits for a second drag. */
-  mobileTouchSelectionEndpointTimeoutMs?: MobileTouchSelectionEndpointTimeoutMs;
-  /** Whether the mobile command input wraps and grows while editing. */
-  mobileCommandExpandingInput?: boolean;
-  /** Whether Enter inserts a newline in the expanding mobile command input. */
-  mobileCommandEnterNewline?: boolean;
-  /** Browser-to-bridge transport for terminal input payloads. */
-  terminalInputTransport?: TerminalInputTransport;
-  /** Delay for coalescing short terminal input payloads. Zero disables batching. */
-  terminalInputBatchDelayMs?: number;
-  /** Delay for coalescing terminal output frames. Zero disables output batching. */
-  terminalOutputCoalesceMs?: number;
+  /** Terminal renderer and transport preferences. */
+  terminalOptions: TerminalViewTerminalOptions;
+  /** Touch-screen behavior preferences. */
+  mobileOptions: TerminalViewMobileOptions;
   /** Incrementing token from the parent that requests an immediate fit+resize. */
   refitToken?: number;
   /** Incrementing token from the parent that requests focus on the preferred terminal input. */
   focusToken?: number;
-  /** Whether to maintain a hidden plain-text mirror of the visible terminal viewport. */
-  terminalScreenReaderText?: boolean;
   /** Pane-specific accessible name for the terminal and its screen mirror. */
   accessibilityLabel?: string;
   /** Whether this is the currently selected terminal in a split. */
@@ -140,22 +147,28 @@ export function TerminalView({
   autoFocus = true,
   scrollSensitivity = 1,
   mobileControls = false,
-  terminalFontSizePx = DEFAULT_TERMINAL_FONT_SIZE_PX,
-  mobileControlsScalePercent = 100,
-  mobileTapTarget = "command-input",
-  mobileLongPressBehavior = "off",
-  mobileTouchSelectionEndpointTimeoutMs = DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
-  mobileCommandExpandingInput = false,
-  mobileCommandEnterNewline = false,
-  terminalInputTransport = "json",
-  terminalInputBatchDelayMs = 0,
-  terminalOutputCoalesceMs = DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
+  terminalOptions,
+  mobileOptions,
   refitToken = 0,
   focusToken = 0,
-  terminalScreenReaderText = false,
   accessibilityLabel = "Terminal",
   selected = false,
 }: Props) {
+  const {
+    fontSizePx: terminalFontSizePx,
+    screenReaderText: terminalScreenReaderText,
+    inputTransport: terminalInputTransport,
+    inputBatchDelayMs: terminalInputBatchDelayMs,
+    outputCoalesceMs: terminalOutputCoalesceMs,
+  } = terminalOptions;
+  const {
+    controlsScalePercent: mobileControlsScalePercent,
+    tapTarget: mobileTapTarget,
+    longPressBehavior: mobileLongPressBehavior,
+    touchSelectionEndpointTimeoutMs: mobileTouchSelectionEndpointTimeoutMs,
+    commandExpandingInput: mobileCommandExpandingInput,
+    commandEnterNewline: mobileCommandEnterNewline,
+  } = mobileOptions;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);

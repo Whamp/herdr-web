@@ -1,4 +1,7 @@
-import { recordReconnectDiagnostic } from "./reconnectDiagnostics";
+import {
+  recordReconnectDiagnostic,
+  type ReconnectDiagnosticDetails,
+} from "./reconnectDiagnostics";
 import {
   isTerminalOutputGzipAcknowledgement,
   terminalOutputCompressionSupported,
@@ -16,6 +19,7 @@ import {
   terminalCloseDisposition,
   type TerminalCloseMessage,
   type TerminalConnectionState,
+  TerminalCloseCause,
 } from "./terminalConnectionStatus";
 
 export type ReconnectReason =
@@ -60,7 +64,7 @@ export type TerminalConnectionOptions = {
   /** Defaults to performance.now; inject for deterministic tests. */
   now?(): number;
   /** Defaults to the persistent reconnect diagnostics recorder. */
-  recordEvent?(event: string, details?: Record<string, unknown>): void;
+  recordEvent?(event: string, details?: ReconnectDiagnosticDetails): void;
 };
 
 export type TerminalConnection = {
@@ -127,7 +131,7 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
   const now = options.now ?? (() => performance.now());
   const debugReconnect =
     options.recordEvent ??
-    ((event: string, details: Record<string, unknown> = {}) => {
+    ((event: string, details: ReconnectDiagnosticDetails = {}) => {
       recordReconnectDiagnostic(terminalId, event, details);
       if (DEBUG_TERMINAL_RECONNECT) {
         console.debug("terminal reconnect:", event, { terminalId, ...details });
@@ -210,8 +214,11 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
         }
       },
       (error) => {
-        lastClose = { cause: "transport_failed", detail: "output decompression failed" };
-        debugReconnect("output-decompression-failed", { error });
+        lastClose = {
+          cause: TerminalCloseCause.TransportFailed,
+          detail: "output decompression failed",
+        };
+        debugReconnect("output-decompression-failed", { error: String(error) });
         if (socket === nextSocket) {
           nextSocket.close();
         }

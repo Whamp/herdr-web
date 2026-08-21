@@ -9,7 +9,8 @@ import {
   terminalConnectionCopy,
   terminalConnectionOverlayDelayMs,
 } from "./terminalConnectionStatus";
-import type { TerminalCloseCause, TerminalCloseMessage } from "./terminalConnectionStatus";
+import type { TerminalCloseMessage } from "./terminalConnectionStatus";
+import { TerminalCloseCause } from "./enums";
 
 interface FixtureCause {
   cause: string;
@@ -80,25 +81,25 @@ describe("terminalConnectionStatus", () => {
     for (const cause of stops) {
       expect(isNonRetryableTerminalClose({ cause, detail: "" })).toBe(true);
     }
-    expect(isNonRetryableTerminalClose({ cause: "daemon_closed", detail: "" })).toBe(false);
-    expect(isNonRetryableTerminalClose({ cause: "output_lagged", detail: "" })).toBe(false);
-    expect(isNonRetryableTerminalClose({ cause: "transport_failed", detail: "" })).toBe(false);
+    expect(isNonRetryableTerminalClose({ cause: TerminalCloseCause.DaemonClosed, detail: "" })).toBe(false);
+    expect(isNonRetryableTerminalClose({ cause: TerminalCloseCause.OutputLagged, detail: "" })).toBe(false);
+    expect(isNonRetryableTerminalClose({ cause: TerminalCloseCause.TransportFailed, detail: "" })).toBe(false);
     expect(isNonRetryableTerminalClose(null)).toBe(false);
   });
 
   it("keeps the attach-conflict retry budget positive", () => {
-    expect(terminalCloseDisposition("attach_conflict")).toBe("attach-conflict");
+    expect(terminalCloseDisposition(TerminalCloseCause.AttachConflict)).toBe("attach-conflict");
     expect(MAX_TERMINAL_ATTACH_CONFLICT_RETRIES).toBeGreaterThan(0);
   });
 
   it("maps terminal connection states and close causes to status copy", () => {
-    const conflict: TerminalCloseMessage = { cause: "attach_conflict", detail: "" };
-    const takeover: TerminalCloseMessage = { cause: "taken_over", detail: "someone else" };
+    const conflict: TerminalCloseMessage = { cause: TerminalCloseCause.AttachConflict, detail: "" };
+    const takeover: TerminalCloseMessage = { cause: TerminalCloseCause.TakenOver, detail: "someone else" };
     expect(terminalConnectionCopy("connecting", null)).toBe("Connecting");
     expect(terminalConnectionCopy("connecting", null, true)).toBe("Reconnecting");
     expect(terminalConnectionCopy("closed", conflict)).toBe("Attached elsewhere");
     expect(terminalConnectionCopy("closed", takeover)).toBe("Detached elsewhere");
-    expect(terminalConnectionCopy("closed", { cause: "terminal_gone", detail: "" })).toBe(
+    expect(terminalConnectionCopy("closed", { cause: TerminalCloseCause.TerminalGone, detail: "" })).toBe(
       "Detached",
     );
     expect(terminalConnectionCopy("closed", null)).toBe("Detached");

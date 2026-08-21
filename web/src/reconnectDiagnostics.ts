@@ -5,8 +5,22 @@ export type ReconnectDiagnosticEvent = {
   elapsedMs: number | null;
   terminalId: string | null;
   event: string;
-  details: Record<string, unknown> | null;
+  details: ReconnectDiagnosticDetails | null;
 };
+
+/**
+ * Diagnostic detail values are JSON scalars or flat arrays of them — enough
+ * to carry reconnect evidence (reasons, socket states, timings) without an
+ * open `unknown` dictionary in the stored contract.
+ */
+export type ReconnectDiagnosticDetailValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly (string | number | boolean | null)[];
+
+export type ReconnectDiagnosticDetails = Record<string, ReconnectDiagnosticDetailValue>;
 
 export const RECONNECT_DIAGNOSTICS_STORAGE_KEY = "herdrWeb.reconnectDiagnostics.v1";
 export const MAX_RECONNECT_DIAGNOSTIC_EVENTS = 400;
@@ -21,7 +35,7 @@ let cachedEvents: ReconnectDiagnosticEvent[] | null = null;
 export function recordReconnectDiagnostic(
   terminalId: string | null,
   event: string,
-  details: Record<string, unknown> = {},
+  details: ReconnectDiagnosticDetails = {},
   storage: Pick<Storage, "getItem" | "setItem"> | null = browserLocalStorage(),
 ): ReconnectDiagnosticEvent[] {
   const entry: ReconnectDiagnosticEvent = {
@@ -106,7 +120,7 @@ function parseReconnectDiagnosticEvent(value: unknown): ReconnectDiagnosticEvent
     event: record.event,
     details:
       typeof record.details === "object" && record.details !== null
-        ? (record.details as Record<string, unknown>)
+        ? (record.details as ReconnectDiagnosticDetails)
         : null,
   };
 }

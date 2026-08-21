@@ -79,7 +79,11 @@ import type {
   SidebarView,
   SpaceGroup,
 } from "./appPreferences";
-import { MAX_COLLAPSED_SIDEBAR_GROUPS } from "./appPreferences";
+import {
+  MAX_COLLAPSED_SIDEBAR_GROUPS,
+  loadDisplayPrefs,
+  writeDisplayPrefs,
+} from "./appPreferences";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
 import type { LaunchTarget } from "./launch";
@@ -87,12 +91,6 @@ import { fetchLauncherPresets, supportsLauncherPresets } from "./launcherPresets
 import type { LauncherPresetsResponse } from "./launcherPresets";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
-import type {
-  MobileLongPressBehavior,
-  MobileTerminalTapTarget,
-  MobileTouchSelectionEndpointTimeoutMs,
-} from "./mobileTerminalPrefs";
-import type { TerminalInputTransport } from "./terminalInputTransport";
 import { addNativeBackHandler, addNativeKeyboardHideHandler, isNativeAndroid } from "./native";
 import {
   archiveNote,
@@ -140,6 +138,10 @@ import {
 } from "./appPreferences";
 import { createSnapshotRefreshController } from "./refreshCoordinator";
 import { TerminalView } from "./TerminalView";
+import type {
+  TerminalViewMobileOptions,
+  TerminalViewTerminalOptions,
+} from "./TerminalView";
 
 
 
@@ -627,7 +629,37 @@ export function App() {
   const [selectedNoteRef, setSelectedNoteRef] = useState<ScopedNoteRef | null>(null);
   const [noteTitleFocusRequest, setNoteTitleFocusRequest] =
     useState<ScopedNoteTitleFocusRequest | null>(null);
-    const { prefs, prefsLoaded: displayPrefsLoaded, updatePrefs } = useAppPreferences();
+  const { prefs, prefsLoaded: displayPrefsLoaded, setPrefs, setPrefsLoaded, updatePrefs } =
+    useAppPreferences();
+
+  // Native preferences load asynchronously; browser localStorage is already
+  // reflected by the synchronous first paint in useAppPreferences.
+  useEffect(() => {
+    if (displayPrefsLoaded) {
+      return;
+    }
+    let cancelled = false;
+    void loadDisplayPrefs().then((loadedPrefs) => {
+      if (cancelled) {
+        return;
+      }
+      setPrefs({
+        ...loadedPrefs,
+        notesPanelOpen: loadedPrefs.notesEnabled && loadedPrefs.notesPanelOpen,
+      });
+      setPrefsLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayPrefsLoaded, setPrefs, setPrefsLoaded]);
+
+  useEffect(() => {
+    if (!displayPrefsLoaded) {
+      return;
+    }
+    void writeDisplayPrefs(prefs);
+  }, [displayPrefsLoaded, prefs]);
   const {
     hostScope,
     scope,
@@ -663,6 +695,43 @@ export function App() {
     mobileCommandExpandingInput,
     mobileCommandEnterNewline,
   } = prefs;
+
+  // Grouped TerminalView preference objects; memoized so identity changes only
+  // when a relevant preference actually changes.
+  const terminalViewOptions = useMemo(
+    () => ({
+      fontSizePx: terminalFontSizePx,
+      screenReaderText: terminalScreenReaderText,
+      inputTransport: terminalInputTransport,
+      inputBatchDelayMs: terminalInputBatchDelayMs,
+      outputCoalesceMs: terminalOutputCoalesceMs,
+    }),
+    [
+      terminalFontSizePx,
+      terminalScreenReaderText,
+      terminalInputTransport,
+      terminalInputBatchDelayMs,
+      terminalOutputCoalesceMs,
+    ],
+  );
+  const mobileViewOptions = useMemo(
+    () => ({
+      controlsScalePercent: mobileControlsScalePercent,
+      tapTarget: mobileTerminalTapTarget,
+      longPressBehavior: mobileLongPressBehavior,
+      touchSelectionEndpointTimeoutMs: mobileTouchSelectionEndpointTimeoutMs,
+      commandExpandingInput: mobileCommandExpandingInput,
+      commandEnterNewline: mobileCommandEnterNewline,
+    }),
+    [
+      mobileControlsScalePercent,
+      mobileTerminalTapTarget,
+      mobileLongPressBehavior,
+      mobileTouchSelectionEndpointTimeoutMs,
+      mobileCommandExpandingInput,
+      mobileCommandEnterNewline,
+    ],
+  );
 const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("list");
   const [notesIncludeArchived, setNotesIncludeArchived] = useState(false);
   const [notesIncludeDeleted, setNotesIncludeDeleted] = useState(false);
@@ -3589,17 +3658,8 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
             refitToken={refitToken}
             focusToken={terminalFocusToken}
             touchInput={isTouchInput}
-            terminalFontSizePx={terminalFontSizePx}
-            terminalScreenReaderText={terminalScreenReaderText}
-            mobileControlsScalePercent={mobileControlsScalePercent}
-            mobileTapTarget={mobileTerminalTapTarget}
-            mobileLongPressBehavior={mobileLongPressBehavior}
-            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
-            mobileCommandExpandingInput={mobileCommandExpandingInput}
-            mobileCommandEnterNewline={mobileCommandEnterNewline}
-            terminalInputTransport={terminalInputTransport}
-            terminalInputBatchDelayMs={terminalInputBatchDelayMs}
-            terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+            terminalOptions={terminalViewOptions}
+            mobileOptions={mobileViewOptions}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
             resumeToken={selectedRuntime?.resumeToken ?? 0}
             httpUrl={selectedHttpUrl}
@@ -3615,17 +3675,8 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
             autoFocus={!isTouchInput}
             scrollSensitivity={isTouchInput ? 2 : 0.4}
             mobileControls={isTouchInput}
-            terminalFontSizePx={terminalFontSizePx}
-            terminalScreenReaderText={terminalScreenReaderText}
-            mobileControlsScalePercent={mobileControlsScalePercent}
-            mobileTapTarget={mobileTerminalTapTarget}
-            mobileLongPressBehavior={mobileLongPressBehavior}
-            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
-            mobileCommandExpandingInput={mobileCommandExpandingInput}
-            mobileCommandEnterNewline={mobileCommandEnterNewline}
-            terminalInputTransport={terminalInputTransport}
-            terminalInputBatchDelayMs={terminalInputBatchDelayMs}
-            terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+            terminalOptions={terminalViewOptions}
+            mobileOptions={mobileViewOptions}
             refitToken={refitToken}
             focusToken={terminalFocusToken}
             accessibilityLabel={
@@ -5282,17 +5333,8 @@ function SplitGrid({
   refitToken,
   focusToken,
   touchInput,
-  terminalFontSizePx,
-  terminalScreenReaderText,
-  mobileControlsScalePercent,
-  mobileTapTarget,
-  mobileLongPressBehavior,
-  mobileTouchSelectionEndpointTimeoutMs,
-  mobileCommandExpandingInput,
-  mobileCommandEnterNewline,
-  terminalInputTransport,
-  terminalInputBatchDelayMs,
-  terminalOutputCoalesceMs,
+  terminalOptions,
+  mobileOptions,
   connectionKey,
   resumeToken,
   httpUrl,
@@ -5304,17 +5346,8 @@ function SplitGrid({
   refitToken: number;
   focusToken: number;
   touchInput: boolean;
-  terminalFontSizePx: number;
-  terminalScreenReaderText: boolean;
-  mobileControlsScalePercent: number;
-  mobileTapTarget: MobileTerminalTapTarget;
-  mobileLongPressBehavior: MobileLongPressBehavior;
-  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
-  mobileCommandExpandingInput: boolean;
-  mobileCommandEnterNewline: boolean;
-  terminalInputTransport: TerminalInputTransport;
-  terminalInputBatchDelayMs: number;
-  terminalOutputCoalesceMs: number;
+  terminalOptions: TerminalViewTerminalOptions;
+  mobileOptions: TerminalViewMobileOptions;
   connectionKey: string;
   resumeToken: number;
   httpUrl: (path: string, query?: URLSearchParams) => string;
@@ -5342,17 +5375,8 @@ function SplitGrid({
               autoFocus={selected && !touchInput}
               scrollSensitivity={touchInput ? 2 : 0.4}
               mobileControls={selected && touchInput}
-              terminalFontSizePx={terminalFontSizePx}
-              terminalScreenReaderText={terminalScreenReaderText}
-              mobileControlsScalePercent={mobileControlsScalePercent}
-              mobileTapTarget={mobileTapTarget}
-              mobileLongPressBehavior={mobileLongPressBehavior}
-              mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
-              mobileCommandExpandingInput={mobileCommandExpandingInput}
-              mobileCommandEnterNewline={mobileCommandEnterNewline}
-              terminalInputTransport={terminalInputTransport}
-              terminalInputBatchDelayMs={terminalInputBatchDelayMs}
-              terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+              terminalOptions={terminalOptions}
+              mobileOptions={mobileOptions}
               refitToken={selected ? refitToken : 0}
               focusToken={selected ? focusToken : 0}
               accessibilityLabel={accessibilityLabel}

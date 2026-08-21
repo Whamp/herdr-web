@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, type Dispatch, type SetStateAction, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 import {
@@ -173,7 +173,7 @@ function readDisplayPrefs(): DisplayPrefs {
 }
 
 
-async function loadDisplayPrefs(): Promise<DisplayPrefs> {
+export async function loadDisplayPrefs(): Promise<DisplayPrefs> {
   const localPrefs = readDisplayPrefs();
   if (!isNativeApp()) {
     return localPrefs;
@@ -356,7 +356,7 @@ export function clampNotesListPaneWidth(width: number, notesPanelWidth = DEFAULT
 }
 
 
-async function writeDisplayPrefs(prefs: DisplayPrefs) {
+export async function writeDisplayPrefs(prefs: DisplayPrefs) {
   const value = JSON.stringify(prefs);
   if (isNativeApp()) {
     try {
@@ -410,41 +410,14 @@ export function parseCollapsedSidebarGroups(value: unknown, fallback: string[] =
 export function useAppPreferences(): {
   prefs: DisplayPrefs;
   prefsLoaded: boolean;
+  setPrefs: Dispatch<SetStateAction<DisplayPrefs>>;
+  setPrefsLoaded: Dispatch<SetStateAction<boolean>>;
   updatePrefs(
     patch: Partial<DisplayPrefs> | ((current: DisplayPrefs) => Partial<DisplayPrefs>),
   ): void;
 } {
   const [prefs, setPrefs] = useState<DisplayPrefs>(readDisplayPrefs);
   const [prefsLoaded, setPrefsLoaded] = useState(() => !isNativeApp());
-
-  // Native preferences load asynchronously; browser localStorage is already
-  // reflected by the synchronous first paint above.
-  useEffect(() => {
-    if (prefsLoaded) {
-      return;
-    }
-    let cancelled = false;
-    void loadDisplayPrefs().then((loadedPrefs) => {
-      if (cancelled) {
-        return;
-      }
-      setPrefs({
-        ...loadedPrefs,
-        notesPanelOpen: loadedPrefs.notesEnabled && loadedPrefs.notesPanelOpen,
-      });
-      setPrefsLoaded(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [prefsLoaded]);
-
-  useEffect(() => {
-    if (!prefsLoaded) {
-      return;
-    }
-    void writeDisplayPrefs(prefs);
-  }, [prefs, prefsLoaded]);
 
   const updatePrefs = useCallback(
     (
@@ -458,5 +431,5 @@ export function useAppPreferences(): {
     [],
   );
 
-  return { prefs, prefsLoaded, updatePrefs };
+  return { prefs, prefsLoaded, setPrefs, setPrefsLoaded, updatePrefs };
 }
