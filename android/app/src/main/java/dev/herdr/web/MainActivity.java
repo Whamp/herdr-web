@@ -6,10 +6,8 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsetsController;
 import androidx.appcompat.app.AppCompatDelegate;
-import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
-import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 
@@ -27,15 +25,11 @@ public class MainActivity extends BridgeActivity {
 
         View content = findViewById(android.R.id.content);
         content.setBackgroundColor(APP_BACKGROUND_COLOR);
-        ViewCompat.setOnApplyWindowInsetsListener(content, (view, windowInsets) -> {
-            Insets insets = windowInsets.getInsets(
-                WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
-            );
-            boolean keyboardVisible = windowInsets.isVisible(WindowInsetsCompat.Type.ime());
-            int bottomInset = keyboardVisible ? 0 : insets.bottom;
-            view.setPadding(insets.left, insets.top, insets.right, bottomInset);
-            return windowInsets;
-        });
+        // Inset handling is owned by the web layer: with the WebView spanning
+        // the full window, Chromium reports the real system bar insets through
+        // env(safe-area-inset-top/bottom), which the app applies via
+        // --content-inset-top/bottom. Padding the content view here as well
+        // would double-apply the insets on top of the CSS values.
         ViewCompat.requestApplyInsets(content);
     }
 
