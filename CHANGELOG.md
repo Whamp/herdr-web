@@ -10,6 +10,13 @@
 
 ### Added
 
+- Added terminal reconnection diagnostics. Web apps now record every terminal reconnect event
+  (connect attempts, attach results, close reasons, foreground resume signals, and backoff timing)
+  into a persistent on-device log, with a copy/clear panel under Settings → Bridge for collecting
+  the log from a phone.
+- Added bridge terminal websocket lifecycle logging: accepted connections with their query
+  parameters, attach handshake duration and retry counters, and session end records with duration
+  and exit cause (client disconnect, write failure, daemon close, or lagged output resync).
 - Added a mobile terminal key composer for Ctrl, Shift, and Alt chords with special keys and
   printable keyboard input such as `Alt+P`. [PR #63](https://github.com/kcosr/herdr-web/pull/63)
 - Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different

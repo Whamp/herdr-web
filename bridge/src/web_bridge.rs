@@ -3426,7 +3426,17 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     let output_encoding = query
         .output_encoding
         .unwrap_or(TerminalOutputWireEncoding::Identity);
+    info!(
+        terminal_id = %terminal_id,
+        cols,
+        rows,
+        takeover = query.takeover,
+        coalesce_ms = query.coalesce_ms,
+        output_encoding = ?output_encoding,
+        "terminal websocket accepted"
+    );
     let (mut ws_sender, mut ws_receiver) = socket.split();
+    let attach_started_at = Instant::now();
     let session = match acquire_terminal_session(
         state.clone(),
         terminal_id.clone(),
@@ -3438,12 +3448,23 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     {
         Ok(session) => session,
         Err(err) => {
+            warn!(
+                terminal_id = %terminal_id,
+                elapsed_ms = attach_started_at.elapsed().as_millis() as u64,
+                error = %err,
+                "terminal websocket attach failed"
+            );
             let _ = ws_sender
                 .send(Message::Text(close_message(&err.to_string()).into()))
                 .await;
             return;
         }
     };
+    debug!(
+        terminal_id = %terminal_id,
+        elapsed_ms = attach_started_at.elapsed().as_millis() as u64,
+        "terminal websocket attached"
+    );
 
     let write_tx = session.write_tx.clone();
     let mut terminal_rx = session.output_tx.subscribe();
@@ -3465,28 +3486,29 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
         cell_height_px: 0,
     });
 
-    loop {
+    let session_started_at = Instant::now();
+    let exit = loop {
         if let Some(deadline) = output_coalescer.deadline() {
             tokio::select! {
                 biased;
                 _ = tokio::time::sleep_until(deadline) => {
-                    if !handle_terminal_output_deadline(
+                    if let Some(exit) = handle_terminal_output_deadline(
                         &mut ws_sender,
                         &mut output_coalescer,
                         output_encoding,
                     )
                     .await
                     {
-                        break;
+                        break exit;
                     }
                 }
                 Some(message) = ws_receiver.next() => {
-                    if !handle_terminal_client_message(&write_tx, message) {
-                        break;
+                    if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
+                        break exit;
                     }
                 }
                 output = terminal_rx.recv() => {
-                    if !handle_terminal_output_message(
+                    if let Some(exit) = handle_terminal_output_message(
                         output,
                         &mut ws_sender,
                         &mut output_coalescer,
@@ -3494,15 +3516,15 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
                     )
                     .await
                     {
-                        break;
+                        break exit;
                     }
                 }
-                else => break,
+                else => break TerminalSessionExit::ClientDisconnected,
             }
         } else {
             tokio::select! {
                 output = terminal_rx.recv() => {
-                    if !handle_terminal_output_message(
+                    if let Some(exit) = handle_terminal_output_message(
                         output,
                         &mut ws_sender,
                         &mut output_coalescer,
@@ -3510,32 +3532,65 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
                     )
                     .await
                     {
-                        break;
+                        break exit;
                     }
                 }
                 Some(message) = ws_receiver.next() => {
-                    if !handle_terminal_client_message(&write_tx, message) {
-                        break;
+                    if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
+                        break exit;
                     }
                 }
-                else => break,
+                else => break TerminalSessionExit::ClientDisconnected,
             }
         }
-    }
+    };
+    let lagged_frames = match &exit {
+        TerminalSessionExit::OutputLagged(frames) => Some(*frames),
+        _ => None,
+    };
+    let daemon_reason = match &exit {
+        TerminalSessionExit::DaemonClosed(reason) => Some(reason.as_str()),
+        _ => None,
+    };
+    info!(
+        terminal_id = %terminal_id,
+        duration_ms = session_started_at.elapsed().as_millis() as u64,
+        exit = ?exit,
+        lagged_frames,
+        daemon_reason,
+        "terminal websocket session ended"
+    );
 
     release_terminal_session(&state.terminal_sessions, &terminal_id, &session);
+}
+
+/// Why a terminal websocket session's main loop ended. Logged with each
+/// session-end record so mobile reconnection bugs can be attributed to a
+/// client disconnect, a failed daemon attach, or dropped output.
+#[derive(Debug)]
+enum TerminalSessionExit {
+    /// The browser closed the socket or the transport errored.
+    ClientDisconnected,
+    /// A client frame could not be forwarded to the daemon writer.
+    ClientWriteFailed,
+    /// The daemon reported the terminal attach closed.
+    DaemonClosed(String),
+    /// The client lagged the output broadcast; the socket closes for resync.
+    OutputLagged(u64),
+    /// The daemon output channel closed.
+    OutputChannelClosed,
 }
 
 async fn handle_terminal_output_deadline(
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     output_coalescer: &mut TerminalOutputCoalescer,
     output_encoding: TerminalOutputWireEncoding,
-) -> bool {
+) -> Option<TerminalSessionExit> {
     let Some(reason) = output_coalescer.handle_deadline() else {
-        return true;
+        return None;
     };
     let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
-        return true;
+        return None;
     };
     send_terminal_output_frame(ws_sender, bytes, output_encoding).await
 }
@@ -3544,14 +3599,17 @@ async fn send_terminal_output_frame(
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     bytes: Bytes,
     output_encoding: TerminalOutputWireEncoding,
-) -> bool {
-    ws_sender
+) -> Option<TerminalSessionExit> {
+    match ws_sender
         .send(Message::Binary(encode_terminal_output_frame(
             bytes,
             output_encoding,
         )))
         .await
-        .is_ok()
+    {
+        Ok(()) => None,
+        Err(_) => Some(TerminalSessionExit::ClientWriteFailed),
+    }
 }
 
 async fn handle_terminal_output_message(
@@ -3559,40 +3617,38 @@ async fn handle_terminal_output_message(
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     output_coalescer: &mut TerminalOutputCoalescer,
     output_encoding: TerminalOutputWireEncoding,
-) -> bool {
+) -> Option<TerminalSessionExit> {
     match output {
         Ok(TerminalOutput::Bytes(bytes)) => {
             let decision = output_coalescer.push_bytes(bytes, Instant::now());
             match decision {
                 TerminalOutputCoalescingDecision::SendNow(bytes) => {
-                    if !send_terminal_output_frame(ws_sender, bytes, output_encoding).await {
-                        return false;
-                    }
+                    send_terminal_output_frame(ws_sender, bytes, output_encoding).await
                 }
-                TerminalOutputCoalescingDecision::Pending => {}
+                TerminalOutputCoalescingDecision::Pending => None,
                 TerminalOutputCoalescingDecision::FlushPending(reason) => {
                     let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
-                        return true;
+                        return None;
                     };
-                    if !send_terminal_output_frame(ws_sender, bytes, output_encoding).await {
-                        return false;
-                    }
+                    send_terminal_output_frame(ws_sender, bytes, output_encoding).await
                 }
             }
-            true
         }
         Ok(TerminalOutput::Close(reason)) => {
             if let Some(bytes) =
                 output_coalescer.flush_pending(TerminalOutputFlushReason::Close, Instant::now())
             {
-                if !send_terminal_output_frame(ws_sender, bytes, output_encoding).await {
-                    return false;
+                if send_terminal_output_frame(ws_sender, bytes, output_encoding)
+                    .await
+                    .is_some()
+                {
+                    return Some(TerminalSessionExit::ClientWriteFailed);
                 }
             }
             let _ = ws_sender
                 .send(Message::Text(close_message(&reason).into()))
                 .await;
-            false
+            Some(TerminalSessionExit::DaemonClosed(reason))
         }
         Err(tokio::sync::broadcast::error::RecvError::Lagged(frames)) => {
             // Dropped frames would silently corrupt the stateful ANSI stream.
@@ -3600,22 +3656,30 @@ async fn handle_terminal_output_message(
             // reconnects and gets a clean repaint from a fresh attach.
             output_coalescer.record_lagged(frames);
             warn!(frames, "terminal output lagged; closing socket for resync");
-            false
+            Some(TerminalSessionExit::OutputLagged(frames))
         }
-        Err(tokio::sync::broadcast::error::RecvError::Closed) => false,
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+            Some(TerminalSessionExit::OutputChannelClosed)
+        }
     }
 }
 
 fn handle_terminal_client_message(
     write_tx: &TerminalWriter,
     message: Result<Message, axum::Error>,
-) -> bool {
+) -> Option<TerminalSessionExit> {
     match message {
-        Ok(Message::Text(text)) => handle_terminal_text_frame(write_tx, text.as_str()).is_ok(),
-        Ok(Message::Binary(bytes)) => send_terminal_input_chunks(write_tx, &bytes).is_ok(),
-        Ok(Message::Close(_)) => false,
-        Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => true,
-        Err(_) => false,
+        Ok(Message::Text(text)) => match handle_terminal_text_frame(write_tx, text.as_str()) {
+            Ok(()) => None,
+            Err(_) => Some(TerminalSessionExit::ClientWriteFailed),
+        },
+        Ok(Message::Binary(bytes)) => match send_terminal_input_chunks(write_tx, &bytes) {
+            Ok(_) => None,
+            Err(_) => Some(TerminalSessionExit::ClientWriteFailed),
+        },
+        Ok(Message::Close(_)) => Some(TerminalSessionExit::ClientDisconnected),
+        Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => None,
+        Err(_) => Some(TerminalSessionExit::ClientDisconnected),
     }
 }
 
@@ -3651,6 +3715,10 @@ async fn acquire_terminal_session(
                 })?;
                 if let Some(session) = sessions.active.get(&terminal_id) {
                     session.client_count.fetch_add(1, Ordering::AcqRel);
+                    debug!(
+                        terminal_id = %terminal_id,
+                        "terminal websocket joined existing session"
+                    );
                     return Ok(session.clone());
                 }
                 if let Some(gate) = sessions.attaching.get(&terminal_id) {
@@ -3792,6 +3860,13 @@ async fn acquire_terminal_session(
             sessions.active.insert(terminal_id.clone(), session.clone());
             drop(sessions);
             release_attach_gate(&state.terminal_sessions, &terminal_id, &gate);
+            debug!(
+                terminal_id = %terminal_id,
+                drain_waits,
+                gate_waits,
+                handshake_retries,
+                "terminal attach handshake completed"
+            );
             return Ok(session);
         }
     })

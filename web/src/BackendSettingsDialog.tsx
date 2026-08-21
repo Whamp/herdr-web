@@ -54,6 +54,12 @@ import type {
 } from "./mobileTerminalPrefs";
 import type { NavigationSyncMode } from "./navigationPrefs";
 import { trapFocusWithin, useFocusReturn } from "./overlayFocus";
+import { copyTextToClipboard } from "./clipboard";
+import {
+  clearReconnectDiagnostics,
+  formatReconnectDiagnostics,
+  loadReconnectDiagnosticEvents,
+} from "./reconnectDiagnostics";
 import { TERMINAL_INPUT_BATCH_DELAY_OPTIONS_MS } from "./terminalInputTransport";
 import type { TerminalInputTransport } from "./terminalInputTransport";
 import { TERMINAL_OUTPUT_COALESCE_OPTIONS_MS } from "./terminalOutputCoalescing";
@@ -169,6 +175,8 @@ export function BackendSettingsDialog({
   const [message, setMessage] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<BridgeBackendProfile | null>(null);
   const [activeArea, setActiveArea] = useState<SettingsArea>("bridge");
+  const [diagnosticCount, setDiagnosticCount] = useState(() => loadReconnectDiagnosticEvents().length);
+  const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
 
   const selectedBackend = useMemo(
     () => bridge.store.backends.find((backend) => backend.id === form.id) ?? null,
@@ -202,6 +210,23 @@ export function BackendSettingsDialog({
     setForm(newBackendForm(bridge.store.backends));
     setMessage(null);
     setDuplicate(null);
+  };
+
+  const refreshDiagnosticCount = () => {
+    setDiagnosticCount(loadReconnectDiagnosticEvents().length);
+  };
+
+  const copyConnectionLog = () => {
+    void copyTextToClipboard(formatReconnectDiagnostics())
+      .then(() => setDiagnosticMessage("Connection log copied"))
+      .catch(() => setDiagnosticMessage("Copy failed"))
+      .finally(refreshDiagnosticCount);
+  };
+
+  const clearConnectionLog = () => {
+    clearReconnectDiagnostics();
+    setDiagnosticMessage("Connection log cleared");
+    refreshDiagnosticCount();
   };
 
   const startNew = () => {
@@ -500,6 +525,35 @@ export function BackendSettingsDialog({
                     </button>
                   </div>
                 ) : null}
+                <div className="settings-section settings-section-flat">
+                  <div className="settings-label">Reconnection diagnostics</div>
+                  <div className="settings-row">
+                    <span>
+                      Terminal reconnect events recorded on this device ({diagnosticCount})
+                    </span>
+                  </div>
+                  {diagnosticMessage ? (
+                    <div className="modal-message">{diagnosticMessage}</div>
+                  ) : null}
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={diagnosticCount === 0}
+                      onClick={copyConnectionLog}
+                    >
+                      Copy log
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={diagnosticCount === 0}
+                      onClick={clearConnectionLog}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
               </>
             ) : null}
 

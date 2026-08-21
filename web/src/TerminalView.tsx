@@ -22,6 +22,8 @@ import {
 import type { MobileTerminalChordKey } from "./mobileTerminalControls";
 import { ConfirmDialog } from "./overlays";
 import { addNativeResumeHandler } from "./native";
+import { copyTextToClipboard } from "./clipboard";
+import { recordReconnectDiagnostic } from "./reconnectDiagnostics";
 import { shellQuote } from "./shell";
 import {
   isNonRetryableTerminalClose,
@@ -289,7 +291,7 @@ export function TerminalView({
   const copyText = useCallback(
     async (text: string, successMessage: string) => {
       try {
-        await copyToClipboard(text);
+        await copyTextToClipboard(text);
         showUploadStatus(successMessage, 2200);
       } catch (error) {
         console.warn("selection copy failed", error);
@@ -692,6 +694,7 @@ export function TerminalView({
     const pendingForegroundReasons = new Set<ReconnectReason>();
 
     const debugReconnect = (event: string, details: Record<string, unknown> = {}) => {
+      recordReconnectDiagnostic(terminalId, event, details);
       if (DEBUG_TERMINAL_RECONNECT) {
         console.debug("terminal reconnect:", event, { terminalId, ...details });
       }
@@ -811,7 +814,10 @@ export function TerminalView({
         setCloseReason(null);
         setHasAttachedForTerminal(true);
         setConnectionState("attached");
-        debugReconnect("open", { socketGeneration: currentSocketGeneration });
+        debugReconnect("open", {
+          socketGeneration: currentSocketGeneration,
+          durationMs: Math.round(performance.now() - socketStartedAt),
+        });
         const size = ready.measure();
         if (size) {
           sendResize(size);
@@ -868,6 +874,11 @@ export function TerminalView({
           socketRef.current = null;
         }
         socket = null;
+        debugReconnect("close", {
+          socketGeneration: currentSocketGeneration,
+          reason: lastCloseReason,
+          lifetimeMs: Math.round(performance.now() - socketStartedAt),
+        });
         if (lastCloseReason) {
           console.warn("terminal websocket closed", lastCloseReason);
         }
@@ -983,10 +994,18 @@ export function TerminalView({
       }
       const now = performance.now();
       lastForegroundReconnectAt = now;
+      const currentSocket = socket;
       const reasons = Array.from(pendingForegroundReasons);
       pendingForegroundReasons.clear();
-      debugReconnect("signal", { reason, reasons });
-      const currentSocket = socket;
+      debugReconnect("signal", {
+        reason,
+        reasons,
+        socketState: currentSocket?.readyState ?? "none",
+        sinceSocketStartMs:
+          currentSocket && socketStartedAt > 0
+            ? Math.round(now - socketStartedAt)
+            : null,
+      });
       if (currentSocket?.readyState === WebSocket.OPEN) {
         const size = ready.measure("refresh");
         if (size) {
@@ -1919,28 +1938,6 @@ function terminalSocketUrl(
     params.set("output_encoding", "gzip");
   }
   return wsUrl("/ws/terminal", params);
-}
-
-async function copyToClipboard(text: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-10000px";
-  textarea.style.top = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    if (!document.execCommand("copy")) {
-      throw new Error("execCommand copy failed");
-    }
-  } finally {
-    textarea.remove();
-  }
 }
 
 function uploadCandidatesFromFileList(files: FileList | null): UploadCandidate[] {
