@@ -3690,8 +3690,11 @@ export function App() {
     "--sidebar-w": `${sidebarWidth}px`,
     "--notes-w": `${notesPanelWidth}px`,
     "--notes-list-w": `${notesListPaneWidth}px`,
-    "--content-inset-top": `${contentInsetTopPx}px`,
-    "--content-inset-bottom": `${contentInsetBottomPx}px`,
+    // Never draw under the system status/navigation bars: take the larger of
+    // the user's manual inset and the device safe-area inset (populated by the
+    // viewport-fit=cover viewport on edge-to-edge Android builds).
+    "--content-inset-top": `max(${contentInsetTopPx}px, env(safe-area-inset-top))`,
+    "--content-inset-bottom": `max(${contentInsetBottomPx}px, env(safe-area-inset-bottom))`,
     "--mobile-controls-scale": String(mobileControlsScalePercent / 100),
   } as CSSProperties &
     Record<
