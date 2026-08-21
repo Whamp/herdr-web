@@ -5,10 +5,25 @@ use std::io::{self, ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::terminal_session::{
+    acquire_terminal_session, encode_terminal_output_frame, prune_detached_terminal_sessions,
+    release_terminal_session, ConnectionClosed, TerminalAttach, TerminalAttachError, TerminalClose,
+    TerminalCloseCause, TerminalDaemonAttach, TerminalOutput, TerminalOutputCoalescer,
+    TerminalOutputCoalescingDecision, TerminalOutputFlushReason, TerminalOutputWireEncoding,
+    TerminalSessionExit, TerminalSessions, TerminalWriter, WaitPolicy,
+    DEFAULT_TERMINAL_OUTPUT_COALESCE_MS, MAX_TERMINAL_OUTPUT_COALESCE_MS,
+    TERMINAL_OUTPUT_GZIP_ACKNOWLEDGEMENT,
+};
+#[cfg(test)]
+use crate::terminal_session::{
+    close_message, drain_terminal_output_pending, raw_terminal_output_frame, release_attach_gate,
+    SharedTerminalSession, TerminalOutputCoalescingStats, MAX_QUEUED_TERMINAL_INPUT_BYTES,
+    TERMINAL_OUTPUT_COALESCE_MAX_BYTES, TERMINAL_OUTPUT_FRAME_GZIP, TERMINAL_OUTPUT_FRAME_RAW,
+};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
@@ -21,8 +36,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{extract::Request as AxumRequest, Json, Router};
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
 use herdr_compat::TryClone as _;
 use serde::{Deserialize, Serialize};
@@ -68,20 +81,6 @@ const MIN_HERDR_VERSION_LABEL: &str = "0.8.2";
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const MAX_NOTES_REQUEST_BYTES: usize = 512 * 1024;
 const MAX_TERMINAL_INPUT_CHUNK_BYTES: usize = 768 * 1024;
-const MAX_QUEUED_TERMINAL_INPUT_BYTES: usize = 8 * 1024 * 1024;
-const TERMINAL_DETACH_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_TERMINAL_DETACH_DRAIN_WAITS: usize = 4;
-const MAX_ATTACH_HANDSHAKE_RETRIES: usize = 2;
-const TERMINAL_ATTACH_GATE_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_TERMINAL_OUTPUT_COALESCE_MS: u64 = 16;
-const MAX_TERMINAL_OUTPUT_COALESCE_MS: u64 = 256;
-const TERMINAL_OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
-const TERMINAL_OUTPUT_COALESCE_MAX_CHUNKS: usize = 256;
-const TERMINAL_OUTPUT_FRAME_RAW: u8 = 0;
-const TERMINAL_OUTPUT_FRAME_GZIP: u8 = 1;
-const TERMINAL_OUTPUT_GZIP_MIN_BYTES: usize = 256;
-const TERMINAL_OUTPUT_GZIP_ACKNOWLEDGEMENT: &str =
-    r#"{"type":"terminal_output_encoding","encoding":"gzip"}"#;
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTIVITY_WATCHER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const ACTIVITY_WATCHER_MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -245,349 +244,6 @@ fn default_scroll_lines() -> u16 {
     3
 }
 
-#[derive(Debug, Clone)]
-enum TerminalOutput {
-    Bytes(Bytes),
-    Close(String),
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum TerminalOutputWireEncoding {
-    Identity,
-    Gzip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalOutputFlushReason {
-    Timer,
-    ByteThreshold,
-    ChunkThreshold,
-    Close,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TerminalOutputCoalescingDecision {
-    SendNow(Bytes),
-    Pending,
-    FlushPending(TerminalOutputFlushReason),
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TerminalOutputCoalescingStats {
-    source_frames: u64,
-    source_bytes: u64,
-    sent_frames: u64,
-    sent_bytes: u64,
-    immediate_frames: u64,
-    coalesced_source_frames: u64,
-    coalesced_sent_frames: u64,
-    timer_flushes: u64,
-    byte_flushes: u64,
-    chunk_flushes: u64,
-    single_chunk_flushes: u64,
-    merged_flushes: u64,
-    lagged_events: u64,
-    lagged_frames: u64,
-    max_pending_bytes: usize,
-    max_pending_chunks: usize,
-    total_flush_latency_us: u128,
-    max_flush_latency_us: u128,
-}
-
-#[cfg(test)]
-impl TerminalOutputCoalescingStats {
-    fn record_source(&mut self, bytes: usize) {
-        self.source_frames += 1;
-        self.source_bytes += bytes as u64;
-    }
-
-    fn record_immediate_send(&mut self, bytes: usize) {
-        self.sent_frames += 1;
-        self.sent_bytes += bytes as u64;
-        self.immediate_frames += 1;
-    }
-
-    fn record_pending(&mut self, bytes: usize, chunks: usize) {
-        self.max_pending_bytes = self.max_pending_bytes.max(bytes);
-        self.max_pending_chunks = self.max_pending_chunks.max(chunks);
-    }
-
-    fn record_flush_reason(&mut self, reason: TerminalOutputFlushReason) {
-        match reason {
-            TerminalOutputFlushReason::Timer => self.timer_flushes += 1,
-            TerminalOutputFlushReason::ByteThreshold => self.byte_flushes += 1,
-            TerminalOutputFlushReason::ChunkThreshold => self.chunk_flushes += 1,
-            TerminalOutputFlushReason::Close => {}
-        }
-    }
-
-    fn record_coalesced_send(&mut self, source_chunks: usize, bytes: usize, latency: Duration) {
-        self.sent_frames += 1;
-        self.sent_bytes += bytes as u64;
-        self.coalesced_source_frames += source_chunks as u64;
-        self.coalesced_sent_frames += 1;
-        if source_chunks <= 1 {
-            self.single_chunk_flushes += 1;
-        } else {
-            self.merged_flushes += 1;
-        }
-
-        let latency_us = latency.as_micros();
-        self.total_flush_latency_us += latency_us;
-        self.max_flush_latency_us = self.max_flush_latency_us.max(latency_us);
-    }
-
-    fn record_lagged(&mut self, frames: u64) {
-        self.lagged_events += 1;
-        self.lagged_frames += frames;
-    }
-
-    #[cfg(test)]
-    fn frames_saved(&self) -> u64 {
-        self.source_frames.saturating_sub(self.sent_frames)
-    }
-
-    #[cfg(test)]
-    fn coalescing_ratio(&self) -> f64 {
-        if self.sent_frames == 0 {
-            return 0.0;
-        }
-        self.source_frames as f64 / self.sent_frames as f64
-    }
-
-    #[cfg(test)]
-    fn avg_source_frame_bytes(&self) -> f64 {
-        if self.source_frames == 0 {
-            return 0.0;
-        }
-        self.source_bytes as f64 / self.source_frames as f64
-    }
-
-    #[cfg(test)]
-    fn avg_sent_frame_bytes(&self) -> f64 {
-        if self.sent_frames == 0 {
-            return 0.0;
-        }
-        self.sent_bytes as f64 / self.sent_frames as f64
-    }
-
-    #[cfg(test)]
-    fn avg_flush_latency_us(&self) -> f64 {
-        if self.coalesced_sent_frames == 0 {
-            return 0.0;
-        }
-        self.total_flush_latency_us as f64 / self.coalesced_sent_frames as f64
-    }
-}
-
-struct TerminalOutputCoalescer {
-    window: Duration,
-    pending: Vec<Bytes>,
-    pending_bytes: usize,
-    pending_started_at: Option<Instant>,
-    deadline: Option<Instant>,
-    #[cfg(test)]
-    lifetime_stats: TerminalOutputCoalescingStats,
-}
-
-impl TerminalOutputCoalescer {
-    fn new(window: Duration) -> Self {
-        Self {
-            window,
-            pending: Vec::new(),
-            pending_bytes: 0,
-            pending_started_at: None,
-            deadline: None,
-            #[cfg(test)]
-            lifetime_stats: TerminalOutputCoalescingStats::default(),
-        }
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.deadline
-    }
-
-    fn push_bytes(&mut self, bytes: Bytes, now: Instant) -> TerminalOutputCoalescingDecision {
-        let byte_count = bytes.len();
-        self.record_source(byte_count);
-
-        if self.window.is_zero() {
-            self.record_immediate_send(byte_count);
-            return TerminalOutputCoalescingDecision::SendNow(bytes);
-        }
-
-        if self.deadline.is_none() {
-            self.deadline = Some(now + self.window);
-            self.record_immediate_send(byte_count);
-            return TerminalOutputCoalescingDecision::SendNow(bytes);
-        }
-
-        if self.pending.is_empty() {
-            self.pending_started_at = Some(now);
-        }
-        self.pending_bytes += byte_count;
-        self.pending.push(bytes);
-        self.record_pending();
-
-        if self.pending_bytes >= TERMINAL_OUTPUT_COALESCE_MAX_BYTES {
-            TerminalOutputCoalescingDecision::FlushPending(TerminalOutputFlushReason::ByteThreshold)
-        } else if self.pending.len() >= TERMINAL_OUTPUT_COALESCE_MAX_CHUNKS {
-            TerminalOutputCoalescingDecision::FlushPending(
-                TerminalOutputFlushReason::ChunkThreshold,
-            )
-        } else {
-            TerminalOutputCoalescingDecision::Pending
-        }
-    }
-
-    fn handle_deadline(&mut self) -> Option<TerminalOutputFlushReason> {
-        self.deadline?;
-        if self.pending.is_empty() {
-            self.deadline = None;
-            return None;
-        }
-        Some(TerminalOutputFlushReason::Timer)
-    }
-
-    fn flush_pending(&mut self, reason: TerminalOutputFlushReason, now: Instant) -> Option<Bytes> {
-        if self.pending.is_empty() {
-            self.pending_bytes = 0;
-            self.pending_started_at = None;
-            if matches!(reason, TerminalOutputFlushReason::Close) {
-                self.deadline = None;
-            }
-            return None;
-        }
-
-        self.record_flush_reason(reason);
-        let source_chunks = self.pending.len();
-        let latency = self
-            .pending_started_at
-            .map(|started_at| now.saturating_duration_since(started_at))
-            .unwrap_or_default();
-        let Some(bytes) = drain_terminal_output_pending(&mut self.pending, &mut self.pending_bytes)
-        else {
-            self.pending_started_at = None;
-            return None;
-        };
-
-        self.pending_started_at = None;
-        if matches!(reason, TerminalOutputFlushReason::Close) {
-            self.deadline = None;
-        } else {
-            // Keep a trailing window warm so sustained redraws continue batching between flushes.
-            self.deadline = Some(now + self.window);
-        }
-        self.record_coalesced_send(source_chunks, bytes.len(), latency);
-        Some(bytes)
-    }
-
-    #[cfg(test)]
-    fn record_lagged(&mut self, frames: u64) {
-        self.lifetime_stats.record_lagged(frames);
-    }
-
-    #[cfg(not(test))]
-    fn record_lagged(&mut self, _frames: u64) {}
-
-    #[cfg(test)]
-    fn record_source(&mut self, bytes: usize) {
-        self.lifetime_stats.record_source(bytes);
-    }
-
-    #[cfg(not(test))]
-    fn record_source(&mut self, _bytes: usize) {}
-
-    #[cfg(test)]
-    fn record_immediate_send(&mut self, bytes: usize) {
-        self.lifetime_stats.record_immediate_send(bytes);
-    }
-
-    #[cfg(not(test))]
-    fn record_immediate_send(&mut self, _bytes: usize) {}
-
-    #[cfg(test)]
-    fn record_pending(&mut self) {
-        self.lifetime_stats
-            .record_pending(self.pending_bytes, self.pending.len());
-    }
-
-    #[cfg(not(test))]
-    fn record_pending(&mut self) {}
-
-    #[cfg(test)]
-    fn record_flush_reason(&mut self, reason: TerminalOutputFlushReason) {
-        self.lifetime_stats.record_flush_reason(reason);
-    }
-
-    #[cfg(not(test))]
-    fn record_flush_reason(&mut self, _reason: TerminalOutputFlushReason) {}
-
-    #[cfg(test)]
-    fn record_coalesced_send(&mut self, chunks: usize, bytes: usize, latency: Duration) {
-        self.lifetime_stats
-            .record_coalesced_send(chunks, bytes, latency);
-    }
-
-    #[cfg(not(test))]
-    fn record_coalesced_send(&mut self, _chunks: usize, _bytes: usize, _latency: Duration) {}
-}
-
-fn encode_terminal_output_frame(bytes: Bytes, encoding: TerminalOutputWireEncoding) -> Bytes {
-    if matches!(encoding, TerminalOutputWireEncoding::Identity) {
-        return bytes;
-    }
-
-    if bytes.len() < TERMINAL_OUTPUT_GZIP_MIN_BYTES {
-        return raw_terminal_output_frame(bytes);
-    }
-
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    if encoder.write_all(&bytes).is_ok() {
-        if let Ok(compressed) = encoder.finish() {
-            if compressed.len() < bytes.len() {
-                let mut frame = Vec::with_capacity(compressed.len() + 1);
-                frame.push(TERMINAL_OUTPUT_FRAME_GZIP);
-                frame.extend_from_slice(&compressed);
-                return Bytes::from(frame);
-            }
-        }
-    }
-
-    raw_terminal_output_frame(bytes)
-}
-
-fn raw_terminal_output_frame(bytes: Bytes) -> Bytes {
-    let mut frame = Vec::with_capacity(bytes.len() + 1);
-    frame.push(TERMINAL_OUTPUT_FRAME_RAW);
-    frame.extend_from_slice(&bytes);
-    Bytes::from(frame)
-}
-
-fn drain_terminal_output_pending(
-    pending: &mut Vec<Bytes>,
-    pending_bytes: &mut usize,
-) -> Option<Bytes> {
-    if pending.is_empty() {
-        *pending_bytes = 0;
-        return None;
-    }
-
-    let byte_count = *pending_bytes;
-    *pending_bytes = 0;
-    if pending.len() == 1 {
-        return pending.pop();
-    }
-
-    let mut output = Vec::with_capacity(byte_count);
-    for chunk in pending.drain(..) {
-        output.extend_from_slice(&chunk);
-    }
-    Some(Bytes::from(output))
-}
-
 fn terminal_output_coalesce_window(coalesce_ms: Option<u64>) -> Duration {
     Duration::from_millis(
         coalesce_ms
@@ -596,106 +252,8 @@ fn terminal_output_coalesce_window(coalesce_ms: Option<u64>) -> Duration {
     )
 }
 
-/// Shared attach connections keyed by terminal id. `draining` remembers
-/// connections whose `Detach` has been queued but not yet flushed to the
-/// daemon and shut down by the writer thread. A reattach waits for that
-/// teardown so the new attach cannot reach the daemon ahead of the pending
-/// `Detach` and be rejected as a second concurrent client. The daemon never
-/// closes attach sockets itself, so the close that resolves a draining entry
-/// is always the bridge's own post-`Detach` shutdown. `attaching` serializes
-/// fresh attach handshakes per terminal: with two concurrent attaches the
-/// daemon accepts one and rejects the other, and which one the map would
-/// keep is an independent race — so concurrent acquires instead wait for the
-/// in-flight handshake and join the session it publishes.
-#[derive(Default)]
-struct TerminalSessions {
-    active: HashMap<String, SharedTerminalSession>,
-    draining: HashMap<String, Arc<ConnectionClosed>>,
-    attaching: HashMap<String, Arc<ConnectionClosed>>,
-}
-
-/// Signals that a daemon attach connection has fully closed.
-#[derive(Default)]
-struct ConnectionClosed {
-    closed: Mutex<bool>,
-    condvar: Condvar,
-}
-
-impl ConnectionClosed {
-    fn mark_closed(&self) {
-        let mut closed = match self.closed.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *closed = true;
-        drop(closed);
-        self.condvar.notify_all();
-    }
-
-    fn is_closed(&self) -> bool {
-        match self.closed.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
-    }
-
-    /// Returns true once the connection is closed, or false on timeout.
-    fn wait_closed(&self, timeout: Duration) -> bool {
-        let closed = match self.closed.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        match self
-            .condvar
-            .wait_timeout_while(closed, timeout, |closed| !*closed)
-        {
-            Ok((closed, _)) => *closed,
-            Err(poisoned) => *poisoned.into_inner().0,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct SharedTerminalSession {
-    write_tx: TerminalWriter,
-    output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
-    client_count: Arc<AtomicUsize>,
-    connection_closed: Arc<ConnectionClosed>,
-}
-
-/// Sender for daemon-bound terminal messages that bounds how many input
-/// bytes may sit in the writer queue, so a client streaming input faster
-/// than the pty consumes it cannot balloon bridge memory.
-#[derive(Clone)]
-struct TerminalWriter {
-    tx: mpsc::Sender<ClientMessage>,
-    queued_input_bytes: Arc<AtomicUsize>,
-}
-
-impl TerminalWriter {
-    fn send(&self, message: ClientMessage) -> Result<(), mpsc::SendError<ClientMessage>> {
-        self.tx.send(message)
-    }
-
-    /// Reserve queue budget for a whole input frame before any of its chunks
-    /// are enqueued, so an oversized frame is rejected atomically instead of
-    /// delivering truncated input to the pty.
-    fn reserve_input_bytes(&self, len: usize) -> Result<(), String> {
-        let queued = self.queued_input_bytes.fetch_add(len, Ordering::AcqRel);
-        if queued + len > MAX_QUEUED_TERMINAL_INPUT_BYTES {
-            self.queued_input_bytes.fetch_sub(len, Ordering::AcqRel);
-            return Err("terminal input backlog exceeded".to_string());
-        }
-        Ok(())
-    }
-
-    fn release_input_bytes(&self, len: usize) {
-        self.queued_input_bytes.fetch_sub(len, Ordering::AcqRel);
-    }
-}
-
 #[derive(Debug)]
-enum BridgeError {
+pub(crate) enum BridgeError {
     Api(ApiClientError),
     Io(io::Error),
     BadRequest(String),
@@ -1971,7 +1529,11 @@ async fn command_handler(
         .map_err(|err| BridgeError::Protocol(err.to_string()))?;
     if should_prune_terminal_sessions {
         let prune_state = state.clone();
-        tokio::task::spawn_blocking(move || prune_detached_terminal_sessions(&prune_state));
+        tokio::task::spawn_blocking(move || {
+            let registry = prune_state.terminal_sessions.clone();
+            let api = prune_state.api.clone();
+            prune_detached_terminal_sessions(&registry, &api);
+        });
     }
     Ok(Json(value))
 }
@@ -3204,7 +2766,7 @@ fn observe_agent_activity_snapshot(state: &BridgeState, panes: &[PaneInfo]) {
     }
 }
 
-fn current_panes(api: &ApiClient) -> Result<Vec<PaneInfo>, BridgeError> {
+pub(crate) fn current_panes(api: &ApiClient) -> Result<Vec<PaneInfo>, BridgeError> {
     match api_request(
         api,
         "herdr-web:pane-list",
@@ -3307,7 +2869,11 @@ async fn handle_events_socket(socket: WebSocket, state: BridgeState) {
             Some(event) = event_rx.recv() => {
                 if event_may_close_terminal_session(&event) {
                     let prune_state = state.clone();
-                    tokio::task::spawn_blocking(move || prune_detached_terminal_sessions(&prune_state));
+                    tokio::task::spawn_blocking(move || {
+            let registry = prune_state.terminal_sessions.clone();
+            let api = prune_state.api.clone();
+            prune_detached_terminal_sessions(&registry, &api);
+        });
                 }
                 if ws_sender.send(Message::Text(event.into())).await.is_err() {
                     break;
@@ -3437,8 +3003,14 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     );
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let attach_started_at = Instant::now();
+    let daemon = LiveTerminalDaemon {
+        api: state.api.clone(),
+        client_socket_path: state.client_socket_path.clone(),
+    };
     let session = match acquire_terminal_session(
-        state.clone(),
+        state.terminal_sessions.clone(),
+        daemon,
+        WaitPolicy::production(),
         terminal_id.clone(),
         cols,
         rows,
@@ -3569,116 +3141,161 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     release_terminal_session(&state.terminal_sessions, &terminal_id, &session);
 }
 
-/// Why a terminal websocket session's main loop ended. Logged with each
-/// session-end record so mobile reconnection bugs can be attributed to a
-/// client disconnect, a failed daemon attach, or dropped output.
-#[derive(Debug)]
-enum TerminalSessionExit {
-    /// The browser closed the socket or the transport errored.
-    ClientDisconnected,
-    /// A client frame could not be forwarded to the daemon writer.
-    ClientWriteFailed,
-    /// The daemon reported the terminal attach closed.
-    DaemonClosed(String),
-    /// The client lagged the output broadcast; the socket closes for resync.
-    OutputLagged(u64),
-    /// The daemon output channel closed.
-    OutputChannelClosed,
-}
-
-/// Machine-readable close cause sent to the web client in the `closed` frame.
-/// The vocabulary is pinned by `protocol/terminal-close-causes.json`, which
-/// both the Rust serializer tests and the TypeScript decoder tests read. The
-/// web client owns retry policy per cause; this side only classifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalCloseCause {
-    /// Another client holds the terminal attach; usually transient.
-    AttachConflict,
-    /// This connection was taken over by a newer attach elsewhere.
-    TakenOver,
-    /// The daemon refused the attach because the terminal is gone.
-    TerminalGone,
-    /// The bridge gave up attaching amid sustained detach churn.
-    PendingDetach,
-    /// The daemon closed the attach mid-session (e.g. terminal exited).
-    DaemonClosed,
-    /// The client lagged the output broadcast; reconnect for a clean repaint.
-    OutputLagged,
-    /// The bridge could not reach or speak to the daemon.
-    TransportFailed,
-}
-
-impl TerminalCloseCause {
-    fn wire_name(self) -> &'static str {
-        match self {
-            TerminalCloseCause::AttachConflict => "attach_conflict",
-            TerminalCloseCause::TakenOver => "taken_over",
-            TerminalCloseCause::TerminalGone => "terminal_gone",
-            TerminalCloseCause::PendingDetach => "pending_detach",
-            TerminalCloseCause::DaemonClosed => "daemon_closed",
-            TerminalCloseCause::OutputLagged => "output_lagged",
-            TerminalCloseCause::TransportFailed => "transport_failed",
-        }
-    }
-
-    /// Classifies the daemon's attach-rejection prose. Protocol 20 carries no
-    /// typed error codes, so `Welcome.error` text is the only signal; this is
-    /// the single place in either codebase allowed to match on it.
-    fn from_daemon_attach_error(prose: &str) -> Self {
-        if prose.contains("already has an attached client") {
-            TerminalCloseCause::AttachConflict
-        } else if prose.contains("terminal attach taken over") {
-            TerminalCloseCause::TakenOver
-        } else if prose.contains("terminal attach failed: terminal") {
-            TerminalCloseCause::TerminalGone
-        } else {
-            TerminalCloseCause::DaemonClosed
-        }
-    }
-}
-
-/// A typed close frame for the web client: stable `cause` plus human-readable
-/// `detail` for logs and diagnostics.
-#[derive(Debug, Clone)]
-struct TerminalClose {
-    cause: TerminalCloseCause,
-    detail: String,
-}
-
-impl TerminalClose {
-    fn message(&self) -> String {
-        close_message(self.cause, &self.detail)
-    }
-}
-
-fn close_message(cause: TerminalCloseCause, detail: &str) -> String {
-    format!(
-        r#"{{"type":"closed","cause":{},"detail":{}}}"#,
-        serde_json::to_string(cause.wire_name()).unwrap_or_else(|_| "\"daemon_closed\"".into()),
-        serde_json::to_string(detail).unwrap_or_else(|_| "\"\"".into())
+fn open_terminal_attach(
+    client_socket_path: PathBuf,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+    takeover: bool,
+    protocol_version: u32,
+    output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+) -> Result<TerminalAttach, TerminalAttachError> {
+    let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)
+        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
+    protocol::write_message(
+        &mut stream,
+        &ClientMessage::Hello {
+            version: protocol_version,
+            cols,
+            rows,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            requested_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: ClientKeybindings::Server,
+            launch_mode: ClientLaunchMode::TerminalAttach,
+        },
     )
-}
+    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
 
-/// Why a terminal websocket attach attempt failed. Rejections carry a typed
-/// close cause for the browser; transport problems classify as
-/// `transport_failed` at the send site.
-#[derive(Debug)]
-enum TerminalAttachError {
-    Rejected(TerminalClose),
-    Transport(String),
-}
-
-impl fmt::Display for TerminalAttachError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TerminalAttachError::Rejected(close) => {
-                write!(f, "{} ({})", close.detail, close.cause.wire_name())
-            }
-            TerminalAttachError::Transport(detail) => write!(f, "{detail}"),
+    let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
+        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
+    match welcome {
+        ServerMessage::Welcome { error: None, .. } => {}
+        ServerMessage::Welcome {
+            error: Some(error), ..
+        } => {
+            // The only prose-classification point in the system: the daemon's
+            // protocol carries no typed error codes, so the attach rejection
+            // is classified here once and travels as a typed cause from now
+            // on (see protocol/terminal-close-causes.json).
+            return Err(TerminalAttachError::Rejected(TerminalClose {
+                cause: TerminalCloseCause::from_daemon_attach_error(&error),
+                detail: error,
+            }));
+        }
+        other => {
+            return Err(TerminalAttachError::Transport(format!(
+                "expected welcome, got {other:?}"
+            )))
         }
     }
+
+    protocol::write_message(
+        &mut stream,
+        &ClientMessage::AttachTerminal {
+            terminal_id: terminal_id.clone(),
+            takeover,
+        },
+    )
+    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
+
+    let mut read_stream = stream
+        .try_clone()
+        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
+    let (write_tx, write_rx) = mpsc::channel::<ClientMessage>();
+    let queued_input_bytes = Arc::new(AtomicUsize::new(0));
+    let writer_queued_input_bytes = queued_input_bytes.clone();
+    let connection_closed = Arc::new(ConnectionClosed::default());
+    let reader_connection_closed = connection_closed.clone();
+
+    thread::spawn(move || {
+        let mut write_stream = stream;
+        for message in write_rx {
+            let is_detach = matches!(message, ClientMessage::Detach);
+            let input_len = match &message {
+                ClientMessage::Input { data } => data.len(),
+                _ => 0,
+            };
+            let result = protocol::write_message(&mut write_stream, &message);
+            if input_len > 0 {
+                writer_queued_input_bytes.fetch_sub(input_len, Ordering::AcqRel);
+            }
+            if result.is_err() {
+                break;
+            }
+            let _ = write_stream.flush();
+            if is_detach {
+                // The daemon unregisters the client when it processes Detach
+                // but never closes the socket. Without a local shutdown both
+                // read sides stay blocked forever: this bridge's read thread
+                // (whose exit resolves the draining marker) and the daemon's
+                // reader thread. Shutting down delivers EOF to both.
+                shutdown_terminal_attach_stream(&write_stream);
+                break;
+            }
+        }
+    });
+
+    thread::spawn(move || {
+        loop {
+            let message: ServerMessage =
+                match protocol::read_message(&mut read_stream, MAX_GRAPHICS_FRAME_SIZE) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        let _ = output_tx.send(TerminalOutput::Close(err.to_string()));
+                        break;
+                    }
+                };
+            match message {
+                ServerMessage::Terminal(frame) => {
+                    let _ = output_tx.send(TerminalOutput::Bytes(Bytes::from(frame.bytes)));
+                }
+                ServerMessage::ServerShutdown { reason } => {
+                    let reason = reason.unwrap_or_else(|| "server shutdown".to_string());
+                    // The daemon does not log these (attach rejections in
+                    // particular), so this is the only record of why an
+                    // attach connection was closed from the daemon side.
+                    warn!(
+                        terminal_id = %terminal_id,
+                        reason = %reason,
+                        "terminal attach connection closed by daemon"
+                    );
+                    let _ = output_tx.send(TerminalOutput::Close(reason));
+                    break;
+                }
+                ServerMessage::Welcome { .. } => {}
+                ServerMessage::Notify { .. }
+                | ServerMessage::Clipboard { .. }
+                | ServerMessage::WindowTitle { .. }
+                | ServerMessage::ReloadSoundConfig
+                | ServerMessage::MouseCapture { .. }
+                | ServerMessage::KittyKeyboardReportAll { .. }
+                | ServerMessage::PrefixInputSource { .. }
+                | ServerMessage::TerminalBell { .. }
+                | ServerMessage::Frame(_)
+                | ServerMessage::Graphics { .. }
+                | ServerMessage::GraphicsFile { .. }
+                | ServerMessage::GraphicsTransmissionRetired { .. } => {}
+            }
+        }
+        // By this point the Detach (if any) has been flushed and the socket
+        // shut down, so a reattach waiter that proceeds now can no longer
+        // beat the queued Detach to the daemon.
+        reader_connection_closed.mark_closed();
+    });
+
+    Ok(TerminalAttach {
+        write_tx: TerminalWriter {
+            tx: write_tx,
+            queued_input_bytes,
+        },
+        connection_closed,
+    })
 }
 
+fn terminal_attach_protocol(api: &ApiClient) -> Result<u32, BridgeError> {
+    validated_daemon_protocol(api.status_with_timeout(DAEMON_STATUS_TIMEOUT)?)
+}
 async fn handle_terminal_output_deadline(
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     output_coalescer: &mut TerminalOutputCoalescer,
@@ -3744,12 +3361,14 @@ async fn handle_terminal_output_message(
                 }
             }
             let _ = ws_sender
-                .send(Message::Text(TerminalClose {
-                    cause: TerminalCloseCause::DaemonClosed,
-                    detail: reason.clone(),
-                }
-                .message()
-                .into()))
+                .send(Message::Text(
+                    TerminalClose {
+                        cause: TerminalCloseCause::DaemonClosed,
+                        detail: reason.clone(),
+                    }
+                    .message()
+                    .into(),
+                ))
                 .await;
             Some(TerminalSessionExit::DaemonClosed(reason))
         }
@@ -3760,12 +3379,14 @@ async fn handle_terminal_output_message(
             output_coalescer.record_lagged(frames);
             warn!(frames, "terminal output lagged; closing socket for resync");
             let _ = ws_sender
-                .send(Message::Text(TerminalClose {
-                    cause: TerminalCloseCause::OutputLagged,
-                    detail: format!("output lagged by {frames} frames"),
-                }
-                .message()
-                .into()))
+                .send(Message::Text(
+                    TerminalClose {
+                        cause: TerminalCloseCause::OutputLagged,
+                        detail: format!("output lagged by {frames} frames"),
+                    }
+                    .message()
+                    .into(),
+                ))
                 .await;
             Some(TerminalSessionExit::OutputLagged(frames))
         }
@@ -3791,320 +3412,6 @@ fn handle_terminal_client_message(
         Ok(Message::Close(_)) => Some(TerminalSessionExit::ClientDisconnected),
         Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => None,
         Err(_) => Some(TerminalSessionExit::ClientDisconnected),
-    }
-}
-
-async fn acquire_terminal_session(
-    state: BridgeState,
-    terminal_id: String,
-    cols: u16,
-    rows: u16,
-    takeover: bool,
-) -> Result<SharedTerminalSession, TerminalAttachError> {
-    tokio::task::spawn_blocking(move || {
-        // What to do after inspecting the maps under one lock hold.
-        enum AttachStep {
-            WaitDrain(Arc<ConnectionClosed>),
-            WaitGate(Arc<ConnectionClosed>),
-            Handshake(Arc<ConnectionClosed>),
-        }
-
-        let mut drain_waits = 0;
-        let mut gate_waits = 0;
-        let mut handshake_retries = 0;
-        'attach: loop {
-            // All maps can change while this thread waits without the lock, so
-            // every wait loops back here: a session attached meanwhile must be
-            // joined, another thread's in-flight handshake must be awaited
-            // (two concurrent fresh attaches make the daemon reject one — it
-            // races whichever the map keeps), and a draining connection must
-            // finish tearing down before a fresh attach, or the daemon rejects
-            // it as a second concurrent client.
-            let step = {
-                let mut sessions = state.terminal_sessions.lock().map_err(|_| {
-                    TerminalAttachError::Transport("terminal session lock poisoned".to_string())
-                })?;
-                if let Some(session) = sessions.active.get(&terminal_id) {
-                    session.client_count.fetch_add(1, Ordering::AcqRel);
-                    debug!(
-                        terminal_id = %terminal_id,
-                        "terminal websocket joined existing session"
-                    );
-                    return Ok(session.clone());
-                }
-                if let Some(gate) = sessions.attaching.get(&terminal_id) {
-                    if gate_waits < MAX_TERMINAL_DETACH_DRAIN_WAITS {
-                        AttachStep::WaitGate(gate.clone())
-                    } else {
-                        // Progress guard: handshake anyway, without claiming
-                        // the gate another thread still holds.
-                        warn!(
-                            terminal_id = %terminal_id,
-                            "attaching despite a stuck concurrent attach handshake"
-                        );
-                        AttachStep::Handshake(Arc::new(ConnectionClosed::default()))
-                    }
-                } else if let Some(draining) = sessions.draining.get(&terminal_id) {
-                    if drain_waits < MAX_TERMINAL_DETACH_DRAIN_WAITS {
-                        AttachStep::WaitDrain(draining.clone())
-                    } else {
-                        warn!(
-                            terminal_id = %terminal_id,
-                            "reattaching despite pending detach teardown after repeated drain waits"
-                        );
-                        let gate = Arc::new(ConnectionClosed::default());
-                        sessions.attaching.insert(terminal_id.clone(), gate.clone());
-                        AttachStep::Handshake(gate)
-                    }
-                } else {
-                    let gate = Arc::new(ConnectionClosed::default());
-                    sessions.attaching.insert(terminal_id.clone(), gate.clone());
-                    AttachStep::Handshake(gate)
-                }
-            };
-
-            let gate = match step {
-                AttachStep::WaitGate(gate) => {
-                    gate_waits += 1;
-                    if !gate.wait_closed(TERMINAL_ATTACH_GATE_TIMEOUT) {
-                        warn!(
-                            terminal_id = %terminal_id,
-                            "timed out waiting for a concurrent terminal attach handshake"
-                        );
-                    }
-                    continue 'attach;
-                }
-                AttachStep::WaitDrain(draining) => {
-                    drain_waits += 1;
-                    if !draining.wait_closed(TERMINAL_DETACH_DRAIN_TIMEOUT) {
-                        warn!(
-                            terminal_id = %terminal_id,
-                            "timed out waiting for detached terminal connection to close"
-                        );
-                    }
-                    let mut sessions = state.terminal_sessions.lock().map_err(|_| {
-                        TerminalAttachError::Transport(
-                            "terminal session lock poisoned".to_string(),
-                        )
-                    })?;
-                    if sessions
-                        .draining
-                        .get(&terminal_id)
-                        .is_some_and(|entry| Arc::ptr_eq(entry, &draining))
-                    {
-                        sessions.draining.remove(&terminal_id);
-                    }
-                    continue 'attach;
-                }
-                AttachStep::Handshake(gate) => gate,
-            };
-
-            // Perform the daemon handshake without holding the map lock so a
-            // stalled daemon cannot wedge every other terminal client. The
-            // gate keeps concurrent acquires for this terminal waiting; they
-            // join the published session once it opens.
-            let handshake = || -> Result<SharedTerminalSession, TerminalAttachError> {
-                let protocol_version = terminal_attach_protocol(&state.api)
-                    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
-                let (output_tx, _) = tokio::sync::broadcast::channel(256);
-                let attach = open_terminal_attach(
-                    state.client_socket_path.clone(),
-                    terminal_id.clone(),
-                    cols,
-                    rows,
-                    takeover,
-                    protocol_version,
-                    output_tx.clone(),
-                )?;
-                Ok(SharedTerminalSession {
-                    write_tx: attach.write_tx,
-                    output_tx,
-                    client_count: Arc::new(AtomicUsize::new(0)),
-                    connection_closed: attach.connection_closed,
-                })
-            };
-            let session = match handshake() {
-                Ok(session) => session,
-                Err(err) => {
-                    release_attach_gate(&state.terminal_sessions, &terminal_id, &gate);
-                    return Err(err);
-                }
-            };
-
-            let Ok(mut sessions) = state.terminal_sessions.lock() else {
-                let _ = session.write_tx.send(ClientMessage::Detach);
-                gate.mark_closed();
-                return Err(TerminalAttachError::Transport(
-                    "terminal session lock poisoned".to_string(),
-                ));
-            };
-            if let Some(existing) = sessions.active.get(&terminal_id) {
-                // Safety net: only reachable via the stuck-gate fallback.
-                // Keep the established session and detach the redundant one.
-                existing.client_count.fetch_add(1, Ordering::AcqRel);
-                let existing = existing.clone();
-                drop(sessions);
-                let _ = session.write_tx.send(ClientMessage::Detach);
-                release_attach_gate(&state.terminal_sessions, &terminal_id, &gate);
-                return Ok(existing);
-            }
-            if sessions.draining.contains_key(&terminal_id) {
-                // A connection attached and began detaching while we were
-                // handshaking (only possible via the stuck-gate fallback), so
-                // the daemon may have rejected our attach as a second
-                // concurrent client. Never publish the possibly dead session:
-                // retry, and once the retry budget is spent fail with a reason
-                // the web client treats as retryable.
-                drop(sessions);
-                let _ = session.write_tx.send(ClientMessage::Detach);
-                release_attach_gate(&state.terminal_sessions, &terminal_id, &gate);
-                if handshake_retries < MAX_ATTACH_HANDSHAKE_RETRIES {
-                    handshake_retries += 1;
-                    continue 'attach;
-                }
-                warn!(
-                    terminal_id = %terminal_id,
-                    "giving up terminal attach amid sustained detach churn"
-                );
-                return Err(TerminalAttachError::Rejected(TerminalClose {
-                    cause: TerminalCloseCause::PendingDetach,
-                    detail: "terminal attach conflicted with a pending detach; retry shortly"
-                        .to_string(),
-                }));
-            }
-            session.client_count.fetch_add(1, Ordering::AcqRel);
-            sessions.active.insert(terminal_id.clone(), session.clone());
-            drop(sessions);
-            release_attach_gate(&state.terminal_sessions, &terminal_id, &gate);
-            debug!(
-                terminal_id = %terminal_id,
-                drain_waits,
-                gate_waits,
-                handshake_retries,
-                "terminal attach handshake completed"
-            );
-            return Ok(session);
-        }
-    })
-    .await
-    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?
-}
-
-fn release_terminal_session(
-    sessions: &Mutex<TerminalSessions>,
-    terminal_id: &str,
-    session: &SharedTerminalSession,
-) {
-    // Decrement while holding the map lock so a concurrent acquire cannot
-    // join the session between the last-client check and its removal.
-    let Ok(mut sessions) = sessions.lock() else {
-        return;
-    };
-    if session.client_count.fetch_sub(1, Ordering::AcqRel) != 1 {
-        return;
-    }
-
-    let _ = session.write_tx.send(ClientMessage::Detach);
-    if sessions
-        .active
-        .get(terminal_id)
-        .is_some_and(|current| Arc::ptr_eq(&current.client_count, &session.client_count))
-    {
-        sessions.active.remove(terminal_id);
-        remember_draining_connection(&mut sessions, terminal_id, session);
-    }
-}
-
-/// Releases a terminal's attach-handshake gate and wakes its waiters, who
-/// re-check the maps and normally join the session the handshake published.
-fn release_attach_gate(
-    sessions: &Mutex<TerminalSessions>,
-    terminal_id: &str,
-    gate: &Arc<ConnectionClosed>,
-) {
-    if let Ok(mut sessions) = sessions.lock() {
-        if sessions
-            .attaching
-            .get(terminal_id)
-            .is_some_and(|entry| Arc::ptr_eq(entry, gate))
-        {
-            sessions.attaching.remove(terminal_id);
-        }
-    }
-    gate.mark_closed();
-}
-
-/// Records a detached connection so a quick reattach waits for the daemon to
-/// finish tearing it down instead of racing the queued `Detach`. Entries are
-/// cleared by the next reattach or swept once closed during session pruning.
-fn remember_draining_connection(
-    sessions: &mut TerminalSessions,
-    terminal_id: &str,
-    session: &SharedTerminalSession,
-) {
-    if session.connection_closed.is_closed() {
-        return;
-    }
-    sessions
-        .draining
-        .insert(terminal_id.to_string(), session.connection_closed.clone());
-}
-
-fn prune_detached_terminal_sessions(state: &BridgeState) {
-    let Ok(panes) = current_panes(&state.api) else {
-        warn!("failed to prune herdr web terminal sessions");
-        return;
-    };
-    let active_terminal_ids = panes
-        .iter()
-        .map(|pane| pane.terminal_id.as_str())
-        .collect::<HashSet<_>>();
-    let stale_sessions = {
-        let Ok(mut sessions) = state.terminal_sessions.lock() else {
-            warn!("failed to lock herdr web terminal sessions for pruning");
-            return;
-        };
-        sessions
-            .draining
-            .retain(|_, connection| !connection.is_closed());
-        sessions
-            .active
-            .iter()
-            .filter(|(terminal_id, _)| !active_terminal_ids.contains(terminal_id.as_str()))
-            .map(|(terminal_id, session)| (terminal_id.clone(), session.clone()))
-            .collect::<Vec<_>>()
-    };
-
-    for (terminal_id, session) in stale_sessions {
-        close_terminal_session(
-            &state.terminal_sessions,
-            &terminal_id,
-            &session,
-            "terminal closed by Herdr",
-        );
-    }
-}
-
-fn close_terminal_session(
-    sessions: &Mutex<TerminalSessions>,
-    terminal_id: &str,
-    session: &SharedTerminalSession,
-    reason: &str,
-) {
-    let _ = session
-        .output_tx
-        .send(TerminalOutput::Close(reason.to_string()));
-    let _ = session.write_tx.send(ClientMessage::Detach);
-    let Ok(mut sessions) = sessions.lock() else {
-        return;
-    };
-    if sessions
-        .active
-        .get(terminal_id)
-        .is_some_and(|current| Arc::ptr_eq(&current.client_count, &session.client_count))
-    {
-        sessions.active.remove(terminal_id);
-        remember_draining_connection(&mut sessions, terminal_id, session);
     }
 }
 
@@ -4494,163 +3801,6 @@ fn parse_terminal_client_frame(text: &str) -> Result<TerminalClientFrame, String
     serde_json::from_str(text).map_err(|err| format!("invalid terminal frame: {err}"))
 }
 
-struct TerminalAttach {
-    write_tx: TerminalWriter,
-    connection_closed: Arc<ConnectionClosed>,
-}
-
-fn open_terminal_attach(
-    client_socket_path: PathBuf,
-    terminal_id: String,
-    cols: u16,
-    rows: u16,
-    takeover: bool,
-    protocol_version: u32,
-    output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
-) -> Result<TerminalAttach, TerminalAttachError> {
-    let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)
-        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
-    protocol::write_message(
-        &mut stream,
-        &ClientMessage::Hello {
-            version: protocol_version,
-            cols,
-            rows,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        },
-    )
-    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
-
-    let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
-        .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
-    match welcome {
-        ServerMessage::Welcome { error: None, .. } => {}
-        ServerMessage::Welcome {
-            error: Some(error), ..
-        } => {
-            // The only prose-classification point in the system: the daemon's
-            // protocol carries no typed error codes, so the attach rejection
-            // is classified here once and travels as a typed cause from now
-            // on (see protocol/terminal-close-causes.json).
-            return Err(TerminalAttachError::Rejected(TerminalClose {
-                cause: TerminalCloseCause::from_daemon_attach_error(&error),
-                detail: error,
-            }));
-        }
-        other => {
-            return Err(TerminalAttachError::Transport(format!(
-                "expected welcome, got {other:?}"
-            )))
-        }
-    }
-
-    protocol::write_message(
-        &mut stream,
-        &ClientMessage::AttachTerminal {
-            terminal_id: terminal_id.clone(),
-            takeover,
-        },
-    )
-    .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
-
-    let mut read_stream = stream.try_clone().map_err(|err| {
-        TerminalAttachError::Transport(err.to_string())
-    })?;
-    let (write_tx, write_rx) = mpsc::channel::<ClientMessage>();
-    let queued_input_bytes = Arc::new(AtomicUsize::new(0));
-    let writer_queued_input_bytes = queued_input_bytes.clone();
-    let connection_closed = Arc::new(ConnectionClosed::default());
-    let reader_connection_closed = connection_closed.clone();
-
-    thread::spawn(move || {
-        let mut write_stream = stream;
-        for message in write_rx {
-            let is_detach = matches!(message, ClientMessage::Detach);
-            let input_len = match &message {
-                ClientMessage::Input { data } => data.len(),
-                _ => 0,
-            };
-            let result = protocol::write_message(&mut write_stream, &message);
-            if input_len > 0 {
-                writer_queued_input_bytes.fetch_sub(input_len, Ordering::AcqRel);
-            }
-            if result.is_err() {
-                break;
-            }
-            let _ = write_stream.flush();
-            if is_detach {
-                // The daemon unregisters the client when it processes Detach
-                // but never closes the socket. Without a local shutdown both
-                // read sides stay blocked forever: this bridge's read thread
-                // (whose exit resolves the draining marker) and the daemon's
-                // reader thread. Shutting down delivers EOF to both.
-                shutdown_terminal_attach_stream(&write_stream);
-                break;
-            }
-        }
-    });
-
-    thread::spawn(move || {
-        loop {
-            let message: ServerMessage =
-                match protocol::read_message(&mut read_stream, MAX_GRAPHICS_FRAME_SIZE) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        let _ = output_tx.send(TerminalOutput::Close(err.to_string()));
-                        break;
-                    }
-                };
-            match message {
-                ServerMessage::Terminal(frame) => {
-                    let _ = output_tx.send(TerminalOutput::Bytes(Bytes::from(frame.bytes)));
-                }
-                ServerMessage::ServerShutdown { reason } => {
-                    let reason = reason.unwrap_or_else(|| "server shutdown".to_string());
-                    // The daemon does not log these (attach rejections in
-                    // particular), so this is the only record of why an
-                    // attach connection was closed from the daemon side.
-                    warn!(
-                        terminal_id = %terminal_id,
-                        reason = %reason,
-                        "terminal attach connection closed by daemon"
-                    );
-                    let _ = output_tx.send(TerminalOutput::Close(reason));
-                    break;
-                }
-                ServerMessage::Welcome { .. } => {}
-                ServerMessage::Notify { .. }
-                | ServerMessage::Clipboard { .. }
-                | ServerMessage::WindowTitle { .. }
-                | ServerMessage::ReloadSoundConfig
-                | ServerMessage::MouseCapture { .. }
-                | ServerMessage::KittyKeyboardReportAll { .. }
-                | ServerMessage::PrefixInputSource { .. }
-                | ServerMessage::TerminalBell { .. }
-                | ServerMessage::Frame(_)
-                | ServerMessage::Graphics { .. }
-                | ServerMessage::GraphicsFile { .. }
-                | ServerMessage::GraphicsTransmissionRetired { .. } => {}
-            }
-        }
-        // By this point the Detach (if any) has been flushed and the socket
-        // shut down, so a reattach waiter that proceeds now can no longer
-        // beat the queued Detach to the daemon.
-        reader_connection_closed.mark_closed();
-    });
-
-    Ok(TerminalAttach {
-        write_tx: TerminalWriter {
-            tx: write_tx,
-            queued_input_bytes,
-        },
-        connection_closed,
-    })
-}
-
 /// Shuts down a terminal attach socket so both its blocked readers (the
 /// bridge's and the daemon's) observe EOF; the daemon does not close attach
 /// connections on its own after a `Detach`.
@@ -4663,10 +3813,6 @@ fn shutdown_terminal_attach_stream(stream: &herdr_compat::ipc::LocalStream) {
     }
     #[cfg(not(unix))]
     let _ = stream; // Named pipes tear down once both processes drop handles.
-}
-
-fn terminal_attach_protocol(api: &ApiClient) -> Result<u32, BridgeError> {
-    validated_daemon_protocol(api.status_with_timeout(DAEMON_STATUS_TIMEOUT)?)
 }
 
 fn startup_daemon_status(api: &ApiClient) -> io::Result<herdr_compat::api::RuntimeStatus> {
@@ -7027,18 +6173,16 @@ mod terminal_close_contract_tests {
                 "daemon prose {prose:?} must classify as {}",
                 entry.cause
             );
-            let _ = by_name.get(entry.cause.as_str()).unwrap_or_else(|| {
-                panic!("fixture cause {} has no Rust variant", entry.cause)
-            });
+            let _ = by_name
+                .get(entry.cause.as_str())
+                .unwrap_or_else(|| panic!("fixture cause {} has no Rust variant", entry.cause));
         }
     }
 
     #[test]
     fn classifier_sends_unrecognized_daemon_prose_to_daemon_closed() {
         assert_eq!(
-            TerminalCloseCause::from_daemon_attach_error(
-                "terminal attach failed: something novel"
-            ),
+            TerminalCloseCause::from_daemon_attach_error("terminal attach failed: something novel"),
             TerminalCloseCause::DaemonClosed
         );
     }
@@ -7063,5 +6207,40 @@ mod terminal_close_contract_tests {
             let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid JSON");
             assert_eq!(parsed["cause"], entry.cause.as_str());
         }
+    }
+}
+
+/// Production adapter binding the terminal attach state machine to the real
+/// daemon: version negotiation over the API client plus a local-socket
+/// terminal attach connection.
+#[derive(Clone)]
+struct LiveTerminalDaemon {
+    api: ApiClient,
+    client_socket_path: PathBuf,
+}
+
+impl TerminalDaemonAttach for LiveTerminalDaemon {
+    fn protocol_version(&self) -> Result<u32, String> {
+        terminal_attach_protocol(&self.api).map_err(|err| err.to_string())
+    }
+
+    fn open_attach(
+        &self,
+        terminal_id: String,
+        cols: u16,
+        rows: u16,
+        takeover: bool,
+        protocol_version: u32,
+        output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+    ) -> Result<TerminalAttach, TerminalAttachError> {
+        open_terminal_attach(
+            self.client_socket_path.clone(),
+            terminal_id,
+            cols,
+            rows,
+            takeover,
+            protocol_version,
+            output_tx,
+        )
     }
 }
