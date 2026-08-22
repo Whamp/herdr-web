@@ -40,7 +40,17 @@ describe("terminalReconnectPolicy", () => {
         immediate: false,
         foregroundFastAttemptsRemaining: 0,
       }).delayMs,
-    ).toBe(TERMINAL_RECONNECT_MAX_DELAY_MS);
+    ).toBe(2000);
+    // The cap exists so a healed network path is noticed within one short
+    // cycle; measured successful opens are all well under 250ms.
+    expect(TERMINAL_RECONNECT_MAX_DELAY_MS).toBeLessThanOrEqual(2000);
+  });
+
+  it("detects stalled normal-mode connects quickly", () => {
+    // Successful opens observed in reconnect diagnostics are all <250ms, so
+    // the stall timeout only ever fires on genuinely dead network paths.
+    expect(TERMINAL_CONNECT_TIMEOUT_MS).toBe(2500);
+    expect(TERMINAL_FOREGROUND_CONNECT_TIMEOUT_MS).toBe(1200);
   });
 
   it("keeps the foreground fast-attempt transition in the pure policy", () => {

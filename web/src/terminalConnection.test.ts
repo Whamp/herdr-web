@@ -198,7 +198,9 @@ describe("terminalConnection", () => {
     h.connection.start();
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      h.clock.advance(6000); // run out any pending reconnect timer
+      // Advance past the capped retry delay (<=2000ms) but short of a full
+      // stall cycle (delay + 2500ms timeout) so exactly one attempt spawns.
+      h.clock.advance(2200);
       h.accept();
       h.lastSocket().messageText(
         JSON.stringify({ type: "closed", cause: "attach_conflict", detail: "busy" }),
@@ -208,7 +210,7 @@ describe("terminalConnection", () => {
     }
 
     // Fourth conflict exceeds the budget: stop, no further connections.
-    h.clock.advance(6000);
+    h.clock.advance(2200);
     h.accept();
     h.lastSocket().messageText(
       JSON.stringify({ type: "closed", cause: "attach_conflict", detail: "busy" }),
