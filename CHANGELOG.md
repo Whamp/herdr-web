@@ -30,6 +30,11 @@
   canvas redraw work on resource-constrained devices. Desktop cursors continue to blink.
 - Terminal output now negotiates gzip compression between matching web apps and bridges, while
   remaining compatible with older versions and keeping incompressible updates raw.
+- Terminal websocket `closed` frames now carry a machine-readable close cause (`attach_conflict`,
+  `taken_over`, `terminal_gone`, `pending_detach`, `daemon_closed`, `output_lagged`,
+  `transport_failed`) plus human-readable detail, and web clients derive retry behavior from the
+  cause instead of prose matching. Update bridges and web apps together for full attach-conflict
+  retry fidelity; older clients treat typed closes as ordinary reconnections.
 
 ### Fixed
 
