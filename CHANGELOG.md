@@ -38,6 +38,8 @@
 
 ### Fixed
 
+- Bridge WebSockets now ping browsers and close connections that stay silent for 45 seconds,
+  preventing abandoned mobile connections from accumulating and delaying terminal attachment.
 - Incremented the Android package version to code 4 so this debug APK can update existing
   `dev.herdr.web` installations signed with the same development certificate.
 - Mobile terminal copies now remove canvas row gaps that split HTTP(S) links, including indented
