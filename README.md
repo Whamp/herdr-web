@@ -386,6 +386,17 @@ Input, scroll, and resize from any browser are forwarded through the shared atta
 currently last resize wins. The header's refit button forces the current browser to send a fresh
 fit/resize frame.
 
+Current web clients identify each event stream and terminal view with a random, page-session slot.
+The bridge returns an opaque handle for each connection. A reconnect may replace only the current
+handle for its slot, so delayed attempts cannot evict the winner and separate tabs remain separate
+viewers. After a connection closes, the bridge keeps a bounded record of that slot's latest released
+handle: an exact reconnect can resume the lineage, but an older released handle remains stale. A
+terminal replacement joins the existing shared attach before the bridge releases its predecessor.
+Older clients without connection identity remain supported through heartbeat cleanup.
+Managed clients must also answer bridge liveness probes from JavaScript; a protocol-level WebSocket
+Pong alone does not keep a suspended page alive. The Android app closes its sockets when suspended
+and reconnects on resume or a Wi-Fi/cellular path change.
+
 API and WebSocket requests must use an allowed bridge `Host` header. Browser-originated requests
 must also be same-origin with the bridge, an explicitly allowed origin such as Android's
 `http://localhost`, or a loopback development proxy origin allowed for Vite. Hostname backends must

@@ -20,8 +20,8 @@ import {
   mobileTerminalPrintableKey,
 } from "./mobileTerminalControls";
 import type { MobileTerminalChordKey } from "./mobileTerminalControls";
+import { addNativeConnectionLifecycleSubscriber } from "./native";
 import { ConfirmDialog } from "./overlays";
-import { addNativeResumeHandler } from "./native";
 import { createTerminalConnection } from "./terminalConnection";
 import type { ReconnectReason } from "./terminalConnection";
 import { copyTextToClipboard } from "./clipboard";
@@ -88,6 +88,7 @@ export interface TerminalViewMobileOptions {
 type Props = {
   pane: PaneInfo | null;
   connectionKey: string;
+  connectionSuspended?: boolean;
   resumeToken: number;
   httpUrl: (path: string, query?: URLSearchParams) => string;
   wsUrl: (path: string, query?: URLSearchParams) => string;
@@ -141,6 +142,7 @@ const MAX_UPLOAD_FILES = 8;
 export function TerminalView({
   pane,
   connectionKey,
+  connectionSuspended = false,
   resumeToken,
   httpUrl,
   wsUrl,
@@ -178,6 +180,10 @@ export function TerminalView({
   const rendererReadyRef = useRef<TerminalRendererReady | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const requestReconnectRef = useRef<(reason: ReconnectReason) => void>(() => {});
+  const setConnectionSuspendedRef = useRef<(suspended: boolean) => void>(() => {});
+  const handledResumeTokenRef = useRef(resumeToken);
+  const resumeTokenRef = useRef(resumeToken);
+  const connectionSuspendedRef = useRef(connectionSuspended);
   const terminalInputBlockedRef = useRef(false);
   const uploadInputId = useId();
   const sendResizeRef = useRef<(size: TerminalSize) => void>(() => {});
@@ -226,6 +232,8 @@ export function TerminalView({
   const terminalInputBatchDelayMsRef = useRef(terminalInputBatchDelayMs);
   terminalInputBatchDelayMsRef.current = terminalInputBatchDelayMs;
   connectionKeyRef.current = connectionKey;
+  connectionSuspendedRef.current = connectionSuspended;
+  resumeTokenRef.current = resumeToken;
   terminalIdRef.current = pane?.terminal_id ?? null;
 
   const focusMobileCommandInput = useCallback(() => {
@@ -709,24 +717,38 @@ export function TerminalView({
     });
 
     requestReconnectRef.current = connection.signal;
+    setConnectionSuspendedRef.current = connection.setSuspended;
     sendResizeRef.current = (size) => connection.resize(size);
-    const removeNativeResumeHandler = addNativeResumeHandler(() => connection.signal("resume"));
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         connection.signal("visible");
       }
     };
     const handleOnline = () => connection.signal("online");
+    let directlySuspended = connectionSuspendedRef.current;
+    const removeNativeLifecycleSubscriber = addNativeConnectionLifecycleSubscriber((event) => {
+      if (event.type === "suspend") {
+        directlySuspended = true;
+        connection.setSuspended(true);
+      } else if (event.type === "resume") {
+        directlySuspended = false;
+        connection.setSuspended(false);
+      } else if (!directlySuspended) {
+        connection.signal("online");
+      }
+    });
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("online", handleOnline);
 
+    connection.setSuspended(connectionSuspendedRef.current);
     connection.start();
 
     return () => {
-      removeNativeResumeHandler();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("online", handleOnline);
+      removeNativeLifecycleSubscriber();
       requestReconnectRef.current = () => {};
+      setConnectionSuspendedRef.current = () => {};
       flushBatchedTerminalInput();
       batchedInputRef.current = emptyTerminalInputBatch();
       clearQueuedTerminalInput();
@@ -745,10 +767,21 @@ export function TerminalView({
   ]);
 
   useEffect(() => {
-    if (resumeToken > 0) {
+    setConnectionSuspendedRef.current(connectionSuspended);
+    if (!connectionSuspended) {
+      handledResumeTokenRef.current = resumeTokenRef.current;
+    }
+  }, [connectionSuspended]);
+
+  useEffect(() => {
+    if (
+      !connectionSuspended &&
+      resumeToken > handledResumeTokenRef.current
+    ) {
+      handledResumeTokenRef.current = resumeToken;
       requestReconnectRef.current("resume");
     }
-  }, [resumeToken]);
+  }, [connectionSuspended, resumeToken]);
 
   useEffect(() => {
     let overlayTimer: number | null = null;

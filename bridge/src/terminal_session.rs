@@ -512,6 +512,8 @@ impl TerminalWriter {
 pub(crate) enum TerminalSessionExit {
     /// The browser closed the socket or the transport errored.
     ClientDisconnected,
+    /// A newer WebSocket for the same browser view replaced this connection.
+    ConnectionReplaced,
     /// A client frame could not be forwarded to the daemon writer.
     ClientWriteFailed,
     /// The daemon reported the terminal attach closed.
@@ -973,8 +975,18 @@ impl TerminalClose {
 }
 
 #[cfg(test)]
+impl fmt::Debug for SharedTerminalSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedTerminalSession")
+            .field("clients", &self.client_count.load(Ordering::Acquire))
+            .finish()
+    }
+}
+
+#[cfg(test)]
 mod attach_state_machine_tests {
     use super::*;
+    use crate::websocket_connection_registry::WebSocketConnectionRegistry;
     use std::sync::mpsc;
 
     fn test_wait_policy() -> WaitPolicy {
@@ -1002,7 +1014,6 @@ mod attach_state_machine_tests {
     enum Step {
         Accept,
         RejectWithProse(&'static str),
-        RejectWithConflict,
         /// Accepts the attach but injects a draining connection first,
         /// reproducing the detach-churn race the retry budget exists for.
         InjectDrainingThenAccept,
@@ -1041,10 +1052,6 @@ mod attach_state_machine_tests {
         fn accept_count(&self) -> usize {
             self.inner.accepted.load(Ordering::Acquire)
         }
-
-        fn reject_count(&self) -> usize {
-            self.inner.rejected.load(Ordering::Acquire)
-        }
     }
 
     impl TerminalDaemonAttach for ScriptedDaemon {
@@ -1072,14 +1079,6 @@ mod attach_state_machine_tests {
                     Err(TerminalAttachError::Rejected(TerminalClose {
                         cause: TerminalCloseCause::from_daemon_attach_error(prose),
                         detail: prose.to_string(),
-                    }))
-                }
-                Step::RejectWithConflict => {
-                    // Another client already holds the attach.
-                    self.inner.rejected.fetch_add(1, Ordering::AcqRel);
-                    Err(TerminalAttachError::Rejected(TerminalClose {
-                        cause: TerminalCloseCause::AttachConflict,
-                        detail: "injected conflict".to_string(),
                     }))
                 }
                 Step::InjectDrainingThenAccept => {
@@ -1152,6 +1151,44 @@ mod attach_state_machine_tests {
         assert_eq!(second.client_count.load(Ordering::Acquire), 2);
         let _ = first;
         assert_eq!(daemon.accept_count(), 1);
+    }
+
+    #[test]
+    fn browser_replacement_joins_shared_session_before_predecessor_release() {
+        let terminal_sessions = Arc::new(Mutex::new(TerminalSessions::default()));
+        let daemon = ScriptedDaemon::new(terminal_sessions.clone(), TERM, vec![Step::Accept]);
+        let browser_connections = WebSocketConnectionRegistry::default();
+
+        let first_session = run_acquire(terminal_sessions.clone(), &daemon).expect("first attach");
+        let mut first_browser = browser_connections
+            .register("terminal-view", None)
+            .expect("first browser registers");
+        assert!(first_browser.activate());
+
+        let mut replacement_browser = browser_connections
+            .register("terminal-view", Some(first_browser.handle()))
+            .expect("exact predecessor registers");
+        let replacement_session =
+            run_acquire(terminal_sessions.clone(), &daemon).expect("replacement joins");
+        assert_eq!(daemon.accept_count(), 1);
+        assert_eq!(first_session.client_count.load(Ordering::Acquire), 2);
+
+        assert!(replacement_browser.activate());
+        assert!(first_browser.is_cancelled());
+        release_terminal_session(&terminal_sessions, TERM, &first_session);
+
+        let sessions = terminal_sessions.lock().unwrap();
+        assert!(sessions.active.contains_key(TERM));
+        assert!(!sessions.draining.contains_key(TERM));
+        assert_eq!(replacement_session.client_count.load(Ordering::Acquire), 1);
+        drop(sessions);
+
+        release_terminal_session(&terminal_sessions, TERM, &replacement_session);
+        assert!(terminal_sessions
+            .lock()
+            .unwrap()
+            .draining
+            .contains_key(TERM));
     }
 
     #[test]
@@ -1273,14 +1310,5 @@ mod attach_state_machine_tests {
             }
             other => panic!("expected transport error, got {other:?}"),
         }
-    }
-}
-
-#[cfg(test)]
-impl fmt::Debug for SharedTerminalSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SharedTerminalSession")
-            .field("clients", &self.client_count.load(Ordering::Acquire))
-            .finish()
     }
 }

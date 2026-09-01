@@ -60,16 +60,62 @@ describe("BridgeConnectionController sockets", () => {
 
     await render(vi.fn());
 
-    expect(FakeWebSocket.instances.map((socket) => socket.url)).toEqual([
-      "ws://bridge-a/ws/events",
-      "ws://bridge-a/ws/activity",
-      "ws://bridge-a/ws/ui-events",
+    expect(FakeWebSocket.instances.map((socket) => new URL(socket.url).pathname)).toEqual([
+      "/ws/events",
+      "/ws/activity",
+      "/ws/ui-events",
     ]);
+    expect(
+      FakeWebSocket.instances.every((socket) =>
+        new URL(socket.url).searchParams.has("connection_slot"),
+      ),
+    ).toBe(true);
 
     await render(vi.fn());
 
     expect(FakeWebSocket.instances).toHaveLength(3);
     expect(FakeWebSocket.instances.filter((socket) => socket.closed)).toHaveLength(0);
+  });
+
+  it("closes persistent streams during suspension and recreates them on resume", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(emptySnapshot()), { status: 200 })),
+    );
+    const connectionRefs = { current: {} } as MutableRefObject<Record<string, BridgeConnectionRef>>;
+    const setConnectionStates = vi.fn() as unknown as Dispatch<
+      SetStateAction<Record<string, BridgeConnectionState>>
+    >;
+    const runtime = bridgeRuntime("bridge-a");
+    const { render } = createConnectionHarness({
+      runtime,
+      connectionRefs,
+      setConnectionStates,
+    });
+    await render(vi.fn());
+    expect(FakeWebSocket.instances).toHaveLength(3);
+
+    runtime.connectionSuspended = true;
+    await render(vi.fn());
+    expect(FakeWebSocket.instances.filter((socket) => socket.closed)).toHaveLength(3);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+
+    runtime.connectionSuspended = false;
+    runtime.resumeToken += 1;
+    await render(vi.fn());
+    expect(FakeWebSocket.instances).toHaveLength(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(6);
+    expect(FakeWebSocket.instances.slice(3).every((socket) => !socket.closed)).toBe(true);
   });
 
   it("stops applying shared selection events without recreating event sockets", async () => {
@@ -99,7 +145,7 @@ describe("BridgeConnectionController sockets", () => {
 
     await render(vi.fn(), true);
     const uiEvents = FakeWebSocket.instances.find(
-      (socket) => socket.url === "ws://bridge-a/ws/ui-events",
+      (socket) => new URL(socket.url).pathname === "/ws/ui-events",
     );
     if (!uiEvents) {
       throw new Error("missing UI events socket");
@@ -707,6 +753,7 @@ function bridgeRuntime(bridgeId: string): BridgeRuntime {
     color: "#89b4fa",
     backend: null,
     connectionKey: bridgeId,
+    connectionSuspended: false,
     resumeToken: 0,
     capabilities: { commands: [], notes: { version: 1 } },
     capabilityState: "ready",

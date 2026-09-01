@@ -1856,6 +1856,7 @@ function bridgeRuntime(bridgeId: string): BridgeRuntime {
     color: "#89b4fa",
     backend: null,
     connectionKey: bridgeId,
+    connectionSuspended: false,
     resumeToken: 0,
     capabilities: null,
     capabilityState: "ready",

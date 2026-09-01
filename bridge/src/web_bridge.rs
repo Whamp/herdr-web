@@ -20,8 +20,8 @@ use crate::terminal_session::{
 };
 #[cfg(test)]
 use crate::terminal_session::{
-    close_message, drain_terminal_output_pending, raw_terminal_output_frame, release_attach_gate,
-    SharedTerminalSession, TerminalOutputCoalescingStats, MAX_QUEUED_TERMINAL_INPUT_BYTES,
+    close_message, drain_terminal_output_pending, release_attach_gate, SharedTerminalSession,
+    TerminalOutputCoalescingStats, MAX_QUEUED_TERMINAL_INPUT_BYTES,
     TERMINAL_OUTPUT_COALESCE_MAX_BYTES, TERMINAL_OUTPUT_FRAME_GZIP, TERMINAL_OUTPUT_FRAME_RAW,
 };
 use axum::body::Bytes;
@@ -70,6 +70,9 @@ use crate::notes::{
     AttachNoteRequest, CreateNoteRequest, NoteResponse, NotesError, NotesListQuery,
     NotesListResponse, NotesManager, RevisionRequest, UpdateNoteRequest,
 };
+use crate::websocket_connection_registry::{
+    ConnectionRegistrationError, WebSocketConnectionLease, WebSocketConnectionRegistry,
+};
 use crate::websocket_heartbeat::{WebSocketHeartbeat, WebSocketHeartbeatAction};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -113,6 +116,7 @@ struct BridgeState {
     client_socket_path: PathBuf,
     request_policy: RequestPolicy,
     terminal_sessions: Arc<Mutex<TerminalSessions>>,
+    websocket_connections: WebSocketConnectionRegistry,
     selected_pane_id: Arc<Mutex<Option<String>>>,
     agent_activity: Arc<AgentActivityManager>,
     agent_pins: Arc<AgentPinsManager>,
@@ -211,6 +215,14 @@ struct TerminalQuery {
     output_encoding: Option<TerminalOutputWireEncoding>,
     #[serde(default)]
     takeover: bool,
+    #[serde(flatten)]
+    connection: WebSocketConnectionQuery,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WebSocketConnectionQuery {
+    connection_slot: Option<String>,
+    replace_connection: Option<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -579,6 +591,7 @@ async fn run_server(options: BridgeOptions) -> io::Result<()> {
         client_socket_path: crate::session::active_client_socket_path(),
         request_policy: request_policy.clone(),
         terminal_sessions: Arc::new(Mutex::new(TerminalSessions::default())),
+        websocket_connections: WebSocketConnectionRegistry::default(),
         selected_pane_id: Arc::new(Mutex::new(None)),
         agent_activity,
         agent_pins,
@@ -2823,45 +2836,185 @@ async fn terminal_ws_handler(
 async fn events_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<BridgeState>,
+    Query(query): Query<WebSocketConnectionQuery>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(err) = ensure_allowed_request(&headers, &state.request_policy) {
         return err.into_response();
     }
-    ws.on_upgrade(move |socket| handle_events_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_events_socket(socket, state, query))
         .into_response()
 }
 
 async fn activity_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<BridgeState>,
+    Query(query): Query<WebSocketConnectionQuery>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(err) = ensure_allowed_request(&headers, &state.request_policy) {
         return err.into_response();
     }
-    ws.on_upgrade(move |socket| handle_activity_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_activity_socket(socket, state, query))
         .into_response()
 }
 
 async fn ui_events_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<BridgeState>,
+    Query(query): Query<WebSocketConnectionQuery>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(err) = ensure_allowed_request(&headers, &state.request_policy) {
         return err.into_response();
     }
-    ws.on_upgrade(move |socket| handle_ui_events_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_ui_events_socket(socket, state, query))
         .into_response()
+}
+
+const MAX_CONNECTION_SLOT_BYTES: usize = 128;
+const CONNECTION_READY_TYPE: &str = "herdr_web.connection_ready";
+const CONNECTION_ACTIVE_MESSAGE: &str = r#"{"type":"herdr_web.connection_active"}"#;
+const CONNECTION_REPLACED_MESSAGE: &str = r#"{"type":"herdr_web.connection_replaced"}"#;
+
+fn valid_connection_slot(slot_id: &str) -> bool {
+    !slot_id.is_empty()
+        && slot_id.len() <= MAX_CONNECTION_SLOT_BYTES
+        && slot_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn valid_connection_handle(handle: &str) -> bool {
+    handle.len() == 32
+        && handle
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn prepare_websocket_connection(
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    registry: &WebSocketConnectionRegistry,
+    query: WebSocketConnectionQuery,
+) -> Result<Option<WebSocketConnectionLease>, ()> {
+    let Some(slot_id) = query.connection_slot else {
+        if query.replace_connection.is_some() {
+            send_connection_rejection(ws_sender, "missing_connection_slot").await;
+            return Err(());
+        }
+        return Ok(None);
+    };
+    if !valid_connection_slot(&slot_id)
+        || query
+            .replace_connection
+            .as_deref()
+            .is_some_and(|handle| !valid_connection_handle(handle))
+    {
+        send_connection_rejection(ws_sender, "invalid_connection_identity").await;
+        return Err(());
+    }
+
+    let lease = match registry.register(&slot_id, query.replace_connection.as_deref()) {
+        Ok(lease) => lease,
+        Err(ConnectionRegistrationError::StalePredecessor) => {
+            send_connection_rejection(ws_sender, "stale_predecessor").await;
+            return Err(());
+        }
+        Err(ConnectionRegistrationError::HandleGenerationFailed) => {
+            send_connection_rejection(ws_sender, "handle_generation_failed").await;
+            return Err(());
+        }
+    };
+    let ready = serde_json::json!({
+        "type": CONNECTION_READY_TYPE,
+        "connection_handle": lease.handle(),
+    });
+    if ws_sender
+        .send(Message::Text(ready.to_string().into()))
+        .await
+        .is_err()
+    {
+        return Err(());
+    }
+    Ok(Some(lease))
+}
+
+async fn send_connection_rejection(
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    reason: &'static str,
+) {
+    let rejection = serde_json::json!({
+        "type": "herdr_web.connection_rejected",
+        "reason": reason,
+    });
+    let _ = ws_sender
+        .send(Message::Text(rejection.to_string().into()))
+        .await;
+}
+
+async fn wait_for_connection_replacement(lease: &mut Option<WebSocketConnectionLease>) {
+    match lease {
+        Some(lease) => lease.cancelled().await,
+        None => futures_util::future::pending().await,
+    }
+}
+
+async fn send_connection_replaced(
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) {
+    let _ = ws_sender
+        .send(Message::Text(CONNECTION_REPLACED_MESSAGE.into()))
+        .await;
+}
+
+async fn activate_websocket_connection(
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    lease: &mut Option<WebSocketConnectionLease>,
+) -> bool {
+    let Some(lease) = lease else {
+        return true;
+    };
+    if !lease.activate() {
+        return false;
+    }
+    ws_sender
+        .send(Message::Text(CONNECTION_ACTIVE_MESSAGE.into()))
+        .await
+        .is_ok()
 }
 
 fn record_websocket_peer_activity(
     heartbeat: &mut WebSocketHeartbeat,
     message: &Result<Message, axum::Error>,
-) {
+) -> bool {
+    if let Ok(Message::Text(text)) = message {
+        if let Some(nonce) = application_liveness_ack_nonce(text) {
+            let _ = heartbeat.record_application_ack(Instant::now(), nonce);
+            return true;
+        }
+    }
     if message.is_ok() {
         heartbeat.record_peer_activity(Instant::now());
+    }
+    false
+}
+
+fn application_liveness_ack_nonce(text: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if value.get("type")?.as_str()? != "herdr_web.liveness_ack" {
+        return None;
+    }
+    value.get("nonce")?.as_str()?.parse().ok()
+}
+
+fn websocket_heartbeat_for_connection(
+    now: Instant,
+    connection_lease: &Option<WebSocketConnectionLease>,
+) -> WebSocketHeartbeat {
+    if connection_lease.is_some() {
+        WebSocketHeartbeat::new_application_liveness(now)
+    } else {
+        WebSocketHeartbeat::new(now)
     }
 }
 
@@ -2874,6 +3027,19 @@ async fn handle_websocket_heartbeat_deadline(
         WebSocketHeartbeatAction::SendPing => {
             ws_sender.send(Message::Ping(Bytes::new())).await.is_ok()
         }
+        WebSocketHeartbeatAction::SendApplicationProbe { nonce } => {
+            if ws_sender.send(Message::Ping(Bytes::new())).await.is_err() {
+                return false;
+            }
+            let probe = serde_json::json!({
+                "type": "herdr_web.liveness_probe",
+                "nonce": nonce.to_string(),
+            });
+            ws_sender
+                .send(Message::Text(probe.to_string().into()))
+                .await
+                .is_ok()
+        }
         WebSocketHeartbeatAction::Disconnect => {
             warn!(stream = stream_name, "websocket heartbeat timed out");
             false
@@ -2881,18 +3047,37 @@ async fn handle_websocket_heartbeat_deadline(
     }
 }
 
-async fn handle_events_socket(socket: WebSocket, state: BridgeState) {
+async fn handle_events_socket(
+    socket: WebSocket,
+    state: BridgeState,
+    query: WebSocketConnectionQuery,
+) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let mut connection_lease =
+        match prepare_websocket_connection(&mut ws_sender, &state.websocket_connections, query)
+            .await
+        {
+            Ok(lease) => lease,
+            Err(()) => return,
+        };
     let api = state.api.clone();
     let mut ui_event_rx = state.ui_event_tx.subscribe();
     let subscribed = tokio::task::spawn_blocking(move || open_event_subscription(api)).await;
     let Ok(Ok(mut event_rx)) = subscribed else {
         return;
     };
+    if !activate_websocket_connection(&mut ws_sender, &mut connection_lease).await {
+        send_connection_replaced(&mut ws_sender).await;
+        return;
+    }
 
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut heartbeat = WebSocketHeartbeat::new(Instant::now());
+    let mut heartbeat = websocket_heartbeat_for_connection(Instant::now(), &connection_lease);
     loop {
         tokio::select! {
+            _ = wait_for_connection_replacement(&mut connection_lease) => {
+                send_connection_replaced(&mut ws_sender).await;
+                break;
+            }
             _ = tokio::time::sleep_until(heartbeat.deadline()) => {
                 if !handle_websocket_heartbeat_deadline(
                     &mut ws_sender,
@@ -2943,12 +3128,32 @@ async fn handle_events_socket(socket: WebSocket, state: BridgeState) {
     }
 }
 
-async fn handle_activity_socket(socket: WebSocket, state: BridgeState) {
+async fn handle_activity_socket(
+    socket: WebSocket,
+    state: BridgeState,
+    query: WebSocketConnectionQuery,
+) {
     let mut activity_rx = state.activity_tx.subscribe();
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut heartbeat = WebSocketHeartbeat::new(Instant::now());
+    let mut connection_lease =
+        match prepare_websocket_connection(&mut ws_sender, &state.websocket_connections, query)
+            .await
+        {
+            Ok(lease) => lease,
+            Err(()) => return,
+        };
+    if !activate_websocket_connection(&mut ws_sender, &mut connection_lease).await {
+        send_connection_replaced(&mut ws_sender).await;
+        return;
+    }
+
+    let mut heartbeat = websocket_heartbeat_for_connection(Instant::now(), &connection_lease);
     loop {
         tokio::select! {
+            _ = wait_for_connection_replacement(&mut connection_lease) => {
+                send_connection_replaced(&mut ws_sender).await;
+                break;
+            }
             _ = tokio::time::sleep_until(heartbeat.deadline()) => {
                 if !handle_websocket_heartbeat_deadline(
                     &mut ws_sender,
@@ -3002,12 +3207,32 @@ async fn send_activity_message(
     ws_sender.send(Message::Text(text.into())).await
 }
 
-async fn handle_ui_events_socket(socket: WebSocket, state: BridgeState) {
+async fn handle_ui_events_socket(
+    socket: WebSocket,
+    state: BridgeState,
+    query: WebSocketConnectionQuery,
+) {
     let mut ui_event_rx = state.ui_event_tx.subscribe();
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut heartbeat = WebSocketHeartbeat::new(Instant::now());
+    let mut connection_lease =
+        match prepare_websocket_connection(&mut ws_sender, &state.websocket_connections, query)
+            .await
+        {
+            Ok(lease) => lease,
+            Err(()) => return,
+        };
+    if !activate_websocket_connection(&mut ws_sender, &mut connection_lease).await {
+        send_connection_replaced(&mut ws_sender).await;
+        return;
+    }
+
+    let mut heartbeat = websocket_heartbeat_for_connection(Instant::now(), &connection_lease);
     loop {
         tokio::select! {
+            _ = wait_for_connection_replacement(&mut connection_lease) => {
+                send_connection_replaced(&mut ws_sender).await;
+                break;
+            }
             _ = tokio::time::sleep_until(heartbeat.deadline()) => {
                 if !handle_websocket_heartbeat_deadline(
                     &mut ws_sender,
@@ -3046,43 +3271,67 @@ async fn handle_ui_events_socket(socket: WebSocket, state: BridgeState) {
 }
 
 async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: TerminalQuery) {
-    if query.terminal_id.trim().is_empty() {
+    let TerminalQuery {
+        terminal_id,
+        cols,
+        rows,
+        coalesce_ms,
+        output_encoding,
+        takeover,
+        connection,
+    } = query;
+    if terminal_id.trim().is_empty() {
         return;
     }
 
-    let terminal_id = query.terminal_id.clone();
-    let cols = query.cols.unwrap_or(DEFAULT_COLS);
-    let rows = query.rows.unwrap_or(DEFAULT_ROWS);
-    let coalesce_window = terminal_output_coalesce_window(query.coalesce_ms);
-    let output_encoding = query
-        .output_encoding
-        .unwrap_or(TerminalOutputWireEncoding::Identity);
+    let cols = cols.unwrap_or(DEFAULT_COLS);
+    let rows = rows.unwrap_or(DEFAULT_ROWS);
+    let coalesce_window = terminal_output_coalesce_window(coalesce_ms);
+    let output_encoding = output_encoding.unwrap_or(TerminalOutputWireEncoding::Identity);
     info!(
         terminal_id = %terminal_id,
         cols,
         rows,
-        takeover = query.takeover,
-        coalesce_ms = query.coalesce_ms,
+        takeover,
+        coalesce_ms,
         output_encoding = ?output_encoding,
         "terminal websocket accepted"
     );
     let (mut ws_sender, mut ws_receiver) = socket.split();
+    let mut connection_lease = match prepare_websocket_connection(
+        &mut ws_sender,
+        &state.websocket_connections,
+        connection,
+    )
+    .await
+    {
+        Ok(lease) => lease,
+        Err(()) => return,
+    };
+
     let attach_started_at = Instant::now();
     let daemon = LiveTerminalDaemon {
         api: state.api.clone(),
         client_socket_path: state.client_socket_path.clone(),
     };
-    let session = match acquire_terminal_session(
+    let acquire = acquire_terminal_session(
         state.terminal_sessions.clone(),
         daemon,
         WaitPolicy::production(),
         terminal_id.clone(),
         cols,
         rows,
-        query.takeover,
-    )
-    .await
-    {
+        takeover,
+    );
+    tokio::pin!(acquire);
+    let session_result = tokio::select! {
+        result = &mut acquire => result,
+        _ = wait_for_connection_replacement(&mut connection_lease) => {
+            send_connection_replaced(&mut ws_sender).await;
+            return;
+        }
+    };
+    let session = match session_result {
         Ok(session) => session,
         Err(err) => {
             warn!(
@@ -3102,6 +3351,11 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
             return;
         }
     };
+    if !activate_websocket_connection(&mut ws_sender, &mut connection_lease).await {
+        release_terminal_session(&state.terminal_sessions, &terminal_id, &session);
+        send_connection_replaced(&mut ws_sender).await;
+        return;
+    }
     debug!(
         terminal_id = %terminal_id,
         elapsed_ms = attach_started_at.elapsed().as_millis() as u64,
@@ -3121,7 +3375,7 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
     }
 
     let mut output_coalescer = TerminalOutputCoalescer::new(coalesce_window);
-    let mut heartbeat = WebSocketHeartbeat::new(Instant::now());
+    let mut heartbeat = websocket_heartbeat_for_connection(Instant::now(), &connection_lease);
     let _ = write_tx.send(ClientMessage::Resize {
         cols,
         rows,
@@ -3134,6 +3388,10 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
         if let Some(deadline) = output_coalescer.deadline() {
             tokio::select! {
                 biased;
+                _ = wait_for_connection_replacement(&mut connection_lease) => {
+                    send_connection_replaced(&mut ws_sender).await;
+                    break TerminalSessionExit::ConnectionReplaced;
+                }
                 _ = tokio::time::sleep_until(heartbeat.deadline()) => {
                     if !handle_websocket_heartbeat_deadline(
                         &mut ws_sender,
@@ -3157,9 +3415,12 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
                     }
                 }
                 Some(message) = ws_receiver.next() => {
-                    record_websocket_peer_activity(&mut heartbeat, &message);
-                    if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
-                        break exit;
+                    let consumed_liveness_ack =
+                        record_websocket_peer_activity(&mut heartbeat, &message);
+                    if !consumed_liveness_ack {
+                        if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
+                            break exit;
+                        }
                     }
                 }
                 output = terminal_rx.recv() => {
@@ -3178,6 +3439,10 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
             }
         } else {
             tokio::select! {
+                _ = wait_for_connection_replacement(&mut connection_lease) => {
+                    send_connection_replaced(&mut ws_sender).await;
+                    break TerminalSessionExit::ConnectionReplaced;
+                }
                 _ = tokio::time::sleep_until(heartbeat.deadline()) => {
                     if !handle_websocket_heartbeat_deadline(
                         &mut ws_sender,
@@ -3202,9 +3467,12 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
                     }
                 }
                 Some(message) = ws_receiver.next() => {
-                    record_websocket_peer_activity(&mut heartbeat, &message);
-                    if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
-                        break exit;
+                    let consumed_liveness_ack =
+                        record_websocket_peer_activity(&mut heartbeat, &message);
+                    if !consumed_liveness_ack {
+                        if let Some(exit) = handle_terminal_client_message(&write_tx, message) {
+                            break exit;
+                        }
                     }
                 }
                 else => break TerminalSessionExit::ClientDisconnected,
@@ -3391,12 +3659,8 @@ async fn handle_terminal_output_deadline(
     output_coalescer: &mut TerminalOutputCoalescer,
     output_encoding: TerminalOutputWireEncoding,
 ) -> Option<TerminalSessionExit> {
-    let Some(reason) = output_coalescer.handle_deadline() else {
-        return None;
-    };
-    let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
-        return None;
-    };
+    let reason = output_coalescer.handle_deadline()?;
+    let bytes = output_coalescer.flush_pending(reason, Instant::now())?;
     send_terminal_output_frame(ws_sender, bytes, output_encoding).await
 }
 
@@ -3432,9 +3696,7 @@ async fn handle_terminal_output_message(
                 }
                 TerminalOutputCoalescingDecision::Pending => None,
                 TerminalOutputCoalescingDecision::FlushPending(reason) => {
-                    let Some(bytes) = output_coalescer.flush_pending(reason, Instant::now()) else {
-                        return None;
-                    };
+                    let bytes = output_coalescer.flush_pending(reason, Instant::now())?;
                     send_terminal_output_frame(ws_sender, bytes, output_encoding).await
                 }
             }
@@ -3995,6 +4257,38 @@ mod tests {
     use super::*;
     use flate2::read::GzDecoder;
     use std::io::Read;
+
+    #[test]
+    fn connection_identity_validation_accepts_protocol_values_and_rejects_abuse() {
+        assert!(valid_connection_slot(
+            "terminal:550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!valid_connection_slot(""));
+        assert!(!valid_connection_slot("slot/with/path"));
+        assert!(!valid_connection_slot(
+            &"x".repeat(MAX_CONNECTION_SLOT_BYTES + 1)
+        ));
+
+        assert!(valid_connection_handle("0123456789abcdef0123456789abcdef"));
+        assert!(!valid_connection_handle("0123456789ABCDEF0123456789ABCDEF"));
+        assert!(!valid_connection_handle("too-short"));
+    }
+
+    #[test]
+    fn application_liveness_ack_parser_requires_exact_control_shape() {
+        assert_eq!(
+            application_liveness_ack_nonce(r#"{"type":"herdr_web.liveness_ack","nonce":"17"}"#,),
+            Some(17),
+        );
+        assert_eq!(
+            application_liveness_ack_nonce(r#"{"type":"herdr_web.liveness_probe","nonce":"17"}"#,),
+            None,
+        );
+        assert_eq!(
+            application_liveness_ack_nonce(r#"{"type":"herdr_web.liveness_ack","nonce":17}"#,),
+            None,
+        );
+    }
 
     #[test]
     fn gzip_terminal_output_frame_round_trips_and_reduces_repeated_output() {
@@ -6203,7 +6497,8 @@ mod terminal_close_contract_tests {
     #[serde(rename_all = "snake_case")]
     struct FixtureCause {
         cause: String,
-        retry: String,
+        #[serde(rename = "retry")]
+        _retry: String,
         example_daemon_prose: Option<String>,
     }
 
