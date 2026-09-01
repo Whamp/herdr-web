@@ -38,9 +38,19 @@
 
 ### Fixed
 
+- Android now closes bridge sockets when the app is suspended and replaces the exact predecessor
+  immediately on resume or Wi-Fi/cellular path changes. Android Activity pause republishes suspension
+  even after contradictory keyguard callbacks, preventing hidden reconnect work after screen lock.
+  The Capacitor Network proxy is wrapped behind a plain adapter so lifecycle listener setup cannot
+  be aborted by Promise thenable detection. Resume prioritizes one visible-terminal handshake before
+  background stream and capability refresh work. Visibility changes preserve that handshake instead
+  of spawning competing connections while Android networking thaws.
+  The bridge preserves shared terminal attachments during replacement, rejects stale delayed attempts,
+  and requires managed clients to acknowledge liveness from JavaScript; protocol heartbeat remains a
+  fallback.
 - Bridge WebSockets now ping browsers and close connections that stay silent for 45 seconds,
   preventing abandoned mobile connections from accumulating and delaying terminal attachment.
-- Incremented the Android package version to code 4 so this debug APK can update existing
+- Incremented the Android package version to code 17 so this debug APK can update existing
   `dev.herdr.web` installations signed with the same development certificate.
 - Mobile terminal copies now remove canvas row gaps that split HTTP(S) links, including indented
   alphanumeric continuations when terminal edge metadata is unavailable, while preserving ordinary

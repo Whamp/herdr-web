@@ -67,22 +67,35 @@ import type { ActivityLogEntry } from "./activity";
 import { BackendSettingsDialog } from "./BackendSettingsDialog";
 import { useBridge } from "./bridge";
 import type { BridgeId, BridgeRuntime } from "./bridge";
+import { openBridgePersistentSocket } from "./connection/bridgePersistentSocket";
+import {
+  createBridgeWebSocketSlot,
+  type BridgeWebSocketSlot,
+} from "./connection/bridgeWebSocketConnection";
 import { createCommands, createdPaneId } from "./commands";
 import type { LaunchSpec, PaneFocusDirection, SplitDirection } from "./commands";
 import { isConnectionResultCurrent } from "./connectionState";
 
-import type {
-  AgentGroup,
-  AgentSort,
-  HostScope,
-  Scope,
-  SidebarView,
-  SpaceGroup,
-} from "./appPreferences";
 import {
-  MAX_COLLAPSED_SIDEBAR_GROUPS,
+  clampNotesListPaneWidth,
+  clampNotesPanelWidth,
+  clampSidebarWidth,
   loadDisplayPrefs,
+  MAX_COLLAPSED_SIDEBAR_GROUPS,
+  MAX_NOTES_LIST_PANE_WIDTH,
+  MAX_NOTES_PANEL_WIDTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_NOTES_LIST_PANE_WIDTH,
+  MIN_NOTES_PANEL_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  useAppPreferences,
   writeDisplayPrefs,
+  type AgentGroup,
+  type AgentSort,
+  type HostScope,
+  type Scope,
+  type SidebarView,
+  type SpaceGroup,
 } from "./appPreferences";
 import { LaunchDialog } from "./LaunchDialog";
 import { resolveLaunchSpec } from "./launch";
@@ -124,18 +137,6 @@ import {
   trapFocusWithin,
   useFocusReturn,
 } from "./overlayFocus";
-import {
-  clampNotesListPaneWidth,
-  clampNotesPanelWidth,
-  clampSidebarWidth,
-  MAX_SIDEBAR_WIDTH,
-  MAX_NOTES_LIST_PANE_WIDTH,
-  MAX_NOTES_PANEL_WIDTH,
-  MIN_NOTES_LIST_PANE_WIDTH,
-  MIN_NOTES_PANEL_WIDTH,
-  MIN_SIDEBAR_WIDTH,
-  useAppPreferences,
-} from "./appPreferences";
 import { createSnapshotRefreshController } from "./refreshCoordinator";
 import { TerminalView } from "./TerminalView";
 import type {
@@ -3661,6 +3662,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
             terminalOptions={terminalViewOptions}
             mobileOptions={mobileViewOptions}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
+            connectionSuspended={selectedRuntime?.connectionSuspended ?? false}
             resumeToken={selectedRuntime?.resumeToken ?? 0}
             httpUrl={selectedHttpUrl}
             wsUrl={selectedWsUrl}
@@ -3669,6 +3671,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
           <TerminalView
             pane={selectedPane}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
+            connectionSuspended={selectedRuntime?.connectionSuspended ?? false}
             resumeToken={selectedRuntime?.resumeToken ?? 0}
             httpUrl={selectedHttpUrl}
             wsUrl={selectedWsUrl}
@@ -3911,6 +3914,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
 }
 
 const SNAPSHOT_REFRESH_INTERVAL_MS = 10000;
+const BACKGROUND_CONNECTION_RESUME_GRACE_MS = 250;
 const SHARED_SELECTION_SETTLE_TIMEOUT_MS = 2000;
 const NOTES_REFRESH_INTERVAL_MS = 15000;
 const MAX_PENDING_CREATED_PANE_NOTES = 32;
@@ -3965,6 +3969,35 @@ export function BridgeConnectionController({
   const onNotesChangedRef = useRef(onNotesChanged);
   const followSharedSelectionRef = useRef(followSharedSelection);
   const refreshOffsetRef = useRef(stableBridgeRefreshOffsetMs(runtime.id));
+  const eventsConnectionSlotRef = useRef<BridgeWebSocketSlot | null>(null);
+  const activityConnectionSlotRef = useRef<BridgeWebSocketSlot | null>(null);
+  const uiEventsConnectionSlotRef = useRef<BridgeWebSocketSlot | null>(null);
+  const eventsConnectionSlot =
+    (eventsConnectionSlotRef.current ??= createBridgeWebSocketSlot("events"));
+  const activityConnectionSlot =
+    (activityConnectionSlotRef.current ??= createBridgeWebSocketSlot("activity"));
+  const uiEventsConnectionSlot =
+    (uiEventsConnectionSlotRef.current ??= createBridgeWebSocketSlot("ui-events"));
+  const [backgroundConnectionResumeToken, setBackgroundConnectionResumeToken] = useState(
+    runtime.resumeToken,
+  );
+
+  useEffect(() => {
+    if (
+      runtime.connectionSuspended ||
+      runtime.resumeToken <= backgroundConnectionResumeToken
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setBackgroundConnectionResumeToken(runtime.resumeToken);
+    }, BACKGROUND_CONNECTION_RESUME_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    backgroundConnectionResumeToken,
+    runtime.connectionSuspended,
+    runtime.resumeToken,
+  ]);
 
   useEffect(() => {
     httpUrlRef.current = runtime.httpUrl;
@@ -3988,6 +4021,15 @@ export function BridgeConnectionController({
     let interval: number | null = null;
     let intervalStartTimer: number | null = null;
     const ref = ensureBridgeConnectionRef(connectionRefs, runtime);
+
+    if (
+      runtime.connectionSuspended ||
+      runtime.resumeToken > backgroundConnectionResumeToken
+    ) {
+      return () => {
+        disposed = true;
+      };
+    }
 
     if (!runtime.canConnect) {
       ref.snapshot = null;
@@ -4079,8 +4121,10 @@ export function BridgeConnectionController({
       interval = window.setInterval(refresh, SNAPSHOT_REFRESH_INTERVAL_MS);
     }, SNAPSHOT_REFRESH_INTERVAL_MS + refreshOffset);
 
-    const events = openEventsSocket(wsUrlRef.current, "/ws/events", refresh);
-    const activity = openEventsSocket(
+    const events = openBridgePersistentSocket(wsUrlRef.current, "/ws/events", refresh, {
+      connectionSlot: eventsConnectionSlot,
+    });
+    const activity = openBridgePersistentSocket(
       wsUrlRef.current,
       "/ws/activity",
       (event) => {
@@ -4119,9 +4163,12 @@ export function BridgeConnectionController({
           requestActivityResync();
         }
       },
-      { onOpen: refresh },
+      {
+        connectionSlot: activityConnectionSlot,
+        onOpen: refresh,
+      },
     );
-    const uiEvents = openEventsSocket(
+    const uiEvents = openBridgePersistentSocket(
       wsUrlRef.current,
       "/ws/ui-events",
       (event) => {
@@ -4179,7 +4226,10 @@ export function BridgeConnectionController({
         }
         refresh();
       },
-      { onOpen: () => onAgentActivityChangedRef.current(runtime.id) },
+      {
+        connectionSlot: uiEventsConnectionSlot,
+        onOpen: () => onAgentActivityChangedRef.current(runtime.id),
+      },
     );
 
     return () => {
@@ -4195,10 +4245,12 @@ export function BridgeConnectionController({
       }
     };
   }, [
+    backgroundConnectionResumeToken,
     connectionRefs,
     onPaneSelection,
     runtime.canConnect,
     runtime.connectionKey,
+    runtime.connectionSuspended,
     runtime.id,
     runtime.resumeToken,
     setConnectionStates,
@@ -5336,6 +5388,7 @@ function SplitGrid({
   terminalOptions,
   mobileOptions,
   connectionKey,
+  connectionSuspended,
   resumeToken,
   httpUrl,
   wsUrl,
@@ -5349,6 +5402,7 @@ function SplitGrid({
   terminalOptions: TerminalViewTerminalOptions;
   mobileOptions: TerminalViewMobileOptions;
   connectionKey: string;
+  connectionSuspended: boolean;
   resumeToken: number;
   httpUrl: (path: string, query?: URLSearchParams) => string;
   wsUrl: (path: string, query?: URLSearchParams) => string;
@@ -5369,6 +5423,7 @@ function SplitGrid({
             <TerminalView
               pane={pane}
               connectionKey={connectionKey}
+              connectionSuspended={connectionSuspended}
               resumeToken={resumeToken}
               httpUrl={httpUrl}
               wsUrl={wsUrl}
@@ -9112,53 +9167,4 @@ function blurActiveTextInput() {
   ) {
     element.blur();
   }
-}
-
-function openEventsSocket(
-  wsUrl: (path: string, query?: URLSearchParams) => string,
-  path: string,
-  onEvent: (event: MessageEvent) => void,
-  options: { onOpen?: () => void } = {},
-) {
-  const url = wsUrl(path);
-  let socket: WebSocket | null = null;
-  let closed = false;
-  let reconnectTimer: number | null = null;
-  let attempts = 0;
-
-  const connect = () => {
-    if (closed) {
-      return;
-    }
-    const next = new WebSocket(url);
-    socket = next;
-    next.addEventListener("open", () => {
-      attempts = 0;
-      options.onOpen?.();
-    });
-    next.addEventListener("message", onEvent);
-    next.addEventListener("close", () => {
-      if (closed || socket !== next || reconnectTimer !== null) {
-        return;
-      }
-      const delay = Math.min(500 * 2 ** attempts, 5000);
-      attempts += 1;
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, delay);
-    });
-  };
-
-  connect();
-  return {
-    close() {
-      closed = true;
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      socket?.close();
-    },
-  };
 }

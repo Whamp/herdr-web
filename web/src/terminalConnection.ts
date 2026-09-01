@@ -1,4 +1,8 @@
 import {
+  createBridgeWebSocketSlot,
+  parseBridgeWebSocketControlMessage,
+} from "./connection/bridgeWebSocketConnection";
+import {
   recordReconnectDiagnostic,
   type ReconnectDiagnosticDetails,
 } from "./reconnectDiagnostics";
@@ -9,7 +13,6 @@ import {
 } from "./terminalOutputCoalescing";
 import {
   terminalReconnectPolicy,
-  TERMINAL_FOREGROUND_CONNECT_TIMEOUT_MS,
   TERMINAL_FOREGROUND_FAST_ATTEMPTS,
   TERMINAL_FOREGROUND_SIGNAL_COALESCE_MS,
 } from "./terminalReconnectPolicy";
@@ -32,6 +35,8 @@ export type ReconnectReason =
   | "online"
   | "resize"
   | "manual";
+
+export const TERMINAL_FIRST_RESUME_CONNECT_TIMEOUT_MS = 10000;
 
 export type TerminalConnectionTimers = {
   setTimeout(fn: () => void, ms: number): number;
@@ -77,12 +82,12 @@ export type TerminalConnection = {
    * follows the normal backoff path.
    */
   signal(reason: ReconnectReason): void;
+  /** Close every socket while native Android is suspended; reconnect on resume. */
+  setSuspended(suspended: boolean): void;
   /** Send a resize frame on the live socket, if it is open. */
   resize(size: { cols: number; rows: number }): void;
   dispose(): void;
 };
-
-const DEBUG_TERMINAL_RECONNECT = false;
 
 function defaultTimers(): TerminalConnectionTimers {
   return {
@@ -133,12 +138,12 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
     options.recordEvent ??
     ((event: string, details: ReconnectDiagnosticDetails = {}) => {
       recordReconnectDiagnostic(terminalId, event, details);
-      if (DEBUG_TERMINAL_RECONNECT) {
-        console.debug("terminal reconnect:", event, { terminalId, ...details });
-      }
     });
 
+  const connectionSlot = createBridgeWebSocketSlot("terminal");
+  const ownedSockets = new Set<WebSocket>();
   let disposed = false;
+  let suspended = false;
   let socket: WebSocket | null = null;
   let reconnectTimer: number | null = null;
   let connectTimer: number | null = null;
@@ -175,11 +180,13 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
     }
   };
 
-  const closeActiveSocket = () => {
-    const current = socket;
+  const closeOwnedSockets = () => {
     socket = null;
     hooks.onSocket(null);
-    current?.close();
+    for (const ownedSocket of ownedSockets) {
+      ownedSocket.close();
+    }
+    ownedSockets.clear();
   };
 
   const sendResize = (size: { cols: number; rows: number }) => {
@@ -189,7 +196,7 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
   };
 
   const connectSocket = (reason: ReconnectReason, connectTimeoutMs: number) => {
-    if (disposed || reconnectStopped) {
+    if (disposed || suspended || reconnectStopped) {
       return;
     }
     clearConnectTimer();
@@ -198,14 +205,24 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
       scheduleReconnect("resize");
       return;
     }
-    if (socket) {
-      closeActiveSocket();
-    }
+    const predecessorSocket = socket;
     reconnectScheduledForSocket.clear();
     const requestGzipOutput = terminalOutputCompressionSupported();
     const nextSocket = socketFactory(
-      terminalSocketUrl(wsUrl, terminalId, initialSize, terminalOutputCoalesceMs, requestGzipOutput),
+      connectionSlot.connectionUrl(
+        terminalSocketUrl(
+          wsUrl,
+          terminalId,
+          initialSize,
+          terminalOutputCoalesceMs,
+          requestGzipOutput,
+        ),
+      ),
     );
+    ownedSockets.add(nextSocket);
+    let connectionActivated = false;
+    let connectionIdentityReset = false;
+    let connectionSuperseded = false;
     let gzipOutputAcknowledged = false;
     const outputDecoder = createTerminalOutputFrameDecoder(
       (output) => {
@@ -262,6 +279,23 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
         return;
       }
       if (typeof event.data === "string") {
+        const control = parseBridgeWebSocketControlMessage(event.data);
+        if (control) {
+          connectionSlot.observeControlMessage(control);
+          if (control.type === "active") {
+            connectionActivated = true;
+          } else if (control.type === "livenessProbe") {
+            nextSocket.send(control.acknowledgement);
+          } else if (control.type === "rejected" && control.reason === "stale_predecessor") {
+            connectionIdentityReset = true;
+            connectionSlot.resetConnectionIdentity();
+            nextSocket.close();
+          } else if (control.type === "replaced" || control.type === "rejected") {
+            connectionSuperseded = true;
+            nextSocket.close();
+          }
+          return;
+        }
         if (isTerminalOutputGzipAcknowledgement(event.data)) {
           gzipOutputAcknowledged = true;
           return;
@@ -290,13 +324,46 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
     });
     nextSocket.addEventListener("close", () => {
       outputDecoder.cancel();
+      ownedSockets.delete(nextSocket);
       if (disposed || socket !== nextSocket || socketGeneration !== currentSocketGeneration) {
         return;
       }
       clearConnectTimer();
-      if (socket === nextSocket) {
-        socket = null;
-        hooks.onSocket(null);
+      if (!connectionActivated) {
+        connectionSlot.abandonPendingConnection();
+      }
+      if (
+        !connectionActivated &&
+        !connectionIdentityReset &&
+        predecessorSocket?.readyState === WebSocket.OPEN &&
+        ownedSockets.has(predecessorSocket)
+      ) {
+        socket = predecessorSocket;
+        hooks.onSocket(predecessorSocket);
+        debugReconnect("replacement_fallback", {
+          socketGeneration: currentSocketGeneration,
+        });
+        reconnectAttempts = 0;
+        foregroundFastAttemptsRemaining = TERMINAL_FOREGROUND_FAST_ATTEMPTS;
+        scheduleConnect("close", "foreground", true);
+        return;
+      }
+      socket = null;
+      hooks.onSocket(null);
+      if (connectionIdentityReset) {
+        debugReconnect("connection_identity_reset", {
+          socketGeneration: currentSocketGeneration,
+        });
+        reconnectAttempts = 0;
+        foregroundFastAttemptsRemaining = TERMINAL_FOREGROUND_FAST_ATTEMPTS;
+        scheduleConnect("close", "foreground", true);
+        return;
+      }
+      if (connectionSuperseded) {
+        debugReconnect("connection_superseded", {
+          socketGeneration: currentSocketGeneration,
+        });
+        return;
       }
       debugReconnect("close", {
         socketGeneration: currentSocketGeneration,
@@ -348,7 +415,7 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
     mode: "normal" | "foreground",
     immediate: boolean,
   ) => {
-    if (disposed || reconnectStopped) {
+    if (disposed || suspended || reconnectStopped) {
       return;
     }
     if (reconnectTimer !== null) {
@@ -363,6 +430,10 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
       immediate,
       foregroundFastAttemptsRemaining,
     });
+    const connectTimeoutMs =
+      mode === "foreground" && immediate
+        ? TERMINAL_FIRST_RESUME_CONNECT_TIMEOUT_MS
+        : policy.connectTimeoutMs;
     reconnectAttempts = policy.nextAttempt;
     foregroundFastAttemptsRemaining = policy.nextForegroundFastAttemptsRemaining;
     hooks.onState("connecting");
@@ -370,11 +441,11 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
       reason,
       mode,
       delayMs: policy.delayMs,
-      connectTimeoutMs: policy.connectTimeoutMs,
+      connectTimeoutMs,
     });
     const run = () => {
       reconnectTimer = null;
-      connectSocket(reason, policy.connectTimeoutMs);
+      connectSocket(reason, connectTimeoutMs);
     };
     if (policy.delayMs === 0) {
       run();
@@ -399,6 +470,7 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
   function retryStalledConnect(stalledSocket: WebSocket, socketId: number) {
     if (
       disposed ||
+      suspended ||
       socket !== stalledSocket ||
       socketGeneration !== socketId ||
       stalledSocket.readyState !== WebSocket.CONNECTING
@@ -413,7 +485,7 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
   }
 
   const processForegroundReconnect = (reason: ReconnectReason) => {
-    if (reconnectStopped) {
+    if (suspended || reconnectStopped) {
       return;
     }
     const currentTime = now();
@@ -428,39 +500,27 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
       sinceSocketStartMs:
         currentSocket && socketStartedAt > 0 ? Math.round(currentTime - socketStartedAt) : null,
     });
-    if (currentSocket?.readyState === WebSocket.OPEN) {
-      const size = measureSize(true);
-      if (size) {
-        sendResize(size);
-      }
-      return;
-    }
-    if (
-      currentSocket?.readyState === WebSocket.CONNECTING &&
-      currentTime - socketStartedAt < TERMINAL_FOREGROUND_CONNECT_TIMEOUT_MS
-    ) {
-      const socketId = socketGeneration;
-      const remainingMs = Math.max(
-        1,
-        TERMINAL_FOREGROUND_CONNECT_TIMEOUT_MS - (currentTime - socketStartedAt),
-      );
-      clearConnectTimer();
-      connectTimer = timers.setTimeout(() => {
-        retryStalledConnect(currentSocket, socketId);
-      }, remainingMs);
-      return;
-    }
     reconnectAttempts = 0;
     foregroundFastAttemptsRemaining = TERMINAL_FOREGROUND_FAST_ATTEMPTS;
     clearReconnectTimer();
-    if (currentSocket) {
-      closeActiveSocket();
+    if (currentSocket?.readyState === WebSocket.CONNECTING) {
+      clearConnectTimer();
+      const currentSocketGeneration = socketGeneration;
+      connectTimer = timers.setTimeout(() => {
+        retryStalledConnect(currentSocket, currentSocketGeneration);
+      }, TERMINAL_FIRST_RESUME_CONNECT_TIMEOUT_MS);
+      debugReconnect("foreground_connect_preserved", {
+        reason,
+        socketGeneration: currentSocketGeneration,
+        connectTimeoutMs: TERMINAL_FIRST_RESUME_CONNECT_TIMEOUT_MS,
+      });
+      return;
     }
     scheduleConnect(reason, "foreground", true);
   };
 
   const requestForegroundReconnect = (reason: ReconnectReason) => {
-    if (reconnectStopped) {
+    if (suspended || reconnectStopped) {
       return;
     }
     pendingForegroundReasons.add(reason);
@@ -482,45 +542,64 @@ export function createTerminalConnection(options: TerminalConnectionOptions): Te
   };
 
   const signal = (reason: ReconnectReason) => {
-    if (reconnectStopped) {
+    if (suspended || reconnectStopped) {
       return;
     }
-      if (reason === "resume" || reason === "visible" || reason === "online") {
-        requestForegroundReconnect(reason);
+    if (reason === "resume" || reason === "visible" || reason === "online") {
+      requestForegroundReconnect(reason);
+      return;
+    }
+    if (reason === "resize") {
+      if (socket?.readyState === WebSocket.OPEN) {
+        const size = measureSize(true);
+        if (size) {
+          sendResize(size);
+        }
         return;
       }
-      if (reason === "resize") {
-        if (socket?.readyState === WebSocket.OPEN) {
-          const size = measureSize(true);
-          if (size) {
-            sendResize(size);
-          }
-          return;
-        }
-        if (socket?.readyState === WebSocket.CONNECTING) {
-          return;
-        }
-        scheduleReconnect(reason);
+      if (socket?.readyState === WebSocket.CONNECTING) {
         return;
       }
-      scheduleConnect(reason, "normal", reason === "initial" || reason === "manual");
-    };
+      scheduleReconnect(reason);
+      return;
+    }
+    scheduleConnect(reason, "normal", reason === "initial" || reason === "manual");
+  };
 
   return {
     start() {
       signal("initial");
     },
     signal,
+    setSuspended(nextSuspended) {
+      if (disposed || suspended === nextSuspended) {
+        return;
+      }
+      suspended = nextSuspended;
+      if (suspended) {
+        pendingForegroundReasons.clear();
+        reconnectScheduledForSocket.clear();
+        clearReconnectTimer();
+        clearConnectTimer();
+        clearForegroundCoalesceTimer();
+        closeOwnedSockets();
+        debugReconnect("suspended");
+        return;
+      }
+      reconnectAttempts = 0;
+      foregroundFastAttemptsRemaining = TERMINAL_FOREGROUND_FAST_ATTEMPTS;
+      debugReconnect("resumed");
+      scheduleConnect("resume", "foreground", true);
+    },
     resize(size) {
       sendResize(size);
     },
     dispose() {
       disposed = true;
-      hooks.onSocket(null);
       clearReconnectTimer();
       clearConnectTimer();
       clearForegroundCoalesceTimer();
-      closeActiveSocket();
+      closeOwnedSockets();
     },
   };
 }

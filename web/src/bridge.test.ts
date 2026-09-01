@@ -3,6 +3,7 @@ import {
   buildHttpUrl,
   buildWsUrl,
   capabilityProbeFailure,
+  capabilityProbeKey,
   capabilityProbeSuccess,
   capabilityRetryDelayMs,
   configuredBridgeConnectionKey,
@@ -282,6 +283,11 @@ describe("backend store parsing", () => {
 });
 
 describe("capabilities", () => {
+  it("keeps capability probe identity stable across resume generations", () => {
+    expect(capabilityProbeKey("bridge-a", 0)).toBe(capabilityProbeKey("bridge-a", 42));
+    expect(capabilityProbeKey("bridge-a", 0)).not.toBe(capabilityProbeKey("bridge-b", 0));
+  });
+
   it("maps capability probe outcomes to connection blocking state", () => {
     expect(capabilityProbeSuccess({ commands: ["pane.split"], web_compat: 1 })).toEqual({
       blocked: false,

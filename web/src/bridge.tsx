@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 import { fetchWithTimeout } from "./fetchWithTimeout";
-import { addNativeResumeHandler } from "./native";
+import { addNativeConnectionLifecycleHandler } from "./native";
 
 export const SAME_ORIGIN_BRIDGE_ID = "same-origin";
 
@@ -70,6 +70,7 @@ export type BridgeRuntime = {
   color: string;
   backend: BridgeBackendProfile | null;
   connectionKey: string;
+  connectionSuspended: boolean;
   resumeToken: number;
   capabilities: BridgeCapabilities | null;
   capabilityState: CapabilityState;
@@ -128,6 +129,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [probeStates, setProbeStates] = useState<Record<string, BridgeProbeState>>({});
   const [probeRetryTokens, setProbeRetryTokens] = useState<Record<string, number>>({});
+  const [connectionSuspended, setConnectionSuspended] = useState(false);
   const [resumeToken, setResumeToken] = useState(0);
   const storeEditedRef = useRef(false);
 
@@ -147,7 +149,12 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    return addNativeResumeHandler(() => {
+    return addNativeConnectionLifecycleHandler((event) => {
+      if (event.type === "suspend") {
+        setConnectionSuspended(true);
+        return;
+      }
+      setConnectionSuspended(false);
       setResumeToken((token) => token + 1);
     });
   }, []);
@@ -162,11 +169,12 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
     () =>
       buildAvailableRuntimes({
         backends: store.backends,
+        connectionSuspended,
         probeStates,
         resumeToken,
         sameOriginAvailable,
       }),
-    [probeStates, resumeToken, sameOriginAvailable, store.backends],
+    [connectionSuspended, probeStates, resumeToken, sameOriginAvailable, store.backends],
   );
 
   const availableRuntimeIds = useMemo(
@@ -419,7 +427,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
       {children}
       {enabledRuntimes.map((runtime) => (
         <BridgeCapabilityProbe
-          key={`${runtime.connectionKey}:${runtime.resumeToken}`}
+          key={capabilityProbeKey(runtime.connectionKey, runtime.resumeToken)}
           runtime={runtime}
           retryToken={probeRetryTokens[runtime.id] ?? 0}
           onReach={markBridgeReachable}
@@ -529,11 +537,13 @@ export function useBridge() {
 
 function buildAvailableRuntimes({
   backends,
+  connectionSuspended,
   probeStates,
   resumeToken,
   sameOriginAvailable,
 }: {
   backends: BridgeBackendProfile[];
+  connectionSuspended: boolean;
   probeStates: Record<string, BridgeProbeState>;
   resumeToken: number;
   sameOriginAvailable: boolean;
@@ -548,6 +558,7 @@ function buildAvailableRuntimes({
         backend: null,
         baseUrl: null,
         probeState: probeStates[SAME_ORIGIN_BRIDGE_ID],
+        connectionSuspended,
         resumeToken,
       }),
     );
@@ -561,6 +572,7 @@ function buildAvailableRuntimes({
         backend,
         baseUrl: backend.baseUrl,
         probeState: probeStates[backend.id],
+        connectionSuspended,
         resumeToken,
       }),
     );
@@ -575,6 +587,7 @@ function createBridgeRuntime({
   backend,
   baseUrl,
   probeState,
+  connectionSuspended,
   resumeToken,
 }: {
   id: BridgeId;
@@ -583,6 +596,7 @@ function createBridgeRuntime({
   backend: BridgeBackendProfile | null;
   baseUrl: string | null;
   probeState: BridgeProbeState | undefined;
+  connectionSuspended: boolean;
   resumeToken: number;
 }): BridgeRuntime {
   const connectionKey =
@@ -601,6 +615,7 @@ function createBridgeRuntime({
     color,
     backend,
     connectionKey,
+    connectionSuspended,
     resumeToken,
     capabilities: currentProbeState?.capabilities ?? null,
     capabilityState: currentProbeState?.capabilityState ?? "idle",
@@ -1052,6 +1067,11 @@ export function capabilityProbeFailure(error: unknown): CapabilityProbeOutcome {
     error: error instanceof Error ? error.message : "Bridge unavailable",
     retry: true,
   };
+}
+
+export function capabilityProbeKey(connectionKey: string, resumeToken: number): string {
+  void resumeToken;
+  return connectionKey;
 }
 
 export function capabilityRetryDelayMs(attempt: number) {

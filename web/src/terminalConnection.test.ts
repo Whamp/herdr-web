@@ -250,28 +250,125 @@ describe("terminalConnection", () => {
     }
   });
 
-  it("coalesces rapid foreground signals into one decision while attached", () => {
-    const measures: string[] = [];
-    const h = createHarness({
-      measureSize: (refresh) => {
-        if (refresh) {
-          measures.push(refresh ? "refresh" : "fit");
-        }
-        return { cols: 100, rows: 30 };
-      },
-    });
+  it("coalesces rapid foreground signals into one replacement of an open socket", () => {
+    const h = createHarness();
     h.connection.start();
     h.accept();
+    const predecessor = h.lastSocket();
+    predecessor.messageText(
+      JSON.stringify({
+        type: "herdr_web.connection_ready",
+        connection_handle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    );
 
     h.connection.signal("resume");
     h.connection.signal("visible");
-    expect(measures).toEqual(["refresh"]);
-    expect(JSON.parse(h.lastSocket().sent.at(-1)!)).toEqual({
-      type: "resize",
-      cols: 100,
-      rows: 30,
-    });
+
+    expect(h.sockets).toHaveLength(2);
+    expect(predecessor.closedByClient).toBe(false);
+    expect(h.urls[1]).toContain("replace_connection=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  });
+
+  it("preserves a fresh connecting socket when a foreground signal arrives", () => {
+    const h = createHarness();
+    h.connection.start();
+    const pending = h.lastSocket();
+    h.clock.advance(300);
+
+    h.connection.signal("visible");
+
     expect(h.sockets).toHaveLength(1);
+    expect(pending.closedByClient).toBe(false);
+    h.clock.advance(9999);
+    expect(pending.closedByClient).toBe(false);
+    h.clock.advance(1);
+    expect(pending.closedByClient).toBe(true);
+  });
+
+  it("suspend closes the socket and blocks reconnect work until resume", () => {
+    const h = createHarness();
+    h.connection.start();
+    h.accept();
+    const active = h.lastSocket();
+
+    h.connection.setSuspended(true);
+    expect(active.closedByClient).toBe(true);
+    expect(h.live).toBeNull();
+    h.clock.advance(60000);
+    expect(h.sockets).toHaveLength(1);
+
+    h.connection.setSuspended(false);
+    expect(h.sockets).toHaveLength(2);
+    expect(h.states.at(-1)).toBe("connecting");
+
+    const resumeAttempt = h.lastSocket();
+    h.clock.advance(1200);
+    expect(resumeAttempt.closedByClient).toBe(false);
+    expect(h.sockets).toHaveLength(2);
+
+    h.clock.advance(8800);
+    expect(resumeAttempt.closedByClient).toBe(true);
+    h.clock.advance(500);
+    expect(h.sockets).toHaveLength(3);
+  });
+
+  it("same-slot replacement never reports the terminal as taken over", () => {
+    const h = createHarness();
+    h.connection.start();
+    h.accept();
+
+    const replaced = h.lastSocket();
+    replaced.messageText(JSON.stringify({ type: "herdr_web.connection_replaced" }));
+
+    expect(replaced.closedByClient).toBe(true);
+    expect(h.stopped).toEqual([]);
+    h.clock.advance(60000);
+    expect(h.sockets).toHaveLength(1);
+  });
+
+  it("rotates its slot after a stale predecessor rejection", () => {
+    const h = createHarness();
+    h.connection.start();
+    h.accept();
+    h.lastSocket().messageText(
+      JSON.stringify({
+        type: "herdr_web.connection_ready",
+        connection_handle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    );
+    h.lastSocket().messageText(JSON.stringify({ type: "herdr_web.connection_active" }));
+    h.lastSocket().serverCloses();
+    h.clock.advance(500);
+
+    const rejected = h.lastSocket();
+    rejected.open();
+    rejected.messageText(
+      JSON.stringify({
+        type: "herdr_web.connection_rejected",
+        reason: "stale_predecessor",
+      }),
+    );
+
+    expect(h.urls).toHaveLength(3);
+    expect(h.urls[2]).not.toContain("replace_connection");
+    expect(new URL(h.urls[2]).searchParams.get("connection_slot")).not.toBe(
+      new URL(h.urls[1]).searchParams.get("connection_slot"),
+    );
+  });
+
+  it("acknowledges application liveness probes from JavaScript", () => {
+    const h = createHarness();
+    h.connection.start();
+    h.accept();
+
+    h.lastSocket().messageText(
+      JSON.stringify({ type: "herdr_web.liveness_probe", nonce: "terminal-probe" }),
+    );
+
+    expect(h.lastSocket().sent).toContain(
+      JSON.stringify({ type: "herdr_web.liveness_ack", nonce: "terminal-probe" }),
+    );
   });
 
   it("takes the fast foreground path after signals while detached", () => {
@@ -322,9 +419,14 @@ describe("terminalConnection", () => {
     expect(h.clock.pendingCount).toBe(0);
   });
 
-  it("connects through the foreground path when a platform signal precedes start", () => {
+  it("gives a platform-triggered foreground handshake the full wake budget", () => {
     const h = createHarness();
     h.connection.signal("visible");
-    expect(h.sockets).toHaveLength(1);
+    const wakeAttempt = h.lastSocket();
+
+    h.clock.advance(1200);
+    expect(wakeAttempt.closedByClient).toBe(false);
+    h.clock.advance(8800);
+    expect(wakeAttempt.closedByClient).toBe(true);
   });
 });
