@@ -38,6 +38,9 @@
 
 ### Fixed
 
+- Restored one-tap mobile arrows and Backspace outside Compose. Hold arrows, Backspace,
+  Delete, PgUp, or PgDn to repeat; the Nav pad keeps Home, End, Delete, and page keys open
+  across repeated input. Direct keys leave composed shortcuts unchanged.
 - Android now closes bridge sockets when the app is suspended and replaces the exact predecessor
   immediately on resume or Wi-Fi/cellular path changes. Android Activity pause republishes suspension
   even after contradictory keyguard callbacks, preventing hidden reconnect work after screen lock.

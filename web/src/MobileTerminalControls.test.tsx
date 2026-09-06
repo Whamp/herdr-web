@@ -10,8 +10,9 @@ import { MobileTerminalControls } from "./TerminalView";
 const roots: Root[] = [];
 
 beforeEach(() => {
-  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-    .IS_REACT_ACT_ENVIRONMENT = true;
+  (
+    globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 afterEach(async () => {
@@ -22,15 +23,13 @@ afterEach(async () => {
   });
   document.body.innerHTML = "";
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("MobileTerminalControls", () => {
   for (const expandingInput of [false, true]) {
-    it(`clears and remounts the ${
-      expandingInput ? "textarea" : "input"
-    } after Send`, async () => {
-      const { commandInputRef, container, onSubmitCommand } =
-        await renderControls(expandingInput);
+    it(`clears and remounts the ${expandingInput ? "textarea" : "input"} after Send`, async () => {
+      const { commandInputRef, container, onSubmitCommand } = await renderControls(expandingInput);
       const firstField = commandField(container);
 
       await setCommandValue(firstField, "first prompt");
@@ -107,6 +106,114 @@ describe("MobileTerminalControls", () => {
     expect(container.querySelector(".term-key-composer")).toBeNull();
   });
 
+  it("sends arrows and Backspace directly without opening Compose", async () => {
+    const { container, onInput } = await renderControls(false);
+
+    for (const name of ["Left", "Up", "Down", "Right", "Backspace"]) {
+      await clickButton(container, `Send ${name}`);
+    }
+
+    expect(onInput.mock.calls).toEqual([["\x1B[D"], ["\x1B[A"], ["\x1B[B"], ["\x1B[C"], ["\x7F"]]);
+    expect(container.querySelector(".term-key-composer")).toBeNull();
+  });
+
+  it("keeps the navigation pad open across direct keys and Compose sends", async () => {
+    const { container, onInput } = await renderControls(false);
+    await clickButton(container, "Show navigation keys");
+    for (const name of ["Home", "End", "Delete", "Page Up", "Page Down", "Delete"]) {
+      await clickButton(container, `Send ${name}`);
+    }
+    expect(onInput.mock.calls).toEqual([
+      ["\x1B[H"],
+      ["\x1B[F"],
+      ["\x1B[3~"],
+      ["\x1B[5~"],
+      ["\x1B[6~"],
+      ["\x1B[3~"],
+    ]);
+
+    await clickButton(container, "Compose terminal key");
+    await clickButton(container, "Add Shift modifier");
+    await clickButton(container, "Use Tab key");
+    await clickButton(container, "Send Shift + Tab");
+    await clickButton(container, "Send Home");
+    expect(onInput.mock.calls.slice(-2)).toEqual([["\x1B[Z"], ["\x1B[H"]]);
+
+    await clickButton(container, "Hide navigation keys");
+    expect(container.querySelector('button[aria-label="Send Home"]')).toBeNull();
+  });
+
+  it("does not apply or clear composer modifiers when using direct keys", async () => {
+    const { container, onInput } = await renderControls(false);
+    await clickButton(container, "Compose terminal key");
+    await clickButton(container, "Add Ctrl modifier");
+    await clickButton(container, "Add Shift modifier");
+    await clickButton(container, "Use Up key");
+    await clickButton(container, "Send Left");
+    await clickButton(container, "Send Backspace");
+    await clickButton(container, "Send Ctrl + Shift + ↑");
+
+    expect(onInput.mock.calls).toEqual([["\x1B[D"], ["\x7F"], ["\x1B[1;6A"]]);
+  });
+
+  it("repeats only navigation and deletion keys and stops when Nav closes", async () => {
+    vi.useFakeTimers();
+    const { container, onInput } = await renderControls(false);
+    await clickButton(container, "Show navigation keys");
+    const cases = [
+      ["Backspace", 4],
+      ["Left", 4],
+      ["Up", 4],
+      ["Down", 4],
+      ["Right", 4],
+      ["Delete", 4],
+      ["Page Up", 4],
+      ["Page Down", 4],
+      ["Home", 1],
+      ["End", 1],
+    ] as const;
+    for (const [name, count] of cases) {
+      const button = container.querySelector<HTMLButtonElement>(
+        `button[aria-label="Send ${name}"]`,
+      );
+      if (!button) {
+        throw new Error(`Missing direct key: ${name}`);
+      }
+      button.setPointerCapture = vi.fn();
+      onInput.mockClear();
+      button.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          pointerId: 1,
+          isPrimary: true,
+          button: 0,
+        }),
+      );
+      vi.advanceTimersByTime(520);
+      expect(onInput, name).toHaveBeenCalledTimes(count);
+      button.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1 }));
+      vi.advanceTimersByTime(1000);
+      expect(onInput, name).toHaveBeenCalledTimes(count);
+    }
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send Delete"]',
+    );
+    deleteButton?.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        pointerId: 1,
+        isPrimary: true,
+        button: 0,
+      }),
+    );
+    onInput.mockClear();
+    await clickButton(container, "Hide navigation keys");
+    vi.advanceTimersByTime(1000);
+    expect(onInput).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("captures a printable key for Alt chords", async () => {
     const { container, onInput } = await renderControls(false);
 
@@ -171,10 +278,7 @@ function commandField(container: HTMLElement) {
   return field;
 }
 
-async function setCommandValue(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  value: string,
-) {
+async function setCommandValue(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
     const prototype =
       field instanceof HTMLTextAreaElement
@@ -229,9 +333,7 @@ function printableKeyField(container: HTMLElement) {
 }
 
 async function clickButton(container: HTMLElement, ariaLabel: string) {
-  const button = container.querySelector<HTMLButtonElement>(
-    `button[aria-label="${ariaLabel}"]`,
-  );
+  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${ariaLabel}"]`);
   if (!button) {
     throw new Error(`missing button: ${ariaLabel}`);
   }

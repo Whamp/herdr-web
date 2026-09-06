@@ -20,6 +20,7 @@ import {
   mobileTerminalPrintableKey,
 } from "./mobileTerminalControls";
 import type { MobileTerminalChordKey } from "./mobileTerminalControls";
+import { MobileTerminalKeyButton } from "./MobileTerminalKeyButton";
 import { addNativeConnectionLifecycleSubscriber } from "./native";
 import { ConfirmDialog } from "./overlays";
 import { createTerminalConnection } from "./terminalConnection";
@@ -1186,6 +1187,13 @@ function MobileSelectionActions({
   );
 }
 
+const DIRECT_TERMINAL_KEYS = MOBILE_TERMINAL_SPECIAL_KEYS.filter((key) =>
+  ["arrow-left", "arrow-up", "arrow-down", "arrow-right", "backspace"].includes(key.id),
+);
+const NAVIGATION_TERMINAL_KEYS = MOBILE_TERMINAL_SPECIAL_KEYS.filter((key) =>
+  ["home", "end", "delete", "page-up", "page-down"].includes(key.id),
+);
+
 type MobileTerminalModifier = (typeof MOBILE_TERMINAL_MODIFIERS)[number]["id"];
 
 export function MobileTerminalControls({
@@ -1218,6 +1226,7 @@ export function MobileTerminalControls({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [value, setValue] = useState("");
   const [fieldKey, setFieldKey] = useState(0);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerModifiers, setComposerModifiers] = useState<MobileTerminalModifier[]>([]);
   const [composerKey, setComposerKey] = useState<MobileTerminalChordKey | null>(null);
@@ -1337,7 +1346,7 @@ export function MobileTerminalControls({
     <div
       ref={rootRef}
       className="terminal-mobile-controls"
-      data-expanded={composerOpen ? "true" : "false"}
+      data-expanded={composerOpen || navigationOpen ? "true" : "false"}
     >
       <div className="term-key-strip" aria-label="Common terminal keys">
         <div className="term-key-group" aria-label="Terminal quick keys">
@@ -1419,6 +1428,41 @@ export function MobileTerminalControls({
           </button>
         </div>
       </div>
+
+      <div className="term-key-direct-row" role="group" aria-label="Direct terminal keys">
+        {DIRECT_TERMINAL_KEYS.map((key) => (
+          <MobileTerminalKeyButton
+            key={key.id}
+            terminalKey={key}
+            disabled={disabled}
+            repeat
+            onInput={onInput}
+          />
+        ))}
+        <button
+          className="term-key"
+          type="button"
+          aria-label={navigationOpen ? "Hide navigation keys" : "Show navigation keys"}
+          aria-expanded={navigationOpen}
+          data-active={navigationOpen ? "true" : "false"}
+          onClick={() => setNavigationOpen((open) => !open)}
+        >
+          Nav
+        </button>
+      </div>
+      {navigationOpen ? (
+        <div className="term-key-navigation" role="group" aria-label="Navigation keys">
+          {NAVIGATION_TERMINAL_KEYS.map((key) => (
+            <MobileTerminalKeyButton
+              key={key.id}
+              terminalKey={key}
+              disabled={disabled}
+              repeat={key.id !== "home" && key.id !== "end"}
+              onInput={onInput}
+            />
+          ))}
+        </div>
+      ) : null}
 
       {composerOpen ? (
         <div className="term-key-composer" aria-label="Terminal key composer">

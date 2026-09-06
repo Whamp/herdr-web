@@ -2082,6 +2082,34 @@ button {
   color: var(--accent);
 }
 
+.term-key-direct-row,
+.term-key-navigation {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--mobile-control-gap);
+}
+
+.term-key-navigation {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.term-key-direct-row .term-key,
+.term-key-navigation .term-key {
+  min-width: 0;
+  padding: 0 var(--mobile-key-panel-padding-x);
+}
+
+.term-key-direct {
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+.term-key-direct:active:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .term-key-composer {
   display: grid;
   gap: var(--mobile-control-gap);
