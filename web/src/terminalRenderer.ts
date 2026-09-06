@@ -43,6 +43,11 @@ import {
 } from "./terminalImeInput";
 import type { TerminalImeState } from "./terminalImeInput";
 import { installTerminalImeFocusRedirect } from "./terminalImeFocus";
+import {
+  installTerminalLinkClickHandler,
+  terminalHyperlinkAt,
+  terminalHyperlinkInSelection,
+} from "./terminalHyperlinks";
 
 const TERMINAL_FONT_FAMILY =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
@@ -129,8 +134,13 @@ type TerminalBufferLine = {
 };
 
 export type MobileTerminalTouchEvent =
-  | { type: "selection"; text: string; lineBreaksAtTerminalRightEdge: readonly boolean[] }
-  | { type: "url"; url: string };
+  | {
+      type: "selection";
+      text: string;
+      lineBreaksAtTerminalRightEdge: readonly boolean[];
+      url: string | null;
+    }
+  | { type: "url"; url: string; isHyperlink: boolean };
 
 export type TerminalRenderer = {
   mount(container: HTMLElement): Promise<TerminalSize>;
@@ -907,7 +917,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       terminal.textarea?.blur();
       if (selectedText?.text.trim() && this.#mobileTouchSelectionHandler) {
         this.#mobileTouchSelectionHandler({ type: "selection", ...selectedText });
-        if (!findFirstUrlInSelection(selectedText.text.trim())) {
+        if (!selectedText.url && !findFirstUrlInSelection(selectedText.text.trim())) {
           clearSelectionClearTimer();
           selectionClearTimer = window.setTimeout(() => {
             selectionClearTimer = null;
@@ -916,7 +926,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         }
       }
     };
-    const touchLinkText = (event: TouchEvent) => {
+    const touchLinkTarget = (event: TouchEvent) => {
       const mouseTracking = this.#hasMouseTracking(terminal);
       if (
         this.#mobileLongPressBehavior === "off" ||
@@ -928,15 +938,15 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       const touch = event.changedTouches[0];
       const position = positionFromTouch(touch);
-      return terminalUrlTapTarget(terminalLinkAt(terminal, position), mouseTracking);
+      return terminalLinkAt(terminal, position);
     };
-    const mouseLinkText = (event: MouseEvent) => {
+    const mouseLinkTarget = (event: MouseEvent) => {
       const mouseTracking = this.#hasMouseTracking(terminal);
       if (mouseTracking) {
         return null;
       }
       const position = touchCellPosition(terminal, event.clientX, event.clientY);
-      return terminalUrlTapTarget(terminalLinkAt(terminal, position), mouseTracking);
+      return terminalLinkAt(terminal, position);
     };
     const redirectTapFocus = (event: TouchEvent | MouseEvent) => {
       const terminalHadFocusOrGrace =
@@ -1097,12 +1107,12 @@ export class GhosttyRenderer implements TerminalRenderer {
         suppressMouseEvents();
         terminal.textarea?.blur();
       } else {
-        const linkText = touchLinkText(event);
-        if (linkText?.trim()) {
+        const link = touchLinkTarget(event);
+        if (link) {
           preventTouchEvent(event);
           suppressMouseEvents();
           terminal.textarea?.blur();
-          this.#mobileTouchSelectionHandler?.({ type: "url", url: linkText });
+          this.#mobileTouchSelectionHandler?.({ type: "url", ...link });
         } else {
           redirectTapFocus(event);
         }
@@ -1159,8 +1169,8 @@ export class GhosttyRenderer implements TerminalRenderer {
       if (moved) {
         return;
       }
-      const linkText = mouseLinkText(event);
-      if (!linkText?.trim()) {
+      const link = mouseLinkTarget(event);
+      if (!link) {
         return;
       }
       event.preventDefault();
@@ -1169,7 +1179,7 @@ export class GhosttyRenderer implements TerminalRenderer {
         event.stopImmediatePropagation();
       }
       terminal.textarea?.blur();
-      window.open(linkText, "_blank", "noopener,noreferrer");
+      window.open(link.url, "_blank", "noopener,noreferrer");
     };
 
     container.addEventListener("touchstart", onTouchStart, {
@@ -1181,7 +1191,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     container.addEventListener("touchcancel", onTouchCancel, { capture: true });
     container.addEventListener("mousedown", onMouseDown, { capture: true });
     container.addEventListener("mouseup", onMouseUp, { capture: true });
-    container.addEventListener("click", onClick, { capture: true });
+    const removeLinkClickHandler = installTerminalLinkClickHandler(container, onClick);
     this.#touchCleanup = () => {
       resetTouchSelection(true);
       resetTouchTracking();
@@ -1192,7 +1202,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       container.removeEventListener("touchcancel", onTouchCancel, { capture: true });
       container.removeEventListener("mousedown", onMouseDown, { capture: true });
       container.removeEventListener("mouseup", onMouseUp, { capture: true });
-      container.removeEventListener("click", onClick, { capture: true });
+      removeLinkClickHandler();
     };
   }
 
@@ -1730,7 +1740,14 @@ function terminalSelectedTextFromViewportRange(
       lineBreaksAtTerminalRightEdge.push(terminalBufferLineHasNonBlankLastCell(line, terminal.cols));
     }
   }
-  return { text: selectedLines.join("\n"), lineBreaksAtTerminalRightEdge };
+  const url = terminal.wasmTerm
+    ? terminalHyperlinkInSelection(
+        terminal.wasmTerm,
+        { col: range.from.col, row: terminalBufferRow(terminal, range.from.row) },
+        { col: range.to.col, row: terminalBufferRow(terminal, range.to.row) },
+      )
+    : null;
+  return { text: selectedLines.join("\n"), lineBreaksAtTerminalRightEdge, url };
 }
 
 // Herdr's cursor-positioned TerminalAnsi frames do not preserve Ghostty's soft-wrap flag.
@@ -1793,9 +1810,15 @@ function terminalLinkAt(terminal: Terminal, position: TerminalCellPosition) {
   }
 
   const cell = line.getCell(position.col);
+  if (cell?.isInvisible()) {
+    return null;
+  }
   const hyperlinkId = cell?.getHyperlinkId() ?? 0;
   if (hyperlinkId > 0) {
-    return terminal.wasmTerm?.getHyperlinkUri(hyperlinkId) ?? null;
+    const url = terminal.wasmTerm
+      ? terminalHyperlinkAt(terminal.wasmTerm, row, position.col)
+      : null;
+    return url ? { url, isHyperlink: true } : null;
   }
 
   const { text, columns } = terminalBufferLineText(line);
@@ -1807,7 +1830,8 @@ function terminalLinkAt(terminal: Terminal, position: TerminalCellPosition) {
     const start = columns[match.index];
     const end = columns[match.index + url.length - 1];
     if (url.length > 8 && position.col >= start && position.col <= end) {
-      return url;
+      const target = terminalUrlTapTarget(url, false);
+      return target ? { url: target, isHyperlink: false } : null;
     }
     match = TAP_URL_PATTERN.exec(text);
   }

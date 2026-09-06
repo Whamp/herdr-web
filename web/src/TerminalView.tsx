@@ -308,7 +308,11 @@ export function TerminalView({
       if (event.type === "url") {
         const url = openableHttpUrl(event.url);
         if (url) {
-          window.open(url, "_blank", "noopener,noreferrer");
+          if (event.isHyperlink) {
+            setMobileSelectionAction({ text: url, url });
+          } else {
+            window.open(url, "_blank", "noopener,noreferrer");
+          }
         }
         return;
       }
@@ -321,7 +325,7 @@ export function TerminalView({
         rendererRef.current?.clearSelection();
         return;
       }
-      const url = findFirstUrlInSelection(copiedText);
+      const url = (event.url && openableHttpUrl(event.url)) || findFirstUrlInSelection(copiedText);
       if (url) {
         setMobileSelectionAction({ text: copiedText, url });
         return;

@@ -38,6 +38,10 @@
 
 ### Fixed
 
+- Labelled terminal links now expose their hidden destination on mobile. Tap a label to show
+  Open/Copy URL, or select its text to also copy the label. Hyperlinks in scrollback work too;
+  plain-text URL gestures and HTTP/HTTPS-only opening are unchanged. Pinned Ghostty Web to
+  `0.4.0-next.20.g1858a59` for its working OSC 8 URL lookup.
 - Mobile Compose now toggles open/closed without sending. Send composed keys from the button
   beside the chord preview; closing discards the chord without changing the command draft.
   The compact keyboard-plus icon joins Upload, Stage, and keyboard focus in the fixed toolbar;

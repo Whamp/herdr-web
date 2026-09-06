@@ -15,6 +15,11 @@ npm run build
 The production build is written to `web/dist/` and served by `herdr-web-bridge` through
 `scripts/run-bridge.sh`.
 
+Ghostty Web is pinned to `0.4.0-next.20.g1858a59`. Stable `0.4.0` returns `null` for OSC 8
+hyperlink destinations. The pinned prerelease supplies position-based lookups for both the active
+screen and scrollback. `terminalHyperlinks.test.ts` exercises the installed WASM directly; keep
+those checks when changing the dependency.
+
 For the normal one-command development workflow, start the bridge and Vite from the repository root:
 
 ```bash
