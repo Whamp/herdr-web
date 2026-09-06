@@ -38,6 +38,10 @@
 
 ### Fixed
 
+- Mobile Compose now toggles open/closed without sending. Send composed keys from the button
+  beside the chord preview; closing discards the chord without changing the command draft.
+  The compact keyboard-plus icon joins Upload, Stage, and keyboard focus in the fixed toolbar;
+  Esc, Tab, C-c, C-d, and 1/2/3 remain scrollable with edge hints.
 - Restored one-tap mobile arrows and Backspace outside Compose. Hold arrows, Backspace,
   Delete, PgUp, or PgDn to repeat; the Nav pad keeps Home, End, Delete, and page keys open
   across repeated input. Direct keys leave composed shortcuts unchanged.

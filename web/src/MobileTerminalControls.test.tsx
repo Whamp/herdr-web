@@ -88,22 +88,152 @@ describe("MobileTerminalControls", () => {
     expect(onSubmitCommand).toHaveBeenCalledWith("");
   });
 
-  it("composes Ctrl+Shift+Up and sends it from the same Compose button", async () => {
-    const { container, onInput } = await renderControls(false);
-
+  it("composes Ctrl+Shift+Up and sends it from inside the composer", async () => {
+    const { container, onInput, onSubmitCommand } = await renderControls(false);
+    await setCommandValue(commandField(container), "keep this draft");
     await clickButton(container, "Compose terminal key");
-    expect(composerPanel(container)).not.toBeNull();
+    expect(
+      [...composerPanel(container).querySelectorAll("button")].some(
+        (button) => button.textContent === "Cancel",
+      ),
+    ).toBe(false);
 
     await clickButton(container, "Add Ctrl modifier");
     await clickButton(container, "Add Shift modifier");
     await clickButton(container, "Use Up key");
 
     expect(composerPanel(container).textContent).toContain("Ctrl + Shift + ↑");
-    await clickButton(container, "Send Ctrl + Shift + ↑");
+    expect(
+      container.querySelector('button[aria-label="Close terminal key composer"]'),
+    ).not.toBeNull();
+    await clickButton(composerPanel(container), "Send Ctrl + Shift + ↑");
 
     expect(onInput).toHaveBeenCalledOnce();
     expect(onInput).toHaveBeenCalledWith("\x1B[1;6A");
     expect(container.querySelector(".term-key-composer")).toBeNull();
+    expect(commandField(container).value).toBe("keep this draft");
+    expect(onSubmitCommand).not.toHaveBeenCalled();
+  });
+
+  for (const selection of ["empty", "special", "printable"]) {
+    it(`closes Compose and discards the ${selection} chord without sending`, async () => {
+      const { container, onInput, onSubmitCommand, onStageCommand } = await renderControls(false);
+      await setCommandValue(commandField(container), "keep this draft");
+      await clickButton(container, "Compose terminal key");
+      if (selection === "special") {
+        await clickButton(container, "Add Ctrl modifier");
+        await clickButton(container, "Use Up key");
+      } else if (selection === "printable") {
+        await clickButton(container, "Add Alt modifier");
+        await setCommandValue(printableKeyField(container), "p");
+      }
+      await clickButton(container, "Close terminal key composer");
+      expect(container.querySelector(".term-key-composer")).toBeNull();
+      expect(onInput).not.toHaveBeenCalled();
+      expect(onSubmitCommand).not.toHaveBeenCalled();
+      expect(onStageCommand).not.toHaveBeenCalled();
+      expect(commandField(container).value).toBe("keep this draft");
+
+      await clickButton(container, "Compose terminal key");
+      expect(printableKeyField(container).value).toBe("");
+      expect(composerPanel(container).textContent).toContain("Choose a key");
+      expect(composerPanel(container).querySelectorAll('[data-active="true"]')).toHaveLength(0);
+      const send = composerPanel(container).querySelector<HTMLButtonElement>(
+        'button[aria-label="Send composed key"]',
+      );
+      expect(send?.disabled).toBe(true);
+      await clickButton(composerPanel(container), "Send composed key");
+      expect(onInput).not.toHaveBeenCalled();
+    });
+  }
+
+  it("keeps icon actions fixed above the command field and preserves all quick keys", async () => {
+    const { container, onInput, onUpload, onTerminalFocus, onStageCommand, onSubmitCommand } =
+      await renderControls(false);
+    const actions = container.querySelector('[aria-label="Terminal actions"]');
+    if (!(actions instanceof HTMLElement)) {
+      throw new Error("Missing fixed terminal actions");
+    }
+    expect(
+      [...actions.querySelectorAll("button")].map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "Upload file",
+      "Stage command in terminal",
+      "Compose terminal key",
+      "Focus terminal keyboard",
+    ]);
+    expect(actions.textContent?.trim()).toBe("");
+    expect(container.querySelector("form")?.querySelectorAll("button")).toHaveLength(1);
+    const shortcuts = container.querySelector('[aria-label="Terminal quick keys"]');
+    if (!(shortcuts instanceof HTMLElement)) {
+      throw new Error("Missing scrollable quick keys");
+    }
+    const keys = [...shortcuts.querySelectorAll("button")];
+    expect(keys.map((key) => key.textContent)).toEqual(["Esc", "Tab", "C-c", "C-d", "1", "2", "3"]);
+    for (const key of keys) {
+      await act(async () => {
+        key.click();
+      });
+    }
+    expect(onInput.mock.calls).toEqual([["\x1B"], ["\t"], ["\x03"], ["\x04"], ["1"], ["2"], ["3"]]);
+    await clickButton(actions, "Upload file");
+    await clickButton(actions, "Focus terminal keyboard");
+    expect(onUpload).toHaveBeenCalledOnce();
+    expect(onTerminalFocus).toHaveBeenCalledOnce();
+    await setCommandValue(commandField(container), "stage me");
+    await clickButton(actions, "Stage command in terminal");
+    expect(onStageCommand).toHaveBeenCalledWith("stage me");
+    expect(onSubmitCommand).not.toHaveBeenCalled();
+  });
+
+  it("allows closing Compose while disconnected but blocks sending and staging", async () => {
+    const { container, onInput, onStageCommand, setDisabled } = await renderControls(false);
+    await setCommandValue(commandField(container), "pending command");
+    await clickButton(container, "Compose terminal key");
+    await clickButton(container, "Use Up key");
+    await setDisabled(true);
+    const chordSend = composerPanel(container).querySelector<HTMLButtonElement>(
+      'button[aria-label="Send ↑"]',
+    );
+    expect(chordSend?.disabled).toBe(true);
+    expect(printableKeyField(container).disabled).toBe(true);
+    expect(stageButton(container).disabled).toBe(true);
+    await clickButton(container, "Send ↑");
+    await clickStage(container);
+    await clickButton(container, "Close terminal key composer");
+    expect(onInput).not.toHaveBeenCalled();
+    expect(onStageCommand).not.toHaveBeenCalled();
+    expect(container.querySelector(".term-key-composer")).toBeNull();
+    await setDisabled(false);
+    await clickButton(container, "Compose terminal key");
+    expect(composerPanel(container).textContent).toContain("Choose a key");
+  });
+
+  it("updates shortcut edge hints as the strip scrolls and resizes", async () => {
+    const { container } = await renderControls(false);
+    const shortcuts = container.querySelector<HTMLElement>('[aria-label="Terminal quick keys"]');
+    if (!shortcuts) {
+      throw new Error("Missing scrollable quick keys");
+    }
+    Object.defineProperties(shortcuts, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 300 },
+    });
+    window.dispatchEvent(new Event("resize"));
+    expect(shortcuts.dataset.scrollLeft).toBe("false");
+    expect(shortcuts.dataset.scrollRight).toBe("true");
+    shortcuts.scrollLeft = 50;
+    shortcuts.dispatchEvent(new Event("scroll"));
+    expect(shortcuts.dataset.scrollLeft).toBe("true");
+    expect(shortcuts.dataset.scrollRight).toBe("true");
+    shortcuts.scrollLeft = 200;
+    shortcuts.dispatchEvent(new Event("scroll"));
+    expect(shortcuts.dataset.scrollRight).toBe("false");
+    Object.defineProperty(shortcuts, "clientWidth", { value: 300 });
+    shortcuts.scrollLeft = 0;
+    window.dispatchEvent(new Event("resize"));
+    expect(shortcuts.dataset.scrollLeft).toBe("false");
+    expect(shortcuts.dataset.scrollRight).toBe("false");
   });
 
   it("sends arrows and Backspace directly without opening Compose", async () => {
@@ -239,32 +369,39 @@ async function renderControls(expandingInput: boolean) {
   const onSubmitCommand = vi.fn();
   const onStageCommand = vi.fn();
   const onInput = vi.fn();
+  const onUpload = vi.fn();
+  const onTerminalFocus = vi.fn();
 
-  await act(async () => {
-    root.render(
-      <MobileTerminalControls
-        commandInputRef={commandInputRef}
-        disabled={false}
-        uploadDisabled={false}
-        expandingInput={expandingInput}
-        enterNewline={false}
-        controlsScalePercent={100}
-        onControlsHeightChange={vi.fn()}
-        onInput={onInput}
-        onTerminalFocus={vi.fn()}
-        onUpload={vi.fn()}
-        onStageCommand={onStageCommand}
-        onSubmitCommand={onSubmitCommand}
-      />,
-    );
-  });
+  const props = {
+    commandInputRef,
+    expandingInput,
+    enterNewline: false,
+    controlsScalePercent: 100,
+    onControlsHeightChange: vi.fn(),
+    onInput,
+    onTerminalFocus,
+    onUpload,
+    onStageCommand,
+    onSubmitCommand,
+  };
+  const setDisabled = async (disabled: boolean) => {
+    await act(async () => {
+      root.render(
+        <MobileTerminalControls {...props} disabled={disabled} uploadDisabled={disabled} />,
+      );
+    });
+  };
+  await setDisabled(false);
 
   return {
     commandInputRef,
     container,
     onInput,
+    onUpload,
+    onTerminalFocus,
     onStageCommand,
     onSubmitCommand,
+    setDisabled,
   };
 }
 

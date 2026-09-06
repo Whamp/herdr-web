@@ -2007,6 +2007,18 @@ button {
   display: none;
 }
 
+.term-key-group[data-scroll-left="true"] {
+  mask-image: linear-gradient(to right, transparent, black 10px);
+}
+
+.term-key-group[data-scroll-right="true"] {
+  mask-image: linear-gradient(to left, transparent, black 10px);
+}
+
+.term-key-group[data-scroll-left="true"][data-scroll-right="true"] {
+  mask-image: linear-gradient(to right, transparent, black 10px, black calc(100% - 10px), transparent);
+}
+
 .term-key-actions {
   flex: 0 0 auto;
   justify-content: flex-end;
@@ -2048,22 +2060,29 @@ button {
   padding: 0;
 }
 
-.term-key-icon svg,
-.term-key-compose-action svg {
+.term-key-icon svg {
   width: calc(15px * var(--mobile-controls-scale));
   height: calc(15px * var(--mobile-controls-scale));
 }
 
 .term-key-compose-action {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(5px * var(--mobile-controls-scale));
-  padding: 0 calc(8px * var(--mobile-controls-scale));
   color: var(--blue);
 }
 
-.term-key-compose-action[data-active="true"]:disabled {
-  opacity: 0.72;
+.term-key-compose-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+.term-key-compose-icon .term-key-compose-plus {
+  position: absolute;
+  right: calc(-3px * var(--mobile-controls-scale));
+  bottom: calc(-2px * var(--mobile-controls-scale));
+  width: calc(8px * var(--mobile-controls-scale));
+  height: calc(8px * var(--mobile-controls-scale));
+  border-radius: 2px;
+  background: var(--surface0);
+  stroke-width: 3;
 }
 
 .term-send svg {
@@ -2125,6 +2144,12 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: calc(8px * var(--mobile-controls-scale));
+}
+
+.term-key-composer-preview-label {
+  display: grid;
+  min-width: 0;
+  gap: calc(3px * var(--mobile-controls-scale));
 }
 
 .term-key-composer-preview span,
@@ -2194,14 +2219,6 @@ button {
 .term-key-composer-capture input:focus {
   border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
   box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
-.term-key-composer-capture button {
-  height: var(--mobile-key-height);
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: clamp(10px, calc(11px * var(--mobile-controls-scale)), 16px);
 }
 
 .term-key-composer > p {
