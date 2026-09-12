@@ -54,9 +54,8 @@ use herdr_compat::api::schema::{
     SubscriptionEventKind, TabCreateParams, TabInfo, TabListParams, TabTarget, WorkspaceInfo,
 };
 use herdr_compat::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
-    ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
-    PROTOCOL_VERSION,
+    self, AttachScrollDirection, AttachScrollSource, ClientMessage, RenderEncoding, ServerMessage,
+    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 use crate::agent_activity::{AgentActivityListResponse, AgentActivityManager};
@@ -3381,6 +3380,7 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
         rows,
         cell_width_px: 0,
         cell_height_px: 0,
+        pixel_mouse: false,
     });
 
     let session_started_at = Instant::now();
@@ -3512,15 +3512,13 @@ fn open_terminal_attach(
         .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
     protocol::write_message(
         &mut stream,
-        &ClientMessage::Hello {
+        &ClientMessage::TerminalHello {
             version: protocol_version,
             cols,
             rows,
             cell_width_px: 0,
             cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
+            pixel_mouse: false,
         },
     )
     .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
@@ -3528,7 +3526,11 @@ fn open_terminal_attach(
     let welcome: ServerMessage = protocol::read_message(&mut stream, MAX_FRAME_SIZE)
         .map_err(|err| TerminalAttachError::Transport(err.to_string()))?;
     match welcome {
-        ServerMessage::Welcome { error: None, .. } => {}
+        ServerMessage::Welcome {
+            version,
+            encoding: RenderEncoding::TerminalAnsi,
+            error: None,
+        } if version == protocol_version => {}
         ServerMessage::Welcome {
             error: Some(error), ..
         } => {
@@ -3627,11 +3629,17 @@ fn open_terminal_attach(
                 | ServerMessage::WindowTitle { .. }
                 | ServerMessage::ReloadSoundConfig
                 | ServerMessage::MouseCapture { .. }
-                | ServerMessage::KittyKeyboardReportAll { .. }
-                | ServerMessage::PrefixInputSource { .. }
-                | ServerMessage::TerminalBell { .. }
-                | ServerMessage::Frame(_)
+                | ServerMessage::DirectTerminalKeyboardProtocol { .. }
+                | ServerMessage::ClientShellKeyboardReportAll { .. }
+                | ServerMessage::ClientShellSnapshot(_)
+                | ServerMessage::PaneSurface(_)
+                | ServerMessage::PaneSurfacePatch(_)
+                | ServerMessage::SemanticNotification(_)
+                | ServerMessage::ClientShellError { .. }
+                | ServerMessage::ClientShellEndpointResponseChunk { .. }
+                | ServerMessage::EndpointControl { .. }
                 | ServerMessage::Graphics { .. }
+                | ServerMessage::TerminalBell { .. }
                 | ServerMessage::GraphicsFile { .. }
                 | ServerMessage::GraphicsTransmissionRetired { .. } => {}
             }
@@ -4129,6 +4137,7 @@ fn handle_terminal_text_frame(write_tx: &TerminalWriter, text: &str) -> Result<(
                 rows,
                 cell_width_px,
                 cell_height_px,
+                pixel_mouse: false,
             })
             .map(|_| ())
             .map_err(|_| "terminal writer closed".to_string()),
@@ -4823,7 +4832,7 @@ mod tests {
             let (mut sock, _) = listener.accept().unwrap();
             sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let hello: ClientMessage = protocol::read_message(&mut sock, MAX_FRAME_SIZE).unwrap();
-            assert!(matches!(hello, ClientMessage::Hello { .. }));
+            assert!(matches!(hello, ClientMessage::TerminalHello { .. }));
             protocol::write_message(
                 &mut sock,
                 &ServerMessage::Welcome {
@@ -5852,10 +5861,10 @@ mod tests {
     }
 
     #[test]
-    fn daemon_status_accepts_herdr_0_8_2_protocol_20() {
+    fn daemon_status_accepts_herdr_0_9_0_protocol_22() {
         assert_eq!(
-            validated_daemon_protocol(runtime_status("0.8.2", 20)).unwrap(),
-            20
+            validated_daemon_protocol(runtime_status("0.9.0", PROTOCOL_VERSION)).unwrap(),
+            PROTOCOL_VERSION
         );
     }
 

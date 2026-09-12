@@ -20,7 +20,9 @@ import {
   DEFAULT_MOBILE_LONG_PRESS_BEHAVIOR,
   DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS,
   DEFAULT_MOBILE_TERMINAL_TAP_TARGET,
+  DEFAULT_MOBILE_COMMAND_FOCUS_AFTER_SUBMIT,
   parseMobileCommandEnterNewline,
+  parseMobileCommandFocusAfterSubmit,
   parseMobileCommandExpandingInput,
   parseMobileKeyboardHideRefit,
   parseMobileLongPressBehavior,
@@ -44,13 +46,23 @@ import {
   parseTerminalOutputCoalesceMs,
 } from "./terminalOutputCoalescing";
 import {
+  DEFAULT_DESKTOP_COMMAND_COMPOSER,
+  DEFAULT_DESKTOP_COMMAND_ENTER_NEWLINE,
   DEFAULT_TERMINAL_FONT_SIZE_PX,
+  defaultTerminalCursorBlink,
+  parseDesktopCommandComposer,
+  parseDesktopCommandEnterNewline,
+  parseTerminalCursorBlink,
   parseTerminalFontSizePx,
 } from "./terminalPrefs";
 import {
   DEFAULT_TERMINAL_SCREEN_READER_TEXT,
   parseTerminalScreenReaderText,
 } from "./terminalAccessibleText";
+import {
+  DEFAULT_AUTO_RENAME_UPLOAD_CONFLICTS,
+  parseAutoRenameUploadConflicts,
+} from "./uploadPrefs";
 
 /**
  * The app preferences module: owns the stored schema, its migrations, the
@@ -93,7 +105,11 @@ export type DisplayPrefs = {
   notesPanelOpen: boolean;
   sidebarOpen: boolean;
   terminalFontSizePx: number;
+  terminalCursorBlink: boolean;
+  desktopCommandComposer: boolean;
+  desktopCommandEnterNewline: boolean;
   terminalScreenReaderText: boolean;
+  autoRenameUploadConflicts: boolean;
   terminalInputTransport: TerminalInputTransport;
   terminalInputBatchDelayMs: number;
   terminalOutputCoalesceMs: number;
@@ -106,6 +122,7 @@ export type DisplayPrefs = {
   mobileKeyboardHideRefit: boolean;
   mobileCommandExpandingInput: boolean;
   mobileCommandEnterNewline: boolean;
+  mobileCommandFocusAfterSubmit: boolean;
 };
 
 export const DEFAULT_SIDEBAR_WIDTH = 320;
@@ -144,7 +161,11 @@ function readDisplayPrefs(): DisplayPrefs {
     notesPanelOpen: false,
     sidebarOpen: true,
     terminalFontSizePx: DEFAULT_TERMINAL_FONT_SIZE_PX,
+    terminalCursorBlink: defaultTerminalCursorBlink(),
+    desktopCommandComposer: DEFAULT_DESKTOP_COMMAND_COMPOSER,
+    desktopCommandEnterNewline: DEFAULT_DESKTOP_COMMAND_ENTER_NEWLINE,
     terminalScreenReaderText: DEFAULT_TERMINAL_SCREEN_READER_TEXT,
+    autoRenameUploadConflicts: DEFAULT_AUTO_RENAME_UPLOAD_CONFLICTS,
     terminalInputTransport: DEFAULT_TERMINAL_INPUT_TRANSPORT,
     terminalInputBatchDelayMs: DEFAULT_TERMINAL_INPUT_BATCH_DELAY_MS,
     terminalOutputCoalesceMs: DEFAULT_TERMINAL_OUTPUT_COALESCE_MS,
@@ -157,6 +178,7 @@ function readDisplayPrefs(): DisplayPrefs {
     mobileKeyboardHideRefit: DEFAULT_MOBILE_KEYBOARD_HIDE_REFIT,
     mobileCommandExpandingInput: DEFAULT_MOBILE_COMMAND_EXPANDING_INPUT,
     mobileCommandEnterNewline: DEFAULT_MOBILE_COMMAND_ENTER_NEWLINE,
+    mobileCommandFocusAfterSubmit: DEFAULT_MOBILE_COMMAND_FOCUS_AFTER_SUBMIT,
   };
   try {
     const raw = window.localStorage.getItem(DISPLAY_PREFS_KEY);
@@ -274,9 +296,24 @@ function parseDisplayPrefsValue(
       typeof parsed.notesPanelOpen === "boolean" ? parsed.notesPanelOpen : fallback.notesPanelOpen,
     sidebarOpen,
     terminalFontSizePx: parseTerminalFontSizePx(parsed.terminalFontSizePx),
+    terminalCursorBlink: parseTerminalCursorBlink(
+      parsed.terminalCursorBlink,
+      fallback.terminalCursorBlink,
+    ),
+    desktopCommandComposer: parseDesktopCommandComposer(
+      parsed.desktopCommandComposer,
+      fallback.desktopCommandComposer,
+    ),
+    desktopCommandEnterNewline: parseDesktopCommandEnterNewline(
+      parsed.desktopCommandEnterNewline,
+      fallback.desktopCommandEnterNewline,
+    ),
     terminalScreenReaderText: parseTerminalScreenReaderText(
       parsed.terminalScreenReaderText,
       fallback.terminalScreenReaderText,
+    ),
+    autoRenameUploadConflicts: parseAutoRenameUploadConflicts(
+      parsed.autoRenameUploadConflicts,
     ),
     terminalInputTransport: parseTerminalInputTransport(parsed.terminalInputTransport),
     terminalInputBatchDelayMs: parseTerminalInputBatchDelayMs(parsed.terminalInputBatchDelayMs),
@@ -299,6 +336,9 @@ function parseDisplayPrefsValue(
     ),
     mobileCommandEnterNewline: parseMobileCommandEnterNewline(
       parsed.mobileCommandEnterNewline,
+    ),
+    mobileCommandFocusAfterSubmit: parseMobileCommandFocusAfterSubmit(
+      parsed.mobileCommandFocusAfterSubmit,
     ),
   };
 }

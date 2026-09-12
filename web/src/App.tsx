@@ -1,3 +1,5 @@
+import { CommandDraftContext, createCommandDraftStore } from "./commandDrafts";
+import { linkedWorkspaceLabels } from "./workspaceClose";
 import {
   Activity,
   Archive,
@@ -103,7 +105,11 @@ import type { LaunchTarget } from "./launch";
 import { fetchLauncherPresets, supportsLauncherPresets } from "./launcherPresets";
 import type { LauncherPresetsResponse } from "./launcherPresets";
 import { fetchWithTimeout } from "./fetchWithTimeout";
-
+import type {
+  MobileLongPressBehavior,
+  MobileTerminalTapTarget,
+  MobileTouchSelectionEndpointTimeoutMs,
+} from "./mobileTerminalPrefs";
 import { addNativeBackHandler, addNativeKeyboardHideHandler, isNativeAndroid } from "./native";
 import {
   archiveNote,
@@ -139,15 +145,7 @@ import {
 } from "./overlayFocus";
 import { createSnapshotRefreshController } from "./refreshCoordinator";
 import { TerminalView } from "./TerminalView";
-import type {
-  TerminalViewMobileOptions,
-  TerminalViewTerminalOptions,
-} from "./TerminalView";
-
-
-
-
-
+import type { TerminalInputTransport } from "./terminalInputTransport";
 import {
   aggregateStatus,
   basename,
@@ -160,7 +158,6 @@ import {
   chooseSelectedPaneForActiveWorkspace,
   countAttention,
   displayTabLabel,
-  isAttention,
   isLoud,
   paneMeta,
   paneListSubtitle,
@@ -371,6 +368,7 @@ type DialogState = {
   id: string;
   label: string;
   clearable?: boolean;
+  linkedWorkspaceLabels?: string[];
 };
 type SharedNavigationPrefs = {
   selectedBridgeId: BridgeId | null;
@@ -586,6 +584,15 @@ function usePointerDragResize(
 }
 
 export function App() {
+  const [commandDrafts] = useState(createCommandDraftStore);
+  return (
+    <CommandDraftContext.Provider value={commandDrafts}>
+      <AppContent commandDrafts={commandDrafts} />
+    </CommandDraftContext.Provider>
+  );
+}
+
+function AppContent({ commandDrafts }: { commandDrafts: ReturnType<typeof createCommandDraftStore> }) {
   const bridge = useBridge();
   const initialSharedNavigationPrefs = useMemo(readSharedNavigationPrefs, []);
   const initialNavigationSyncMode = useMemo(readNavigationSyncMode, []);
@@ -682,7 +689,11 @@ export function App() {
     notesPanelOpen,
     sidebarOpen,
     terminalFontSizePx,
+    terminalCursorBlink,
+    desktopCommandComposer,
+    desktopCommandEnterNewline,
     terminalScreenReaderText,
+    autoRenameUploadConflicts,
     terminalInputTransport,
     terminalInputBatchDelayMs,
     terminalOutputCoalesceMs,
@@ -695,45 +706,10 @@ export function App() {
     mobileKeyboardHideRefit,
     mobileCommandExpandingInput,
     mobileCommandEnterNewline,
+    mobileCommandFocusAfterSubmit,
   } = prefs;
 
-  // Grouped TerminalView preference objects; memoized so identity changes only
-  // when a relevant preference actually changes.
-  const terminalViewOptions = useMemo(
-    () => ({
-      fontSizePx: terminalFontSizePx,
-      screenReaderText: terminalScreenReaderText,
-      inputTransport: terminalInputTransport,
-      inputBatchDelayMs: terminalInputBatchDelayMs,
-      outputCoalesceMs: terminalOutputCoalesceMs,
-    }),
-    [
-      terminalFontSizePx,
-      terminalScreenReaderText,
-      terminalInputTransport,
-      terminalInputBatchDelayMs,
-      terminalOutputCoalesceMs,
-    ],
-  );
-  const mobileViewOptions = useMemo(
-    () => ({
-      controlsScalePercent: mobileControlsScalePercent,
-      tapTarget: mobileTerminalTapTarget,
-      longPressBehavior: mobileLongPressBehavior,
-      touchSelectionEndpointTimeoutMs: mobileTouchSelectionEndpointTimeoutMs,
-      commandExpandingInput: mobileCommandExpandingInput,
-      commandEnterNewline: mobileCommandEnterNewline,
-    }),
-    [
-      mobileControlsScalePercent,
-      mobileTerminalTapTarget,
-      mobileLongPressBehavior,
-      mobileTouchSelectionEndpointTimeoutMs,
-      mobileCommandExpandingInput,
-      mobileCommandEnterNewline,
-    ],
-  );
-const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("list");
+  const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("list");
   const [notesIncludeArchived, setNotesIncludeArchived] = useState(false);
   const [notesIncludeDeleted, setNotesIncludeDeleted] = useState(false);
   const [quickPaneNoteTarget, setQuickPaneNoteTarget] = useState<QuickPaneNoteTarget | null>(null);
@@ -942,6 +918,14 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
       }),
     [bridge.enabledRuntimes, connectionStates],
   );
+  useEffect(() => {
+    for (const { runtime, snapshot, loadState } of bridgeViews) {
+      if (runtime.canConnect && loadState === "ready" && snapshot) {
+        commandDrafts.retainPanes(runtime.id, snapshot.panes.map((pane) => pane.pane_id));
+      }
+    }
+  }, [bridgeViews, commandDrafts]);
+
   const pinnedAgentKeys = useMemo(
     () => buildAgentPinKeySet(bridgeViews, agentPinsStates),
     [agentPinsStates, bridgeViews],
@@ -3140,7 +3124,10 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
     if (key === "rename") {
       setDialog({ mode: "rename", kind, bridgeId, id, label, clearable });
     } else if (key === "close") {
-      setDialog({ mode: "close", kind, bridgeId, id, label });
+      const linkedLabels = kind === "space"
+        ? linkedWorkspaceLabels(connectionRefs.current[bridgeId]?.snapshot?.workspaces ?? [], id)
+        : [];
+      setDialog({ mode: "close", kind, bridgeId, id, label, linkedWorkspaceLabels: linkedLabels });
     } else if (key === "newtab") {
       setSelectedBridgeId(bridgeId);
       setActiveWorkspaceRefState({ bridgeId, workspaceId: id });
@@ -3225,7 +3212,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
     }
     const action =
       kind === "space"
-        ? () => commands.closeWorkspace(id)
+        ? () => commands.closeWorkspace(id, Boolean(dialog.linkedWorkspaceLabels?.length))
         : kind === "tab"
           ? () => commands.closeTab(id)
           : () => commands.closePane(id);
@@ -3432,7 +3419,11 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
           onBackendSettings={() => setBackendSettingsOpen(true)}
           onCreateSpace={() =>
             selectedRuntime && selectedCommands
-              ? void exec(selectedRuntime, () => selectedCommands.createWorkspace(), true)
+              ? void exec(
+                  selectedRuntime,
+                  () => selectedCommands.createWorkspace(activeSpace?.workspace_id),
+                  true,
+                )
               : setError("Bridge is not ready")
           }
           onCreateTab={(bridgeId, workspaceId) =>
@@ -3646,6 +3637,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
         </header>
         {showSplit && splitCells ? (
           <SplitGrid
+            bridgeId={selectedRuntime?.id ?? ""}
             cells={splitCells}
             selectedPaneId={selectedPane?.pane_id ?? null}
             onSelectPane={(pane) => {
@@ -3659,8 +3651,22 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
             refitToken={refitToken}
             focusToken={terminalFocusToken}
             touchInput={isTouchInput}
-            terminalOptions={terminalViewOptions}
-            mobileOptions={mobileViewOptions}
+            desktopCommandComposer={desktopCommandComposer}
+            desktopCommandEnterNewline={desktopCommandEnterNewline}
+            cursorBlink={!isTouchInput && terminalCursorBlink}
+            terminalFontSizePx={terminalFontSizePx}
+            terminalScreenReaderText={terminalScreenReaderText}
+            autoRenameUploadConflicts={autoRenameUploadConflicts}
+            mobileControlsScalePercent={mobileControlsScalePercent}
+            mobileTapTarget={mobileTerminalTapTarget}
+            mobileLongPressBehavior={mobileLongPressBehavior}
+            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
+            mobileCommandExpandingInput={mobileCommandExpandingInput}
+            mobileCommandEnterNewline={mobileCommandEnterNewline}
+            mobileCommandFocusAfterSubmit={mobileCommandFocusAfterSubmit}
+            terminalInputTransport={terminalInputTransport}
+            terminalInputBatchDelayMs={terminalInputBatchDelayMs}
+            terminalOutputCoalesceMs={terminalOutputCoalesceMs}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
             connectionSuspended={selectedRuntime?.connectionSuspended ?? false}
             resumeToken={selectedRuntime?.resumeToken ?? 0}
@@ -3669,6 +3675,7 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
           />
         ) : renderTerminal ? (
           <TerminalView
+            bridgeId={selectedRuntime?.id ?? ""}
             pane={selectedPane}
             connectionKey={selectedRuntime?.connectionKey ?? "disconnected"}
             connectionSuspended={selectedRuntime?.connectionSuspended ?? false}
@@ -3678,8 +3685,22 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
             autoFocus={!isTouchInput}
             scrollSensitivity={isTouchInput ? 2 : 0.4}
             mobileControls={isTouchInput}
-            terminalOptions={terminalViewOptions}
-            mobileOptions={mobileViewOptions}
+            desktopCommandComposer={desktopCommandComposer}
+            desktopCommandEnterNewline={desktopCommandEnterNewline}
+            cursorBlink={!isTouchInput && terminalCursorBlink}
+            terminalFontSizePx={terminalFontSizePx}
+            terminalScreenReaderText={terminalScreenReaderText}
+            autoRenameUploadConflicts={autoRenameUploadConflicts}
+            mobileControlsScalePercent={mobileControlsScalePercent}
+            mobileTapTarget={mobileTerminalTapTarget}
+            mobileLongPressBehavior={mobileLongPressBehavior}
+            mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
+            mobileCommandExpandingInput={mobileCommandExpandingInput}
+            mobileCommandEnterNewline={mobileCommandEnterNewline}
+            mobileCommandFocusAfterSubmit={mobileCommandFocusAfterSubmit}
+            terminalInputTransport={terminalInputTransport}
+            terminalInputBatchDelayMs={terminalInputBatchDelayMs}
+            terminalOutputCoalesceMs={terminalOutputCoalesceMs}
             refitToken={refitToken}
             focusToken={terminalFocusToken}
             accessibilityLabel={
@@ -3844,9 +3865,9 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
 
       {dialog?.mode === "close" ? (
         <ConfirmDialog
-          title={closeCopy(dialog.kind).title}
-          message={closeCopy(dialog.kind).message}
-          confirmLabel={closeCopy(dialog.kind).confirm}
+          title={closeCopy(dialog.kind, dialog.linkedWorkspaceLabels).title}
+          message={closeCopy(dialog.kind, dialog.linkedWorkspaceLabels).message}
+          confirmLabel={closeCopy(dialog.kind, dialog.linkedWorkspaceLabels).confirm}
           busy={busy}
           onCancel={() => setDialog(null)}
           onConfirm={confirmClose}
@@ -3900,6 +3921,74 @@ const [mobileNotesScreen, setMobileNotesScreen] = useState<MobileNotesScreen>("l
           onUpdatePrefs={updatePrefs}
           navigationSyncMode={navigationSyncMode}
           onNavigationSyncMode={changeNavigationSyncMode}
+          agentFeaturesInTabs={agentFeaturesInTabs}
+          onAgentFeaturesInTabs={(enabled) => updatePrefs({ agentFeaturesInTabs: enabled })}
+          combineMatchingWorkspaceNames={combineMatchingWorkspaceNames}
+          onCombineMatchingWorkspaceNames={(enabled) =>
+            updatePrefs({ combineMatchingWorkspaceNames: enabled })
+          }
+          multiHostSpaceSelection={multiHostSpaceSelection}
+          onMultiHostSpaceSelection={(enabled) =>
+            updatePrefs({ multiHostSpaceSelection: enabled })
+          }
+          terminalFontSizePx={terminalFontSizePx}
+          onTerminalFontSizePx={(value) => updatePrefs({ terminalFontSizePx: value })}
+          terminalCursorBlink={terminalCursorBlink}
+          onTerminalCursorBlink={(enabled) => updatePrefs({ terminalCursorBlink: enabled })}
+          desktopCommandComposer={desktopCommandComposer}
+          onDesktopCommandComposer={(enabled) =>
+            updatePrefs({ desktopCommandComposer: enabled })
+          }
+          desktopCommandEnterNewline={desktopCommandEnterNewline}
+          onDesktopCommandEnterNewline={(enabled) =>
+            updatePrefs({ desktopCommandEnterNewline: enabled })
+          }
+          terminalScreenReaderText={terminalScreenReaderText}
+          onTerminalScreenReaderText={(enabled) =>
+            updatePrefs({ terminalScreenReaderText: enabled })
+          }
+          autoRenameUploadConflicts={autoRenameUploadConflicts}
+          onAutoRenameUploadConflicts={(enabled) =>
+            updatePrefs({ autoRenameUploadConflicts: enabled })
+          }
+          terminalInputTransport={terminalInputTransport}
+          onTerminalInputTransport={(transport) => updatePrefs({ terminalInputTransport: transport })}
+          terminalInputBatchDelayMs={terminalInputBatchDelayMs}
+          onTerminalInputBatchDelayMs={(delayMs) => updatePrefs({ terminalInputBatchDelayMs: delayMs })}
+          terminalOutputCoalesceMs={terminalOutputCoalesceMs}
+          onTerminalOutputCoalesceMs={(delayMs) => updatePrefs({ terminalOutputCoalesceMs: delayMs })}
+          contentInsetTopPx={contentInsetTopPx}
+          onContentInsetTopPx={(value) => updatePrefs({ contentInsetTopPx: value })}
+          contentInsetBottomPx={contentInsetBottomPx}
+          onContentInsetBottomPx={(value) => updatePrefs({ contentInsetBottomPx: value })}
+          mobileControlsScalePercent={mobileControlsScalePercent}
+          onMobileControlsScalePercent={(value) =>
+            updatePrefs({ mobileControlsScalePercent: value })
+          }
+          mobileTerminalTapTarget={mobileTerminalTapTarget}
+          onMobileTerminalTapTarget={(target) => updatePrefs({ mobileTerminalTapTarget: target })}
+          mobileLongPressBehavior={mobileLongPressBehavior}
+          onMobileLongPressBehavior={(behavior) =>
+            updatePrefs({ mobileLongPressBehavior: behavior })
+          }
+          mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
+          onMobileTouchSelectionEndpointTimeoutMs={(timeoutMs) =>
+            updatePrefs({ mobileTouchSelectionEndpointTimeoutMs: timeoutMs })
+          }
+          mobileCommandExpandingInput={mobileCommandExpandingInput}
+          onMobileCommandExpandingInput={(enabled) =>
+            updatePrefs({ mobileCommandExpandingInput: enabled })
+          }
+          mobileCommandEnterNewline={mobileCommandEnterNewline}
+          mobileCommandFocusAfterSubmit={mobileCommandFocusAfterSubmit}
+          onMobileCommandEnterNewline={(enabled) =>
+            updatePrefs({ mobileCommandEnterNewline: enabled })
+          }
+          onMobileCommandFocusAfterSubmit={(enabled) =>
+            updatePrefs({ mobileCommandFocusAfterSubmit: enabled })
+          }
+          mobileKeyboardHideRefit={mobileKeyboardHideRefit}
+          onMobileKeyboardHideRefit={(enabled) => updatePrefs({ mobileKeyboardHideRefit: enabled })}
           onClose={() => setBackendSettingsOpen(false)}
         />
       ) : null}
@@ -5379,28 +5468,58 @@ function hasOpenModal() {
 }
 
 function SplitGrid({
+  bridgeId,
   cells,
   selectedPaneId,
   onSelectPane,
   refitToken,
   focusToken,
   touchInput,
-  terminalOptions,
-  mobileOptions,
+  desktopCommandComposer,
+  desktopCommandEnterNewline,
+  cursorBlink: terminalCursorBlink,
+  terminalFontSizePx,
+  terminalScreenReaderText,
+  autoRenameUploadConflicts,
+  mobileControlsScalePercent,
+  mobileTapTarget,
+  mobileLongPressBehavior,
+  mobileTouchSelectionEndpointTimeoutMs,
+  mobileCommandExpandingInput,
+  mobileCommandEnterNewline,
+  mobileCommandFocusAfterSubmit,
+  terminalInputTransport,
+  terminalInputBatchDelayMs,
+  terminalOutputCoalesceMs,
   connectionKey,
   connectionSuspended,
   resumeToken,
   httpUrl,
   wsUrl,
 }: {
+  bridgeId: string;
   cells: { pane: PaneInfo; style: CSSProperties }[];
   selectedPaneId: string | null;
   onSelectPane: (pane: PaneInfo) => void;
   refitToken: number;
   focusToken: number;
   touchInput: boolean;
-  terminalOptions: TerminalViewTerminalOptions;
-  mobileOptions: TerminalViewMobileOptions;
+  desktopCommandComposer: boolean;
+  desktopCommandEnterNewline: boolean;
+  cursorBlink: boolean;
+  terminalFontSizePx: number;
+  terminalScreenReaderText: boolean;
+  autoRenameUploadConflicts: boolean;
+  mobileControlsScalePercent: number;
+  mobileTapTarget: MobileTerminalTapTarget;
+  mobileLongPressBehavior: MobileLongPressBehavior;
+  mobileTouchSelectionEndpointTimeoutMs: MobileTouchSelectionEndpointTimeoutMs;
+  mobileCommandExpandingInput: boolean;
+  mobileCommandEnterNewline: boolean;
+  mobileCommandFocusAfterSubmit: boolean;
+  terminalInputTransport: TerminalInputTransport;
+  terminalInputBatchDelayMs: number;
+  terminalOutputCoalesceMs: number;
   connectionKey: string;
   connectionSuspended: boolean;
   resumeToken: number;
@@ -5421,6 +5540,7 @@ function SplitGrid({
             onPointerDown={() => onSelectPane(pane)}
           >
             <TerminalView
+              bridgeId={bridgeId}
               pane={pane}
               connectionKey={connectionKey}
               connectionSuspended={connectionSuspended}
@@ -5430,8 +5550,22 @@ function SplitGrid({
               autoFocus={selected && !touchInput}
               scrollSensitivity={touchInput ? 2 : 0.4}
               mobileControls={selected && touchInput}
-              terminalOptions={terminalOptions}
-              mobileOptions={mobileOptions}
+              desktopCommandComposer={selected && !touchInput && desktopCommandComposer}
+              desktopCommandEnterNewline={desktopCommandEnterNewline}
+              cursorBlink={!touchInput && terminalCursorBlink}
+              terminalFontSizePx={terminalFontSizePx}
+              terminalScreenReaderText={terminalScreenReaderText}
+              autoRenameUploadConflicts={autoRenameUploadConflicts}
+              mobileControlsScalePercent={mobileControlsScalePercent}
+              mobileTapTarget={mobileTapTarget}
+              mobileLongPressBehavior={mobileLongPressBehavior}
+              mobileTouchSelectionEndpointTimeoutMs={mobileTouchSelectionEndpointTimeoutMs}
+              mobileCommandExpandingInput={mobileCommandExpandingInput}
+              mobileCommandEnterNewline={mobileCommandEnterNewline}
+              mobileCommandFocusAfterSubmit={mobileCommandFocusAfterSubmit}
+              terminalInputTransport={terminalInputTransport}
+              terminalInputBatchDelayMs={terminalInputBatchDelayMs}
+              terminalOutputCoalesceMs={terminalOutputCoalesceMs}
               refitToken={selected ? refitToken : 0}
               focusToken={selected ? focusToken : 0}
               accessibilityLabel={accessibilityLabel}
@@ -8650,10 +8784,6 @@ function sortAgentPanes(panes: PaneInfo[], sort: AgentSort, snapshot: Snapshot) 
 
   return [...panes].sort((a, b) => {
     if (sort === "attention") {
-      const attention = Number(isAttention(b.agent_status)) - Number(isAttention(a.agent_status));
-      if (attention !== 0) {
-        return attention;
-      }
       const status = AGENT_ATTENTION_ORDER[a.agent_status] - AGENT_ATTENTION_ORDER[b.agent_status];
       if (status !== 0) {
         return status;
@@ -8684,15 +8814,14 @@ function sortAgentPanes(panes: PaneInfo[], sort: AgentSort, snapshot: Snapshot) 
 export function sortScopedAgentPanes(entries: ScopedAgentPane[], sort: AgentSort) {
   return [...entries].sort((a, b) => {
     if (sort === "attention") {
-      const attention =
-        Number(isAttention(b.pane.agent_status)) - Number(isAttention(a.pane.agent_status));
-      if (attention !== 0) {
-        return attention;
-      }
       const status =
         AGENT_ATTENTION_ORDER[a.pane.agent_status] - AGENT_ATTENTION_ORDER[b.pane.agent_status];
       if (status !== 0) {
         return status;
+      }
+      const activity = compareLastStatusTransition(a, b);
+      if (activity !== 0) {
+        return activity;
       }
     } else if (sort === "status") {
       const status =
@@ -8965,7 +9094,14 @@ export function menuItems(
   return paneItems;
 }
 
-function closeCopy(kind: MenuKind) {
+export function closeCopy(kind: MenuKind, linkedLabels: readonly string[] = []) {
+  if (kind === "space" && linkedLabels.length > 0) {
+    return {
+      title: "Close workspace group?",
+      message: `This closes this space and all linked worktree spaces (${linkedLabels.join(", ")}), including every tab and pane in the group.`,
+      confirm: "Close entire group",
+    };
+  }
   switch (kind) {
     case "space":
       return {

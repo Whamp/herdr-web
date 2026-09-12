@@ -4,9 +4,9 @@
 
 ### Breaking Changes
 
-- Herdr `v0.8.2` or newer with terminal protocol exactly `20` is now required. The bridge rejects
-  the previous protocol `19` baseline and other unreviewed protocols instead of attempting a
-  backward-compatible wire fallback.
+- Herdr `v0.9.0` or newer with terminal protocol exactly `22` is now required. The bridge rejects
+  older and other unreviewed protocols instead of attempting a backward-compatible wire fallback.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
 
 ### Added
 
@@ -17,14 +17,20 @@
 - Added bridge terminal websocket lifecycle logging: accepted connections with their query
   parameters, attach handshake duration and retry counters, and session end records with duration
   and exit cause (client disconnect, write failure, daemon close, or lagged output resync).
-- Added a mobile terminal key composer for Ctrl, Shift, and Alt chords with special keys and
-  printable keyboard input such as `Alt+P`. [PR #63](https://github.com/kcosr/herdr-web/pull/63)
 - Added `--public-origin ORIGIN` for trusted reverse proxies that publish the bridge from a different
   scheme or port.
 
+- Add a non-repeating Enter key at the end of the expanded mobile arrow row, also selectable
+  for shortcuts such as Alt+Enter. [PR #89](https://github.com/kcosr/herdr-web/pull/89).
+
+- Add mobile terminal keys with hold-repeat and a shortcut builder for Ctrl, Shift, and Alt
+  combinations with special or printable keys. [PR #89](https://github.com/kcosr/herdr-web/pull/89),
+  building on [PR #63](https://github.com/kcosr/herdr-web/pull/63) by
+  [Will Hampson (@Whamp)](https://github.com/Whamp).
+
 ### Changed
 
-- Refreshed the minimal vendored Herdr compatibility sources to the `v0.8.2`/protocol `20`
+- Refreshed the minimal vendored Herdr compatibility sources to the `v0.9.0`/protocol `22`
   baseline, including the current API schemas and terminal wire definitions.
 - Mobile terminals now use a static visible cursor instead of a blinking cursor, reducing continuous
   canvas redraw work on resource-constrained devices. Desktop cursors continue to blink.
@@ -35,6 +41,14 @@
   `transport_failed`) plus human-readable detail, and web clients derive retry behavior from the
   cause instead of prose matching. Update bridges and web apps together for full attach-conflict
   retry fidelity; older clients treat typed closes as ordinary reconnections.
+- Keep Esc, Tab, C-c, C-d, and 1/2/3 in the mobile quick-key row. The neutral keyboard icon
+  expands Backspace, arrows, and navigation keys, with a keyboard-plus shortcut toggle inside.
+  [PR #89](https://github.com/kcosr/herdr-web/pull/89).
+- Share the same keys between direct input and shortcut building. Show the selected chord with
+  Send and Cancel actions; tapping the selected key again clears it while retaining modifiers.
+  Sending, cancelling, or collapsing the keyboard exits shortcut mode without changing the
+  command draft.
+  [PR #89](https://github.com/kcosr/herdr-web/pull/89).
 
 ### Fixed
 
@@ -54,8 +68,8 @@
   even after contradictory keyguard callbacks, preventing hidden reconnect work after screen lock.
   The Capacitor Network proxy is wrapped behind a plain adapter so lifecycle listener setup cannot
   be aborted by Promise thenable detection. Resume prioritizes one visible-terminal handshake before
-  background stream and capability refresh work. Visibility changes preserve that handshake instead
-  of spawning competing connections while Android networking thaws.
+  background stream and capability refresh work. Visibility changes preserve that handshake
+  instead of spawning competing connections while Android networking thaws.
   The bridge preserves shared terminal attachments during replacement, rejects stale delayed attempts,
   and requires managed clients to acknowledge liveness from JavaScript; protocol heartbeat remains a
   fallback.
@@ -66,8 +80,138 @@
 - Mobile terminal copies now remove canvas row gaps that split HTTP(S) links, including indented
   alphanumeric continuations when terminal edge metadata is unavailable, while preserving ordinary
   line breaks.
+- Preserve terminal or command-field focus when tapping mobile quick keys, shortcut keys,
+  or modifier toggles so the soft keyboard can stay open.
+  [PR #89](https://github.com/kcosr/herdr-web/pull/89).
+
+- Keep held mobile terminal keys repeating through UI updates, and send conventional
+  modified Backspace, Tab, and Escape input without requiring an extended keyboard protocol.
+  [PR #89](https://github.com/kcosr/herdr-web/pull/89).
 
 ### Removed
+
+## [0.6.0] - 2026-09-07
+
+### Breaking Changes
+
+- Require Herdr v0.9.0 or newer with terminal protocol 22.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
+
+### Changed
+
+- Refresh the minimal Herdr compatibility code for v0.9.0 while retaining the existing
+  per-terminal ANSI rendering, browser input, and shared-view behavior.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
+
+### Fixed
+
+- Use the browser's active space as the source for new-space launch directories,
+  respecting Herdr's `terminal.new_cwd` policy instead of another client's focus.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
+- Require explicit confirmation before closing a primary workspace and its related workspaces.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
+- Subscribe to live agent activity before establishing the initial status snapshot.
+  [PR #88](https://github.com/kcosr/herdr-web/pull/88).
+
+## [0.5.2] - 2026-09-07
+
+### Added
+
+- Add an optional mobile “Focus command input after Send” setting, off by default,
+  to refocus the cleared command field for continued typing.
+  [PR #85](https://github.com/kcosr/herdr-web/pull/85).
+
+- Added an opt-in desktop command composer under Settings → Terminal for editing multiline input
+  before sending it, without changing desktop terminal selection, scrolling, or cursor
+  behavior. [PR #82](https://github.com/kcosr/herdr-web/pull/82), contributed by
+  [Andreas Ahrens (@AndreasAhrens)](https://github.com/AndreasAhrens).
+
+### Fixed
+
+- Redraw idle Windows terminal selections and scrolling with cursor blinking disabled,
+  and apply cursor-blink changes immediately to mounted terminals.
+  [PR #87](https://github.com/kcosr/herdr-web/pull/87).
+
+- Add a Terminal setting for cursor blinking and default it off on Windows. When it is
+  off, render only for terminal updates and interactions instead of repainting the
+  high-DPI canvas continuously, avoiding severe lag in large Windows browser windows.
+  [PR #86](https://github.com/kcosr/herdr-web/pull/86).
+
+- Discard late keyboard composition updates for 250 ms after command Send or Stage so
+  submitted dictation cannot immediately repopulate the replacement input. Preserve existing
+  field replacement and focus behavior; ordinary non-composing typing and paste remain accepted.
+  New composition started within this brief window can also be discarded.
+  [PR #85](https://github.com/kcosr/herdr-web/pull/85).
+
+- Update locked development dependencies to established security-patched releases for the
+  Capacitor, lint, test, and frontend build tools, preserving cross-platform optional packages.
+  [PR #85](https://github.com/kcosr/herdr-web/pull/85).
+
+- Focus the enabled desktop command composer on terminal attach and navigation focus requests,
+  after closing Settings, and after Send, including Ctrl+Enter and Cmd+Enter. Direct terminal
+  clicks retain focus through reconnects and immediately after a default focus request. Desktop
+  Stage focuses the terminal to edit or run the staged input; mobile keyboard behavior
+  remains unchanged. [PR #82](https://github.com/kcosr/herdr-web/pull/82).
+
+- Keep unsent desktop and mobile command drafts per bridge and pane while navigating, until
+  sent, staged, or the pane is confirmed closed. Drafts remain in memory for the current browser
+  tab only. [PR #82](https://github.com/kcosr/herdr-web/pull/82).
+
+- Fixed desktop terminal copy shortcuts so copying selected text no longer also sends Ctrl+C to
+  the PTY; Ctrl+C without a selection and Ctrl+C on macOS retain their normal interrupt behavior.
+  [PR #84](https://github.com/kcosr/herdr-web/pull/84), contributed by
+  [Andreas Ahrens (@AndreasAhrens)](https://github.com/AndreasAhrens).
+
+## [0.5.1] - 2026-09-04
+
+### Added
+
+- Added a bundled JetBrainsMono Nerd Font Mono fallback for special terminal and LLM output glyphs
+  on devices without an accessible Nerd Font.
+  [PR #74](https://github.com/kcosr/herdr-web/pull/74), contributed by
+  [Craig P. Motlin (@motlin)](https://github.com/motlin).
+
+### Changed
+
+- Upload conflicts are now atomically de-duplicated by default: re-uploading `image.png` lands as
+  `image-1.png` instead of prompting to replace the original, including when uploads race. Turn off
+  automatic conflict renaming under Settings → Terminal → Uploads to keep the Replace or Cancel
+  prompt. Existing files are replaced only after explicit confirmation.
+  [PR #77](https://github.com/kcosr/herdr-web/pull/77), contributed by
+  [Trillium Smith (@trillium)](https://github.com/trillium).
+
+## [0.5.0] - 2026-08-21
+
+### Breaking Changes
+
+- The bridge now requires Herdr `v0.8.2` or newer reporting terminal protocol `20`. Herdr
+  `v0.8.0` and `v0.8.1` daemons (protocol `19`) are rejected at startup.
+  [PR #69](https://github.com/kcosr/herdr-web/pull/69)
+
+### Changed
+
+- Refreshed the vendored Herdr compatibility sources to the `v0.8.2`/protocol `20` baseline.
+  The new protocol `20` server message variants (`TerminalBell`, `GraphicsFile`,
+  `GraphicsTransmissionRetired`) decode but are ignored by the bridge, adding no new behavior.
+  [PR #69](https://github.com/kcosr/herdr-web/pull/69)
+- Compress terminal output with gzip when the client and bridge both support it.
+  [PR #59](https://github.com/kcosr/herdr-web/pull/59), contributed by
+  [Will Hampson (@Whamp)](https://github.com/Whamp).
+- Changed the Attention agent sort to break ties within an attention band by the most recent agent
+  status change, matching Herdr's Priority agent panel, and kept the existing bridge, Space, and tab
+  order as the fallback for agents with no recorded transition.
+  [PR #68](https://github.com/kcosr/herdr-web/pull/68), contributed by
+  [Craig P. Motlin (@motlin)](https://github.com/motlin).
+- Stop blinking the terminal cursor on touch devices so idle terminals do not keep redrawing.
+  Desktop cursors still blink.
+  [PR #60](https://github.com/kcosr/herdr-web/pull/60), contributed by
+  [Will Hampson (@Whamp)](https://github.com/Whamp).
+
+### Fixed
+
+- Join canvas-wrapped HTTP(S) URLs when copying from a mobile terminal.
+  [PR #61](https://github.com/kcosr/herdr-web/pull/61), contributed by
+  [Will Hampson (@Whamp)](https://github.com/Whamp).
 
 ## [0.4.3] - 2026-08-17
 
