@@ -30,7 +30,10 @@ import type {
   MobileLongPressBehavior,
   MobileTouchSelectionEndpointTimeoutMs,
 } from "./mobileTerminalPrefs";
-import { DEFAULT_TERMINAL_FONT_SIZE_PX } from "./terminalPrefs";
+import {
+  DEFAULT_TERMINAL_FONT_SIZE_PX,
+  defaultTerminalCursorBlink,
+} from "./terminalPrefs";
 import {
   beforeInputOutput,
   idleTerminalImeState,
@@ -50,7 +53,7 @@ import {
 } from "./terminalHyperlinks";
 
 const TERMINAL_FONT_FAMILY =
-  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
+  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "JetBrainsMono Nerd Font Mono", monospace';
 const TERMINAL_TEXT_INPUT_TAP_GRACE_MS = 4000;
 const TOUCH_SELECTION_LONG_PRESS_MS = 600;
 const TOUCH_SELECTION_TOLERANCE_PX = 10;
@@ -118,6 +121,15 @@ type GhosttySelectionManagerAccess = {
     fire?: () => void;
   };
 };
+type GhosttyIdleRenderLoopAccess = {
+  animationFrameId?: number;
+};
+type GhosttyRenderAccess = {
+  renderer?: Terminal["renderer"];
+  wasmTerm?: Terminal["wasmTerm"];
+  viewportY: number;
+  scrollbarOpacity?: number;
+};
 type TerminalBufferLine = {
   readonly length: number;
   getCell(x: number):
@@ -183,12 +195,16 @@ export class GhosttyRenderer implements TerminalRenderer {
     DEFAULT_MOBILE_TOUCH_SELECTION_ENDPOINT_TIMEOUT_MS;
   #textInputTapGraceUntil = 0;
   #fontSizePx: number;
-  private readonly cursorBlink: boolean;
+  #cursorBlink: boolean;
+  #eventDrivenRendering: boolean;
+  #renderFrameId: number | null = null;
+  #renderInteractionCleanup: (() => void) | null = null;
   #disposed = false;
 
   constructor(fontSizePx = DEFAULT_TERMINAL_FONT_SIZE_PX, cursorBlink = true) {
     this.#fontSizePx = fontSizePx;
-    this.cursorBlink = cursorBlink;
+    this.#cursorBlink = cursorBlink;
+    this.#eventDrivenRendering = shouldUseEventDrivenTerminalRendering(cursorBlink);
   }
 
   async mount(container: HTMLElement) {
@@ -200,7 +216,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     this.#container = container;
     const terminal = new Terminal({
       convertEol: false,
-      cursorBlink: this.cursorBlink,
+      cursorBlink: this.#cursorBlink,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: this.#fontSizePx,
       scrollback: 8000,
@@ -231,21 +247,15 @@ export class GhosttyRenderer implements TerminalRenderer {
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (isImeComposingKeyEvent(event)) {
-        return false;
-      }
-      const output = customKeyboardEventOutput(event);
-      if (!output) {
-        return false;
-      }
-      event.stopPropagation();
-      if (typeof event.stopImmediatePropagation === "function") {
-        event.stopImmediatePropagation();
-      }
-      terminal.input(output, true);
-      return true;
-    });
+    if (this.#eventDrivenRendering) {
+      suspendGhosttyIdleRenderLoop(terminal);
+      this.#renderInteractionCleanup = installTerminalInteractionRendering(
+        terminal, () => this.#requestRender(terminal),
+      );
+    }
+    terminal.attachCustomKeyEventHandler((event) =>
+      handleTerminalCustomKeyEvent(event, terminal),
+    );
     terminal.textarea?.blur();
     container.blur();
     container.removeAttribute("contenteditable");
@@ -265,15 +275,9 @@ export class GhosttyRenderer implements TerminalRenderer {
     if (!terminal) {
       return;
     }
-    if (!this.#accessibleScreenPublisher) {
-      terminal.write(data);
-      return;
-    }
-    terminal.write(data, () => {
-      if (this.#isCurrentTerminal(terminal)) {
-        this.#accessibleScreenPublisher?.request();
-      }
-    });
+    terminal.write(data);
+    this.#requestRender(terminal);
+    this.#accessibleScreenPublisher?.request();
   }
 
   setAccessibleScreenListener(callback: ((text: string) => void) | null) {
@@ -328,10 +332,12 @@ export class GhosttyRenderer implements TerminalRenderer {
 
   refreshMetrics() {
     const terminal = this.#requireTerminal();
-    terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
-    terminal.options.fontSize = this.#fontSizePx;
-    terminal.renderer?.remeasureFont();
-    return this.fit();
+    return refreshTerminalFontRendering(
+      terminal,
+      TERMINAL_FONT_FAMILY,
+      this.#fontSizePx,
+      () => this.fit(),
+    );
   }
 
   setFontSize(fontSizePx: number) {
@@ -378,6 +384,12 @@ export class GhosttyRenderer implements TerminalRenderer {
 
   dispose() {
     this.#disposed = true;
+    this.#renderInteractionCleanup?.();
+    this.#renderInteractionCleanup = null;
+    if (this.#renderFrameId !== null) {
+      window.cancelAnimationFrame(this.#renderFrameId);
+      this.#renderFrameId = null;
+    }
     this.#touchCleanup?.();
     this.#touchCleanup = null;
     this.#mobileInputCleanup?.();
@@ -402,6 +414,18 @@ export class GhosttyRenderer implements TerminalRenderer {
 
   #isCurrentTerminal(terminal: Terminal) {
     return this.#terminal === terminal;
+  }
+
+  #requestRender(terminal: Terminal) {
+    if (!this.#eventDrivenRendering || this.#renderFrameId !== null) {
+      return;
+    }
+    this.#renderFrameId = window.requestAnimationFrame(() => {
+      this.#renderFrameId = null;
+      if (this.#isCurrentTerminal(terminal)) {
+        renderGhosttyTerminalFrame(terminal);
+      }
+    });
   }
 
   #installAccessibleScreenPublisher() {
@@ -1462,6 +1486,80 @@ export class GhosttyRenderer implements TerminalRenderer {
   }
 }
 
+export function refreshTerminalFontRendering(
+  terminal: Terminal,
+  fontFamily: string,
+  fontSizePx: number,
+  fit: () => TerminalSize,
+) {
+  terminal.options.fontFamily = fontFamily;
+  terminal.options.fontSize = fontSizePx;
+  terminal.renderer?.remeasureFont();
+  const size = fit();
+  if (terminal.renderer && terminal.wasmTerm) {
+    terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal, 0);
+  }
+  return size;
+}
+
+export function installTerminalInteractionRendering(
+  terminal: Terminal,
+  requestRender: () => void,
+) {
+  // In ghostty-web 0.4.0 this method is empty: selection changes rely on
+  // the permanent frame loop. Replace it while event-driven rendering is active.
+  const selection = terminalSelectionManager(terminal);
+  const originalRequestRender = selection?.requestRender;
+  if (selection) {
+    selection.requestRender = requestRender;
+  }
+  const scroll = terminal.onScroll(requestRender);
+  return () => {
+    scroll.dispose();
+    if (selection && originalRequestRender) {
+      selection.requestRender = originalRequestRender;
+    }
+  };
+}
+
+export function suspendGhosttyIdleRenderLoop(
+  terminal: Terminal,
+  cancelFrame: (frameId: number) => void = (frameId) => window.cancelAnimationFrame(frameId),
+) {
+  // ghostty-web 0.4.0 starts a permanent requestAnimationFrame loop even when
+  // cursor blinking is disabled. A large high-DPI canvas is particularly costly
+  // on Windows, so event-driven mode cancels the pending continuation after open().
+  const access = terminal as unknown as GhosttyIdleRenderLoopAccess;
+  if (access.animationFrameId === undefined) {
+    return false;
+  }
+  cancelFrame(access.animationFrameId);
+  delete access.animationFrameId;
+  return true;
+}
+
+export function shouldUseEventDrivenTerminalRendering(
+  cursorBlink: boolean,
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+) {
+  return !cursorBlink && !defaultTerminalCursorBlink(platform);
+}
+
+export function renderGhosttyTerminalFrame(terminal: Terminal) {
+  const access = terminal as unknown as GhosttyRenderAccess;
+  if (!access.renderer || !access.wasmTerm) {
+    return false;
+  }
+  access.renderer.render(
+    access.wasmTerm,
+    false,
+    access.viewportY,
+    terminal,
+    access.scrollbarOpacity ?? 0,
+  );
+  return true;
+}
+
 function hideGhosttyTextarea(textarea: HTMLTextAreaElement) {
   textarea.style.position = "fixed";
   textarea.style.left = "-10000px";
@@ -1592,6 +1690,49 @@ function customKeyboardEventOutput(event: KeyboardEvent) {
     return "\x1B[Z";
   }
   return null;
+}
+
+export function handleTerminalCustomKeyEvent(
+  event: KeyboardEvent,
+  terminal: Pick<Terminal, "getSelection" | "input">,
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+) {
+  if (isImeComposingKeyEvent(event)) {
+    return false;
+  }
+  // Ghostty copies the canonical selection on mouseup. Consume the matching
+  // desktop copy shortcut here so its input handler cannot also emit ^C.
+  const consumesSelectionCopy =
+    isTerminalSelectionCopyShortcut(event, platform) && terminal.getSelection().length > 0;
+  const output = customKeyboardEventOutput(event);
+  if (!consumesSelectionCopy && !output) {
+    return false;
+  }
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === "function") {
+    event.stopImmediatePropagation();
+  }
+  if (output) {
+    terminal.input(output, true);
+  }
+  return true;
+}
+
+type TerminalSelectionCopyShortcutEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "code" | "ctrlKey" | "metaKey" | "shiftKey"
+>;
+
+function isTerminalSelectionCopyShortcut(
+  event: TerminalSelectionCopyShortcutEvent,
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+) {
+  if (event.code !== "KeyC" || event.altKey || event.shiftKey) {
+    return false;
+  }
+  return platform.startsWith("Mac")
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
 }
 
 function textareaKeyboardEventOutput(event: KeyboardEvent) {

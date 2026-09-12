@@ -42,6 +42,12 @@ describe("terminal selection helpers", () => {
     ).toBe("http://100.112.72.93:8765/herdr-hollow-centered-handle-d872ae6.apk");
   });
 
+  it("rejoins a URL that ends on a path delimiter", () => {
+    expect(normalizeMobileTerminalCopyText("https://example.com/release/\nNext")).toBe(
+      "https://example.com/release/Next",
+    );
+  });
+
   it("rejoins an alphanumeric URL continuation at the terminal right edge", () => {
     expect(
       normalizeMobileTerminalCopyText(

@@ -40,7 +40,6 @@ export const MOBILE_TERMINAL_MODIFIERS: readonly MobileTerminalModifierOption[] 
 interface MobileTerminalLiteralEncoding {
   kind: "literal";
   data: string;
-  codepoint: number;
   shiftedData?: string;
 }
 
@@ -81,19 +80,19 @@ export const MOBILE_TERMINAL_SPECIAL_KEYS: readonly MobileTerminalChordKey[] = [
     id: "escape",
     name: "Escape",
     label: "Esc",
-    encoding: { kind: "literal", data: "\x1B", codepoint: 27 },
+    encoding: { kind: "literal", data: "\x1B" },
   },
   {
     id: "tab",
     name: "Tab",
     label: "Tab",
-    encoding: { kind: "literal", data: "\t", codepoint: 9, shiftedData: "\x1B[Z" },
+    encoding: { kind: "literal", data: "\t", shiftedData: "\x1B[Z" },
   },
   {
     id: "backspace",
     name: "Backspace",
     label: "Bksp",
-    encoding: { kind: "literal", data: "\x7F", codepoint: 127 },
+    encoding: { kind: "literal", data: "\x7F" },
   },
   {
     id: "arrow-left",
@@ -118,6 +117,12 @@ export const MOBILE_TERMINAL_SPECIAL_KEYS: readonly MobileTerminalChordKey[] = [
     name: "Right",
     label: "→",
     encoding: { kind: "csi-final", data: "\x1B[C", finalByte: "C" },
+  },
+  {
+    id: "enter",
+    name: "Enter",
+    label: "Enter",
+    encoding: { kind: "literal", data: "\r" },
   },
   {
     id: "home",
@@ -170,9 +175,9 @@ export function formatMobileTerminalChord(
   key: MobileTerminalChordKey,
   modifiers: readonly MobileTerminalModifier[],
 ) {
-  const labels = MOBILE_TERMINAL_MODIFIERS
-    .filter((modifier) => modifiers.includes(modifier.id))
-    .map((modifier) => modifier.label);
+  const labels = MOBILE_TERMINAL_MODIFIERS.filter((modifier) =>
+    modifiers.includes(modifier.id),
+  ).map((modifier) => modifier.label);
   return [...labels, key.label].join(" + ");
 }
 
@@ -187,17 +192,15 @@ export function encodeMobileTerminalChord(
     return encodePrintableTerminalChord(encoding.value, uniqueModifiers);
   }
   if (encoding.kind === "literal") {
-    if (uniqueModifiers.size === 0) {
-      return encoding.data;
+    // The composer sends legacy VT input; it does not negotiate modifyOtherKeys.
+    // Ctrl+Tab/Enter/Escape and Shift+Backspace/Enter/Escape have no distinct legacy encoding.
+    let data = uniqueModifiers.has("shift") && encoding.shiftedData
+      ? encoding.shiftedData
+      : encoding.data;
+    if (uniqueModifiers.has("ctrl") && encoding.data === "\x7F") {
+      data = "\x08";
     }
-    if (
-      uniqueModifiers.size === 1
-      && uniqueModifiers.has("shift")
-      && encoding.shiftedData
-    ) {
-      return encoding.shiftedData;
-    }
-    return `\x1B[27;${xtermModifierParameter(uniqueModifiers)};${encoding.codepoint}~`;
+    return uniqueModifiers.has("alt") ? `\x1B${data}` : data;
   }
   if (uniqueModifiers.size === 0) {
     return encoding.data;
@@ -226,28 +229,50 @@ function shiftedPrintableKey(value: string) {
     return value.toUpperCase();
   }
   switch (value) {
-    case "1": return "!";
-    case "2": return "@";
-    case "3": return "#";
-    case "4": return "$";
-    case "5": return "%";
-    case "6": return "^";
-    case "7": return "&";
-    case "8": return "*";
-    case "9": return "(";
-    case "0": return ")";
-    case "-": return "_";
-    case "=": return "+";
-    case "[": return "{";
-    case "]": return "}";
-    case "\\": return "|";
-    case ";": return ":";
-    case "'": return "\"";
-    case ",": return "<";
-    case ".": return ">";
-    case "/": return "?";
-    case "`": return "~";
-    default: return value;
+    case "1":
+      return "!";
+    case "2":
+      return "@";
+    case "3":
+      return "#";
+    case "4":
+      return "$";
+    case "5":
+      return "%";
+    case "6":
+      return "^";
+    case "7":
+      return "&";
+    case "8":
+      return "*";
+    case "9":
+      return "(";
+    case "0":
+      return ")";
+    case "-":
+      return "_";
+    case "=":
+      return "+";
+    case "[":
+      return "{";
+    case "]":
+      return "}";
+    case "\\":
+      return "|";
+    case ";":
+      return ":";
+    case "'":
+      return '"';
+    case ",":
+      return "<";
+    case ".":
+      return ">";
+    case "/":
+      return "?";
+    case "`":
+      return "~";
+    default:
+      return value;
   }
 }
 
@@ -287,8 +312,10 @@ function controlCharacterForPrintableKey(value: string) {
 }
 
 function xtermModifierParameter(modifiers: ReadonlySet<MobileTerminalModifier>) {
-  return 1
-    + (modifiers.has("shift") ? 1 : 0)
-    + (modifiers.has("alt") ? 2 : 0)
-    + (modifiers.has("ctrl") ? 4 : 0);
+  return (
+    1 +
+    (modifiers.has("shift") ? 1 : 0) +
+    (modifiers.has("alt") ? 2 : 0) +
+    (modifiers.has("ctrl") ? 4 : 0)
+  );
 }
