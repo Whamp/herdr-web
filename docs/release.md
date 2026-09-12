@@ -79,7 +79,8 @@ The desktop tarballs are written to `dist-packages/`. The debug APK is written t
 Before uploading or distributing any tarball or APK, inspect the artifact and confirm it matches the
 documented release layout, platform, version, and source commit/tag. For desktop tarballs, list the
 archive contents and verify the wrapper, bridge binary, bundled `web/dist`, and README are present.
-For APKs, inspect the package listing or metadata with available local tools.
+For APKs, run the package, version, signature, and alignment checks in
+[docs/android.md](android.md).
 
 To stage the current debug APK under the release asset name for private testing:
 
