@@ -151,6 +151,7 @@ afterEach(async () => {
     }
   });
   document.body.innerHTML = "";
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -212,6 +213,53 @@ describe("TerminalView mobile refitting", () => {
     });
     expect(currentRenderer.refreshedSizes).toHaveLength(4);
     expect(currentSocket.sent.at(-1)).toBe(JSON.stringify({ type: "resize", cols: 120, rows: 48 }));
+  });
+
+  it("does not schedule replacement refits from stale terminal readiness", async () => {
+    const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame");
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const retryTimerDelays = () =>
+      setTimeoutSpy.mock.calls
+        .map(([, delay]) => delay)
+        .filter((delay) => delay === 80 || delay === 280 || delay === 520);
+    const drafts = createCommandDraftStore();
+    const root = await renderTerminalView(testPane("terminal-1"), drafts);
+    const firstRenderer = terminalRenderers[0];
+    if (!firstRenderer) {
+      throw new Error("Expected the first terminal renderer");
+    }
+
+    await act(async () => {
+      firstRenderer.completeMount();
+      await Promise.resolve();
+    });
+    expect(requestAnimationFrameSpy).toHaveBeenCalledTimes(1);
+    expect(retryTimerDelays()).toEqual([80, 280, 520]);
+
+    await renderPane(root, testPane("terminal-2"), drafts);
+    const currentRenderer = terminalRenderers[1];
+    if (!currentRenderer) {
+      throw new Error("Expected the current terminal renderer");
+    }
+
+    expect(requestAnimationFrameSpy).toHaveBeenCalledTimes(1);
+    expect(retryTimerDelays()).toEqual([80, 280, 520]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(currentRenderer.refreshedSizes).toEqual([]);
+
+    await act(async () => {
+      currentRenderer.completeMount();
+      await Promise.resolve();
+    });
+    expect(requestAnimationFrameSpy).toHaveBeenCalledTimes(2);
+    expect(retryTimerDelays()).toEqual([80, 280, 520, 80, 280, 520]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    expect(currentRenderer.refreshedSizes).toHaveLength(1);
   });
 });
 
