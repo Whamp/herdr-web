@@ -1,0 +1,80 @@
+page:
+  title: herdr-web
+  refs: 72
+snapshot:
+uid=g3:3_0 RootWebArea "herdr-web" url="http://127.0.0.1:15173/"
+  uid=g3:3_1 generic atomic live="polite" relevant="additions text"
+  uid=g3:3_2 complementary "Switcher"
+    uid=g3:3_3 StaticText "herdr-web"
+    uid=g3:3_4 button "Settings" description="Settings; bridge: Same origin"
+    uid=g3:3_5 button "Refresh" description="Refresh"
+    uid=g3:3_6 button "Same origin" pressed
+    uid=g3:3_7 button "Agents" pressed
+    uid=g3:3_8 button "Tabs"
+    uid=g3:3_9 button "Notes"
+    uid=g3:3_10 button "Space" pressed
+    uid=g3:3_11 button "All"
+    uid=g3:3_12 StaticText "SPACES"
+    uid=g3:3_13 StaticText "12"
+    uid=g3:3_14 button "New space" description="New space"
+    uid=g3:3_15 button "personal 6 tabs · 6 panes · 6 agents"
+    uid=g3:3_16 button "FirstMate 1 tab · 1 pane · 1 agent 1"
+    uid=g3:3_17 button "└ create-verify-skill-herdr-web · p:N4T3Lw4lH56pVqzqvJmzQQ 1 tab · 3 panes · 1 agent"
+    uid=g3:3_18 button "pi-fusion 2 tabs · 2 panes · 2 agents 2"
+    uid=g3:3_19 button "deep-swe-bench 2 tabs · 2 panes · 2 agents"
+    uid=g3:3_20 button "overthinking 6 tabs · 6 panes · 6 agents"
+    uid=g3:3_21 button "Clarion VX404 1 tab · 1 pane · 1 agent 1"
+    uid=g3:3_22 button "observational-memory-evals 1 tab · 1 pane · 1 agent"
+    uid=g3:3_23 button "Eleusis 1 tab · 1 pane · 1 agent"
+    uid=g3:3_24 button "Labrat 1 tab · 1 pane · 1 agent"
+    uid=g3:3_25 button "TurboAgent 1 tab · 1 pane · 1 agent"
+    uid=g3:3_26 button "Herdr Web 1 tab · 1 pane"
+    uid=g3:3_27 StaticText "SPACE AGENTS"
+    uid=g3:3_28 button "Show pinned agents only" description="Pinned only"
+    uid=g3:3_29 button "Show active statuses only" description="Active statuses only"
+    uid=g3:3_30 button "Agent list options" description="Agent list options" expandable haspopup="dialog"
+    uid=g3:3_31 StaticText "No detected agents"
+    uid=g3:3_32 StaticText "Open the Tabs view for plain panes."
+  uid=g3:3_33 region "Terminal"
+    uid=g3:3_34 tab "Mobile keyboard PR" selectable selected
+    uid=g3:3_35 button "New tab" description="New tab"
+    uid=g3:3_36 button "Back to switcher" description="Back"
+    uid=g3:3_37 button "Selected pane actions" expandable haspopup="menu"
+    uid=g3:3_38 button "Notes" description="Notes"
+    uid=g3:3_39 button "Pin pane" description="Pin pane"
+    uid=g3:3_40 button "Refit terminal" description="Refit terminal"
+    uid=g3:3_41 StaticText "idle"
+  uid=g3:3_42 button "Close settings"
+  uid=g3:3_43 dialog "Settings" modal
+    uid=g3:3_44 button "Close" description="Close" focusable focused
+    uid=g3:3_45 StaticText "Settings"
+    uid=g3:3_46 tab "Bridge" selectable
+    uid=g3:3_47 tab "Features" selectable
+    uid=g3:3_48 tab "Display" selectable selected
+    uid=g3:3_49 tab "Terminal" selectable
+    uid=g3:3_50 StaticText "SIDEBAR"
+    uid=g3:3_51 StaticText "Sync navigation"
+    uid=g3:3_52 button "Off" pressed
+    uid=g3:3_53 button "On"
+    uid=g3:3_54 StaticText "Agent features in Tabs"
+    uid=g3:3_55 button "Off"
+    uid=g3:3_56 button "On" pressed
+    uid=g3:3_57 StaticText "Combine matching workspace names"
+    uid=g3:3_58 button "Off" pressed
+    uid=g3:3_59 button "On"
+    uid=g3:3_60 StaticText "Multi-host Space selection"
+    uid=g3:3_61 button "Off"
+    uid=g3:3_62 button "On" pressed
+    uid=g3:3_63 StaticText "DISPLAY SPACING"
+    uid=g3:3_64 StaticText "Top padding"
+    uid=g3:3_65 spinbutton "Top padding" value="0" valuemax="96" valuemin="0" valuetext="0"
+    uid=g3:3_66 StaticText "px"
+    uid=g3:3_67 button "Reset top padding" description="Reset" disableable disabled
+    uid=g3:3_68 StaticText "Bottom padding"
+    uid=g3:3_69 spinbutton "Bottom padding" value="0" valuemax="160" valuemin="0" valuetext="0"
+    uid=g3:3_70 StaticText "px"
+    uid=g3:3_71 button "Reset bottom padding" description="Reset" disableable disabled
+help[3]:
+  Run `chrome-devtools-axi click @g3:3_4` to click the "Settings" button
+  Run `chrome-devtools-axi scroll down` to scroll down
+  Use `chrome-devtools-axi eval <expr>` for JS expressions. For multi-statement code, pass a function: `eval "() => { ...; return result }"`
