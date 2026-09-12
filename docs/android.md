@@ -176,8 +176,13 @@ Tools version. Otherwise, the commands select one directory from the SDK's norma
 ```bash
 SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 : "${SDK_ROOT:?Set ANDROID_HOME or ANDROID_SDK_ROOT first}"
-BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$(printf '%s\n' "$SDK_ROOT"/build-tools/* | tail -n 1)}"
-: "${BUILD_TOOLS:?Install Android SDK Build Tools first}"
+BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$SDK_ROOT/build-tools/36.0.0}"
+for executable in aapt apksigner zipalign; do
+  if [ ! -x "$BUILD_TOOLS/$executable" ]; then
+    printf 'Missing Android SDK Build Tools executable: %s\n' "$BUILD_TOOLS/$executable" >&2
+    exit 1
+  fi
+done
 
 APK=android/app/build/outputs/apk/debug/app-debug.apk
 "$BUILD_TOOLS/aapt" dump badging "$APK" | grep '^package:'
@@ -192,8 +197,10 @@ the intended `versionName`. Require `apksigner` to report
 
 ## Installing Update APKs
 
-Android requires an update to keep the `dev.herdr.web` application ID, use a higher `versionCode`
-than the installed APK, and use the same signing certificate. Increment `versionCode` in
+Android accepts an update when it keeps the `dev.herdr.web` application ID, uses a `versionCode`
+higher than or equal to the installed APK's, and has the same signing certificate or a valid
+proof-of-rotation signing lineage. This project's release policy always increments `versionCode`
+and uses the same debug keystore for ordinary debug updates. Increment `versionCode` in
 `android/app/build.gradle` before building an update. Use the `aapt` output above to check the
 version embedded in the artifact.
 
@@ -209,10 +216,11 @@ pull it with `adb pull <base-apk-path> installed.apk`. Run the certificate check
 "$BUILD_TOOLS/apksigner" verify -v --print-certs "$APK"
 ```
 
-Compare the `Signer #` certificate SHA-256 digest values. The signer set must match the installed
-APK before Android will accept the update. A production APK must use an approved release signing
-key rather than the debug key, and it must pass the same package, version, signature, and alignment
-checks.
+Compare the `Signer #` certificate SHA-256 digest values. Unless a deliberate signing-key rotation
+with a valid proof-of-rotation lineage is in use, the signing-certificate digest must match the
+installed APK before Android will accept the update. A production APK must use an approved release
+signing key rather than the debug key, and it must pass the same package, version, signature, and
+alignment checks.
 
 ## Verification Status
 
