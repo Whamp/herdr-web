@@ -1,0 +1,3 @@
+{"selected":"On"}
+{"selected":"Off","stored":"independent"}
+{"selectedAfterReload":"Off","stored":"independent"}

@@ -1,0 +1,35 @@
+
+> herdr-web@0.0.0 dev
+> node scripts/dev.mjs
+
+starting bridge on http://127.0.0.1:18787
+  HERDR_SOCKET_PATH=/home/will/.config/herdr/herdr.sock
+starting Vite HMR on http://127.0.0.1:15173 (proxy -> http://127.0.0.1:18787)
+open the Vite URL; bridge source changes still require a rebuild and restart
+
+> @herdr/web@0.0.0 dev
+> vite --host 127.0.0.1 --host 127.0.0.1 --port 15173 --strictPort
+
+
+  VITE v8.0.16  ready in 129 ms
+
+  ➜  Local:   http://127.0.0.1:15173/
+  ➜  press h + enter to show help
+10:44:47 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+10:44:47 PM [vite] ws proxy socket error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+10:44:51 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+10:44:51 PM [vite] ws proxy socket error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+10:44:51 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+10:44:51 PM [vite] ws proxy socket error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)

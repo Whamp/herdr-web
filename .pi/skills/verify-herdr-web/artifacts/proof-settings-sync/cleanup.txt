@@ -1,0 +1,2 @@
+cleanup: stopping dev supervisor pid 1698150
+cleanup: evidence retained at /home/will/.treehouse/herdr-web-ab0081/1/herdr-web/.pi/skills/verify-herdr-web/artifacts/proof-settings-sync
