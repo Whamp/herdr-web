@@ -19,6 +19,8 @@
 
 - Send protocol-level pings on idle browser WebSockets and close connections that do not return peer
   traffic within 15 seconds, removing dead transports without claiming to detect frozen JavaScript.
+  [PR #93](https://github.com/kcosr/herdr-web/pull/93), contributed by
+  [Will Hampson (@Whamp)](https://github.com/Whamp).
 
 ### Removed
 
