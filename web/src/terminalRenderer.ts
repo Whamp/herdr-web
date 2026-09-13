@@ -95,6 +95,22 @@ export type TerminalSize = {
   cols: number;
   rows: number;
 };
+type TerminalMouseButton = "left" | "right" | "middle";
+type TerminalMousePosition = {
+  column: number;
+  row: number;
+  modifiers: number;
+  lines: number;
+};
+/** Browser mouse input forwarded through Herdr's structured terminal mouse protocol. */
+export type TerminalMouseInput =
+  | (TerminalMousePosition & {
+      kind: "down" | "up" | "drag";
+      button: TerminalMouseButton;
+    })
+  | (TerminalMousePosition & {
+      kind: "moved" | "scroll_up" | "scroll_down";
+    });
 type TerminalCellPosition = {
   col: number;
   row: number;
@@ -153,6 +169,8 @@ export type TerminalRenderer = {
   setAccessibleScreenListener(callback: ((text: string) => void) | null): void;
   onInput(callback: (data: string) => void): () => void;
   onScroll(callback: (lines: number) => void): () => void;
+  onMouseInput(callback: (input: TerminalMouseInput) => void): () => void;
+  setMouseTracking(enabled: boolean): void;
   setTapFocusHandler(callback: (() => TerminalTapFocusResult) | null): void;
   setMobileTouchSelection(
     behavior: MobileLongPressBehavior,
@@ -175,6 +193,8 @@ export class GhosttyRenderer implements TerminalRenderer {
   #container: HTMLElement | null = null;
   #scrollSensitivity = 1;
   #scrollCallback: ((lines: number) => void) | null = null;
+  #mouseInputCallback: ((input: TerminalMouseInput) => void) | null = null;
+  #mouseTrackingOverride: boolean | null = null;
   #touchCleanup: (() => void) | null = null;
   #mobileInputCleanup: (() => void) | null = null;
   #imeFocusCleanup: (() => void) | null = null;
@@ -295,6 +315,19 @@ export class GhosttyRenderer implements TerminalRenderer {
     };
   }
 
+  onMouseInput(callback: (input: TerminalMouseInput) => void) {
+    this.#mouseInputCallback = callback;
+    return () => {
+      if (this.#mouseInputCallback === callback) {
+        this.#mouseInputCallback = null;
+      }
+    };
+  }
+
+  setMouseTracking(enabled: boolean) {
+    this.#mouseTrackingOverride = enabled;
+  }
+
   setTapFocusHandler(callback: (() => TerminalTapFocusResult) | null) {
     this.#tapFocusHandler = callback;
   }
@@ -390,6 +423,8 @@ export class GhosttyRenderer implements TerminalRenderer {
     this.#imeFocusCleanup?.();
     this.#imeFocusCleanup = null;
     this.#accessibleScreenCallback = null;
+    this.#mouseInputCallback = null;
+    this.#mouseTrackingOverride = null;
     this.#disposeAccessibleScreenPublisher();
     this.#fitAddon?.dispose();
     this.#fitAddon = null;
@@ -467,6 +502,9 @@ export class GhosttyRenderer implements TerminalRenderer {
     if (!this.#isCurrentTerminal(terminal)) {
       return true;
     }
+    if (this.#mouseTrackingOverride !== null) {
+      return this.#mouseTrackingOverride;
+    }
     try {
       return terminal.hasMouseTracking();
     } catch (error) {
@@ -481,12 +519,27 @@ export class GhosttyRenderer implements TerminalRenderer {
     const terminal = this.#requireTerminal();
 
     terminal.attachCustomWheelEventHandler((event) => {
-      if (!this.#isCurrentTerminal(terminal) || this.#hasMouseTracking(terminal)) {
+      if (!this.#isCurrentTerminal(terminal)) {
         return false;
+      }
+      const lines = normalizeWheelLines(event, terminal.rows, this.#scrollSensitivity);
+      if (this.#hasMouseTracking(terminal)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (lines !== 0) {
+          const position = touchCellPosition(terminal, event.clientX, event.clientY);
+          this.#mouseInputCallback?.({
+            kind: lines < 0 ? "scroll_up" : "scroll_down",
+            column: position.col,
+            row: position.row,
+            modifiers: terminalMouseModifiers(event),
+            lines: Math.min(Math.abs(lines), 200),
+          });
+        }
+        return true;
       }
       event.preventDefault();
       event.stopPropagation();
-      const lines = normalizeWheelLines(event, terminal.rows, this.#scrollSensitivity);
       if (lines === 0) {
         return true;
       }
@@ -525,6 +578,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     let loupeRenderFrame: number | null = null;
     let mouseDownX: number | null = null;
     let mouseDownY: number | null = null;
+    let trackedMouseButton: TerminalMouseButton | null = null;
     let selectionState: TerminalTouchSelectionState = idleTouchSelectionState;
     let endpointBubble: HTMLDivElement | null = null;
     let loupe: { root: HTMLDivElement; canvas: HTMLCanvasElement } | null = null;
@@ -1156,10 +1210,31 @@ export class GhosttyRenderer implements TerminalRenderer {
       }
       return false;
     };
+    const sendTrackedMouseInput = (
+      event: MouseEvent,
+      kind: "down" | "up" | "drag" | "moved",
+      button: TerminalMouseButton | null,
+    ) => {
+      const position = touchCellPosition(terminal, event.clientX, event.clientY);
+      const common = {
+        column: position.col,
+        row: position.row,
+        modifiers: terminalMouseModifiers(event),
+        lines: 1,
+      };
+      if (kind === "moved") {
+        this.#mouseInputCallback?.({ kind, ...common });
+      } else if (button) {
+        this.#mouseInputCallback?.({ kind, button, ...common });
+      }
+    };
     const onMouseDown = (event: MouseEvent) => {
       mouseDownX = event.clientX;
       mouseDownY = event.clientY;
       if (this.#hasMouseTracking(terminal)) {
+        trackedMouseButton = terminalMouseButton(event.button);
+        suppressMouseInputEvent(event);
+        sendTrackedMouseInput(event, "down", trackedMouseButton);
         return;
       }
       if (suppressCompatMouseEvent(event)) {
@@ -1169,7 +1244,25 @@ export class GhosttyRenderer implements TerminalRenderer {
         redirectTapFocus(event);
       }
     };
+    const onMouseMove = (event: MouseEvent) => {
+      if (!this.#hasMouseTracking(terminal)) {
+        return;
+      }
+      suppressMouseInputEvent(event);
+      sendTrackedMouseInput(
+        event,
+        trackedMouseButton ? "drag" : "moved",
+        trackedMouseButton,
+      );
+    };
     const onMouseUp = (event: MouseEvent) => {
+      if (this.#hasMouseTracking(terminal)) {
+        const button = terminalMouseButton(event.button) ?? trackedMouseButton;
+        suppressMouseInputEvent(event);
+        sendTrackedMouseInput(event, "up", button);
+        trackedMouseButton = null;
+        return;
+      }
       suppressCompatMouseEvent(event);
     };
     const onClick = (event: MouseEvent) => {
@@ -1207,6 +1300,7 @@ export class GhosttyRenderer implements TerminalRenderer {
     container.addEventListener("touchend", onTouchEnd, { capture: true });
     container.addEventListener("touchcancel", onTouchCancel, { capture: true });
     container.addEventListener("mousedown", onMouseDown, { capture: true });
+    container.addEventListener("mousemove", onMouseMove, { capture: true });
     container.addEventListener("mouseup", onMouseUp, { capture: true });
     const removeLinkClickHandler = installTerminalClickHandler(container, onClick);
     this.#touchCleanup = () => {
@@ -1218,6 +1312,7 @@ export class GhosttyRenderer implements TerminalRenderer {
       container.removeEventListener("touchend", onTouchEnd, { capture: true });
       container.removeEventListener("touchcancel", onTouchCancel, { capture: true });
       container.removeEventListener("mousedown", onMouseDown, { capture: true });
+      container.removeEventListener("mousemove", onMouseMove, { capture: true });
       container.removeEventListener("mouseup", onMouseUp, { capture: true });
       removeLinkClickHandler();
     };
@@ -1733,6 +1828,34 @@ function textareaKeyboardEventOutput(event: KeyboardEvent) {
     return customKeyboardEventOutput(event);
   }
   return event.shiftKey ? "\x1B[Z" : "\t";
+}
+
+function terminalMouseButton(button: number): TerminalMouseButton | null {
+  if (button === 0) {
+    return "left";
+  }
+  if (button === 1) {
+    return "middle";
+  }
+  if (button === 2) {
+    return "right";
+  }
+  return null;
+}
+
+function terminalMouseModifiers(event: MouseEvent | WheelEvent) {
+  return (
+    (event.shiftKey ? 1 : 0) |
+    (event.ctrlKey ? 2 : 0) |
+    (event.altKey ? 4 : 0) |
+    (event.metaKey ? 8 : 0)
+  );
+}
+
+function suppressMouseInputEvent(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
 }
 
 function touchCellPosition(terminal: Terminal, clientX: number, clientY: number): TerminalCellPosition {

@@ -54,6 +54,7 @@ import { DEFAULT_TERMINAL_OUTPUT_COALESCE_MS } from "./terminalOutputCoalescing"
 import {
   createTerminalOutputFrameDecoder,
   isTerminalOutputGzipAcknowledgement,
+  terminalMouseCaptureState,
   terminalOutputGzipSupported,
 } from "./terminalOutputEncoding";
 import { DEFAULT_TERMINAL_FONT_SIZE_PX } from "./terminalPrefs";
@@ -529,6 +530,7 @@ export function TerminalView({
     let disposed = false;
     let disposeInput: (() => void) | null = null;
     let disposeScroll: (() => void) | null = null;
+    let disposeMouseInput: (() => void) | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const generation = rendererGenerationRef.current + 1;
     rendererGenerationRef.current = generation;
@@ -590,6 +592,12 @@ export function TerminalView({
             }),
           );
         });
+        disposeMouseInput = renderer.onMouseInput((input) => {
+          const socket = socketRef.current;
+          if (socket?.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "mouse", ...input }));
+          }
+        });
 
         resizeObserver = new ResizeObserver(() => {
           publishReady();
@@ -634,6 +642,7 @@ export function TerminalView({
       clearQueuedTerminalInput();
       disposeInput?.();
       disposeScroll?.();
+      disposeMouseInput?.();
       resizeObserver?.disconnect();
       if (rendererReadyRef.current?.generation === generation) {
         rendererReadyRef.current = null;
@@ -784,6 +793,7 @@ export function TerminalView({
         closeActiveSocket();
       }
       reconnectScheduledForSocket.clear();
+      ready.renderer.setMouseTracking(false);
       const currentSocketGeneration = socketGeneration + 1;
       socketGeneration = currentSocketGeneration;
       const nextSocket = new WebSocket(
@@ -855,6 +865,11 @@ export function TerminalView({
         if (typeof event.data === "string") {
           if (isTerminalOutputGzipAcknowledgement(event.data)) {
             gzipOutputAcknowledged = true;
+            return;
+          }
+          const mouseCaptureEnabled = terminalMouseCaptureState(event.data);
+          if (mouseCaptureEnabled !== null) {
+            ready.renderer.setMouseTracking(mouseCaptureEnabled);
             return;
           }
           lastCloseReason = parseTerminalCloseReason(event.data) ?? lastCloseReason;

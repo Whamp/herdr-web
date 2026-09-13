@@ -3,6 +3,7 @@ import {
   createTerminalOutputFrameDecoder,
   decodeTerminalOutputFrame,
   isTerminalOutputGzipAcknowledgement,
+  terminalMouseCaptureState,
 } from "./terminalOutputEncoding";
 
 const HELLO_TERMINAL = new TextEncoder().encode("hello terminal\n");
@@ -46,6 +47,15 @@ describe("isTerminalOutputGzipAcknowledgement", () => {
     ).toBe(true);
     expect(isTerminalOutputGzipAcknowledgement(JSON.stringify({ type: "closed" }))).toBe(false);
     expect(isTerminalOutputGzipAcknowledgement("not json")).toBe(false);
+  });
+});
+
+describe("terminalMouseCaptureState", () => {
+  it("reads only valid mouse capture control frames", () => {
+    expect(terminalMouseCaptureState('{"type":"mouse_capture","enabled":true}')).toBe(true);
+    expect(terminalMouseCaptureState('{"type":"mouse_capture","enabled":false}')).toBe(false);
+    expect(terminalMouseCaptureState('{"type":"mouse_capture","enabled":"true"}')).toBeNull();
+    expect(terminalMouseCaptureState("not json")).toBeNull();
   });
 });
 

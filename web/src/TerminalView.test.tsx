@@ -6,7 +6,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CommandDraftContext, createCommandDraftStore } from "./commandDrafts";
-import type { TerminalRenderer, TerminalSize } from "./terminalRenderer";
+import type {
+  TerminalMouseInput,
+  TerminalRenderer,
+  TerminalSize,
+} from "./terminalRenderer";
 import { TerminalView } from "./TerminalView";
 import type { PaneInfo } from "./types";
 
@@ -14,7 +18,9 @@ const MOUNTED_TERMINAL_SIZE: TerminalSize = { cols: 80, rows: 24 };
 const REFRESHED_TERMINAL_SIZE: TerminalSize = { cols: 120, rows: 48 };
 
 class FakeTerminalRenderer implements TerminalRenderer {
+  readonly mouseTrackingStates: boolean[] = [];
   readonly refreshedSizes: TerminalSize[] = [];
+  private mouseInputHandler: ((input: TerminalMouseInput) => void) | null = null;
   private pendingMountCompletion: (() => void) | null = null;
 
   mount() {
@@ -42,6 +48,23 @@ class FakeTerminalRenderer implements TerminalRenderer {
 
   onScroll() {
     return () => {};
+  }
+
+  onMouseInput(callback: (input: TerminalMouseInput) => void) {
+    this.mouseInputHandler = callback;
+    return () => {
+      if (this.mouseInputHandler === callback) {
+        this.mouseInputHandler = null;
+      }
+    };
+  }
+
+  emitMouseInput(input: TerminalMouseInput) {
+    this.mouseInputHandler?.(input);
+  }
+
+  setMouseTracking(enabled: boolean) {
+    this.mouseTrackingStates.push(enabled);
   }
 
   setTapFocusHandler() {}
@@ -154,6 +177,57 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe("TerminalView terminal mouse tracking", () => {
+  it("forwards Herdr mouse capture state and browser mouse input", async () => {
+    const drafts = createCommandDraftStore();
+    await renderTerminalView(testPane("terminal-1"), drafts);
+    const renderer = terminalRenderers[0];
+    if (!renderer) {
+      throw new Error("Expected a terminal renderer");
+    }
+
+    await act(async () => {
+      renderer.completeMount();
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("Expected a terminal WebSocket");
+    }
+
+    await act(async () => {
+      socket.open();
+      socket.dispatchEvent(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "mouse_capture", enabled: true }),
+        }),
+      );
+      renderer.emitMouseInput({
+        kind: "down",
+        button: "left",
+        column: 4,
+        row: 7,
+        modifiers: 2,
+        lines: 1,
+      });
+      await Promise.resolve();
+    });
+
+    expect(renderer.mouseTrackingStates).toContain(true);
+    expect(socket.sent).toContain(
+      JSON.stringify({
+        type: "mouse",
+        kind: "down",
+        button: "left",
+        column: 4,
+        row: 7,
+        modifiers: 2,
+        lines: 1,
+      }),
+    );
+  });
 });
 
 describe("TerminalView mobile refitting", () => {

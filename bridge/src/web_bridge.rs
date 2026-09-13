@@ -4,7 +4,7 @@ use std::fmt;
 use std::io::{self, ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -41,8 +41,9 @@ use herdr_compat::api::schema::{
     SubscriptionEventKind, TabCreateParams, TabInfo, TabListParams, TabTarget, WorkspaceInfo,
 };
 use herdr_compat::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientMessage, RenderEncoding, ServerMessage,
-    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientMouseButton,
+    ClientMouseKind, ClientMousePosition, RenderEncoding, ServerMessage, MAX_FRAME_SIZE,
+    MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 use crate::agent_activity::{AgentActivityListResponse, AgentActivityManager};
@@ -229,6 +230,35 @@ enum TerminalClientFrame {
         #[serde(default = "default_scroll_lines")]
         lines: u16,
     },
+    Mouse {
+        kind: TerminalMouseKind,
+        button: Option<TerminalMouseButton>,
+        column: u16,
+        row: u16,
+        #[serde(default)]
+        modifiers: u8,
+        #[serde(default = "default_mouse_lines")]
+        lines: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalMouseKind {
+    Down,
+    Up,
+    Drag,
+    Moved,
+    ScrollUp,
+    ScrollDown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalMouseButton {
+    Left,
+    Right,
+    Middle,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -242,9 +272,14 @@ fn default_scroll_lines() -> u16 {
     3
 }
 
+fn default_mouse_lines() -> u16 {
+    1
+}
+
 #[derive(Debug, Clone)]
 enum TerminalOutput {
     Bytes(Bytes),
+    MouseCapture(bool),
     Close(String),
 }
 
@@ -260,6 +295,7 @@ enum TerminalOutputFlushReason {
     Timer,
     ByteThreshold,
     ChunkThreshold,
+    Control,
     Close,
 }
 
@@ -316,7 +352,7 @@ impl TerminalOutputCoalescingStats {
             TerminalOutputFlushReason::Timer => self.timer_flushes += 1,
             TerminalOutputFlushReason::ByteThreshold => self.byte_flushes += 1,
             TerminalOutputFlushReason::ChunkThreshold => self.chunk_flushes += 1,
-            TerminalOutputFlushReason::Close => {}
+            TerminalOutputFlushReason::Control | TerminalOutputFlushReason::Close => {}
         }
     }
 
@@ -657,6 +693,7 @@ impl ConnectionClosed {
 struct SharedTerminalSession {
     write_tx: TerminalWriter,
     output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+    mouse_capture: Arc<AtomicBool>,
     client_count: Arc<AtomicUsize>,
     connection_closed: Arc<ConnectionClosed>,
 }
@@ -3509,6 +3546,16 @@ async fn handle_terminal_socket(socket: WebSocket, state: BridgeState, query: Te
             return;
         }
     }
+    if ws_sender
+        .send(Message::Text(
+            terminal_mouse_capture_message(session.mouse_capture.load(Ordering::Acquire)).into(),
+        ))
+        .await
+        .is_err()
+    {
+        release_terminal_session(&state.terminal_sessions, &terminal_id, &session);
+        return;
+    }
 
     let mut output_coalescer = TerminalOutputCoalescer::new(coalesce_window);
     let _ = write_tx.send(ClientMessage::Resize {
@@ -3634,6 +3681,19 @@ async fn handle_terminal_output_message(
                 }
             }
             true
+        }
+        Ok(TerminalOutput::MouseCapture(enabled)) => {
+            if let Some(bytes) =
+                output_coalescer.flush_pending(TerminalOutputFlushReason::Control, Instant::now())
+            {
+                if !send_terminal_output_frame(ws_sender, bytes, output_encoding).await {
+                    return false;
+                }
+            }
+            ws_sender
+                .send(Message::Text(terminal_mouse_capture_message(enabled).into()))
+                .await
+                .is_ok()
         }
         Ok(TerminalOutput::Close(reason)) => {
             if let Some(bytes) =
@@ -3779,6 +3839,7 @@ async fn acquire_terminal_session(
             let handshake = || -> Result<SharedTerminalSession, BridgeError> {
                 let protocol_version = terminal_attach_protocol(&state.api)?;
                 let (output_tx, _) = tokio::sync::broadcast::channel(256);
+                let mouse_capture = Arc::new(AtomicBool::new(false));
                 let attach = open_terminal_attach(
                     state.client_socket_path.clone(),
                     terminal_id.clone(),
@@ -3787,10 +3848,12 @@ async fn acquire_terminal_session(
                     takeover,
                     protocol_version,
                     output_tx.clone(),
+                    mouse_capture.clone(),
                 )?;
                 Ok(SharedTerminalSession {
                     write_tx: attach.write_tx,
                     output_tx,
+                    mouse_capture,
                     client_count: Arc::new(AtomicUsize::new(0)),
                     connection_closed: attach.connection_closed,
                 })
@@ -3975,6 +4038,14 @@ fn event_may_close_terminal_session(event: &str) -> bool {
     event.contains("workspace.closed")
         || event.contains("tab.closed")
         || event.contains("pane.closed")
+}
+
+fn terminal_mouse_capture_message(enabled: bool) -> &'static str {
+    if enabled {
+        r#"{"type":"mouse_capture","enabled":true}"#
+    } else {
+        r#"{"type":"mouse_capture","enabled":false}"#
+    }
 }
 
 fn close_message(reason: &str) -> String {
@@ -4377,7 +4448,47 @@ fn handle_terminal_text_frame(write_tx: &TerminalWriter, text: &str) -> Result<(
             })
             .map(|_| ())
             .map_err(|_| "terminal writer closed".to_string()),
+        TerminalClientFrame::Mouse {
+            kind,
+            button,
+            column,
+            row,
+            modifiers,
+            lines,
+        } => write_tx
+            .send(ClientMessage::AttachMouse {
+                kind: terminal_mouse_kind(kind, button)?,
+                position: ClientMousePosition::Cell { column, row },
+                geometry: None,
+                modifiers,
+                lines: lines.max(1),
+            })
+            .map(|_| ())
+            .map_err(|_| "terminal writer closed".to_string()),
     }
+}
+
+fn terminal_mouse_kind(
+    kind: TerminalMouseKind,
+    button: Option<TerminalMouseButton>,
+) -> Result<ClientMouseKind, String> {
+    let button = || {
+        button
+            .map(|button| match button {
+                TerminalMouseButton::Left => ClientMouseButton::Left,
+                TerminalMouseButton::Right => ClientMouseButton::Right,
+                TerminalMouseButton::Middle => ClientMouseButton::Middle,
+            })
+            .ok_or_else(|| "terminal mouse button is required for this event".to_string())
+    };
+    Ok(match kind {
+        TerminalMouseKind::Down => ClientMouseKind::Down(button()?),
+        TerminalMouseKind::Up => ClientMouseKind::Up(button()?),
+        TerminalMouseKind::Drag => ClientMouseKind::Drag(button()?),
+        TerminalMouseKind::Moved => ClientMouseKind::Moved,
+        TerminalMouseKind::ScrollUp => ClientMouseKind::ScrollUp,
+        TerminalMouseKind::ScrollDown => ClientMouseKind::ScrollDown,
+    })
 }
 
 fn parse_terminal_client_frame(text: &str) -> Result<TerminalClientFrame, String> {
@@ -4397,6 +4508,7 @@ fn open_terminal_attach(
     takeover: bool,
     protocol_version: u32,
     output_tx: tokio::sync::broadcast::Sender<TerminalOutput>,
+    mouse_capture: Arc<AtomicBool>,
 ) -> Result<TerminalAttach, BridgeError> {
     let mut stream = herdr_compat::ipc::connect_local_stream(&client_socket_path)?;
     protocol::write_message(
@@ -4502,11 +4614,14 @@ fn open_terminal_attach(
                     break;
                 }
                 ServerMessage::Welcome { .. } => {}
+                ServerMessage::MouseCapture { enabled, .. } => {
+                    mouse_capture.store(enabled, Ordering::Release);
+                    let _ = output_tx.send(TerminalOutput::MouseCapture(enabled));
+                }
                 ServerMessage::Notify { .. }
                 | ServerMessage::Clipboard { .. }
                 | ServerMessage::WindowTitle { .. }
                 | ServerMessage::ReloadSoundConfig
-                | ServerMessage::MouseCapture { .. }
                 | ServerMessage::DirectTerminalKeyboardProtocol { .. }
                 | ServerMessage::ClientShellKeyboardReportAll { .. }
                 | ServerMessage::ClientShellSnapshot(_)
@@ -5055,6 +5170,7 @@ mod tests {
             SharedTerminalSession {
                 write_tx,
                 output_tx,
+                mouse_capture: Arc::new(AtomicBool::new(false)),
                 client_count: Arc::new(AtomicUsize::new(1)),
                 connection_closed: Arc::new(ConnectionClosed::default()),
             },
@@ -5191,6 +5307,14 @@ mod tests {
             .unwrap();
             let attach: ClientMessage = protocol::read_message(&mut sock, MAX_FRAME_SIZE).unwrap();
             assert!(matches!(attach, ClientMessage::AttachTerminal { .. }));
+            protocol::write_message(
+                &mut sock,
+                &ServerMessage::MouseCapture {
+                    enabled: true,
+                    sgr_pixels: false,
+                },
+            )
+            .unwrap();
             let detach: ClientMessage = protocol::read_message(&mut sock, MAX_FRAME_SIZE).unwrap();
             assert!(matches!(detach, ClientMessage::Detach));
             // Like the real daemon: keep the socket open after Detach and
@@ -5201,6 +5325,8 @@ mod tests {
         });
 
         let (output_tx, _) = tokio::sync::broadcast::channel(8);
+        let mut output_rx = output_tx.subscribe();
+        let mouse_capture = Arc::new(AtomicBool::new(false));
         let attach = open_terminal_attach(
             socket_path.clone(),
             "term-test".to_string(),
@@ -5209,9 +5335,15 @@ mod tests {
             false,
             PROTOCOL_VERSION,
             output_tx,
+            mouse_capture.clone(),
         )
         .unwrap();
 
+        assert!(matches!(
+            output_rx.blocking_recv().unwrap(),
+            TerminalOutput::MouseCapture(true)
+        ));
+        assert!(mouse_capture.load(Ordering::Acquire));
         attach.write_tx.send(ClientMessage::Detach).unwrap();
 
         // The bridge's own post-Detach shutdown must resolve the close signal
@@ -5288,6 +5420,28 @@ mod tests {
             TerminalClientFrame::Scroll {
                 direction: ScrollDirection::Down,
                 lines: 3
+            }
+        );
+    }
+
+    #[test]
+    fn forwards_browser_mouse_frame_as_structured_attach_input() {
+        let (write_tx, rx) = test_terminal_writer();
+
+        handle_terminal_text_frame(
+            &write_tx,
+            r#"{"type":"mouse","kind":"down","button":"left","column":4,"row":7,"modifiers":2,"lines":1}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().unwrap(),
+            ClientMessage::AttachMouse {
+                kind: ClientMouseKind::Down(ClientMouseButton::Left),
+                position: ClientMousePosition::Cell { column: 4, row: 7 },
+                geometry: None,
+                modifiers: 2,
+                lines: 1,
             }
         );
     }

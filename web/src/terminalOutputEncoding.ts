@@ -15,6 +15,18 @@ export function isTerminalOutputGzipAcknowledgement(message: string): boolean {
   }
 }
 
+/** Reads Herdr's authoritative terminal mouse-capture state from a bridge control frame. */
+export function terminalMouseCaptureState(message: string): boolean | null {
+  try {
+    const parsed = JSON.parse(message) as { type?: unknown; enabled?: unknown };
+    return parsed.type === "mouse_capture" && typeof parsed.enabled === "boolean"
+      ? parsed.enabled
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function terminalOutputGzipSupported(): boolean {
   return typeof DecompressionStream === "function";
 }
