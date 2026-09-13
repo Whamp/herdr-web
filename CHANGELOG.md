@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Send protocol-level pings on idle browser WebSockets and close connections that do not return peer
+  traffic within 15 seconds, removing dead transports without claiming to detect frozen JavaScript.
+
 ### Removed
 
 ## [0.6.1] - 2026-09-12
