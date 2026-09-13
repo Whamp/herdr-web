@@ -17,6 +17,9 @@
 
 ### Fixed
 
+- Labelled terminal links now expose their hidden destination on mobile; scrollback links and
+  HTTP(S)-only opening remain supported. [Issue #92](https://github.com/kcosr/herdr-web/issues/92).
+
 ### Removed
 
 ## [0.6.1] - 2026-09-12
