@@ -190,6 +190,12 @@ Settings are grouped by area:
   transport, and input/output batching delays.
 - Mobile: touch-specific terminal behavior when running on a coarse pointer device.
 
+Terminal links accept only HTTP(S) destinations. On desktop, clicking a visible labelled OSC 8
+link or plain-text URL opens it. With Settings → Mobile → Long-press behavior set to Copy or Loupe,
+tapping a labelled link opens Open and Copy URL actions, while plain-text URLs open directly.
+Long-press selections containing a labelled link use the same actions. Terminal mouse tracking takes
+precedence over link handling.
+
 When viewing all of multiple hosts, use the Spaces list `…` menu to group spaces by host or keep a
 flat list with host context in each row. The menu stays hidden in single-host scope.
 

@@ -3691,7 +3691,9 @@ async fn handle_terminal_output_message(
                 }
             }
             ws_sender
-                .send(Message::Text(terminal_mouse_capture_message(enabled).into()))
+                .send(Message::Text(
+                    terminal_mouse_capture_message(enabled).into(),
+                ))
                 .await
                 .is_ok()
         }

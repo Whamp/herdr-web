@@ -1594,7 +1594,7 @@ export function installTerminalInteractionRendering(
   terminal: Terminal,
   requestRender: () => void,
 ) {
-  // In ghostty-web 0.4.0 this method is empty: selection changes rely on
+  // In the pinned ghostty-web prerelease this method is empty: selection changes rely on
   // the permanent frame loop. Replace it while event-driven rendering is active.
   const selection = terminalSelectionManager(terminal);
   const originalRequestRender = selection?.requestRender;
@@ -1614,7 +1614,7 @@ export function suspendGhosttyIdleRenderLoop(
   terminal: Terminal,
   cancelFrame: (frameId: number) => void = (frameId) => window.cancelAnimationFrame(frameId),
 ) {
-  // ghostty-web 0.4.0 starts a permanent requestAnimationFrame loop even when
+  // The pinned ghostty-web prerelease starts a permanent requestAnimationFrame loop even when
   // cursor blinking is disabled. A large high-DPI canvas is particularly costly
   // on Windows, so event-driven mode cancels the pending continuation after open().
   const access = terminal as unknown as GhosttyIdleRenderLoopAccess;

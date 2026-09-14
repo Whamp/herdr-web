@@ -17,8 +17,9 @@
 
 ### Fixed
 
-- Labelled terminal links now expose their hidden destination on mobile; scrollback links and
-  HTTP(S)-only opening remain supported. [Issue #92](https://github.com/kcosr/herdr-web/issues/92).
+- Mobile taps and long-press selections now show Open and Copy URL actions for visible labelled
+  OSC 8 links, including scrollback. Plain-text URL behavior is unchanged, and only HTTP(S)
+  destinations are accepted. [Issue #92](https://github.com/kcosr/herdr-web/issues/92).
 
 ### Removed
 
