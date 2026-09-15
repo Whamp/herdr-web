@@ -89,10 +89,3 @@ This is a lightweight internal onboarding note for agents working in this repo.
   `docs/packaging.md` and `docs/release.md`; do not commit `dist-packages/`, APKs, or generated
   Android outputs.
 - Do not bump npm package versions until package publishing is defined.
-
-## Maintaining this file
-
-Keep this file for knowledge useful to almost every future agent session in this project.
-Do not repeat what the codebase already shows; point to the authoritative file or command instead.
-Prefer rewriting or pruning existing entries over appending new ones.
-When updating this file, preserve this bar for all agents and keep entries concise.
