@@ -1,0 +1,15 @@
+
+desktop herdr-web fm/fix-herdr-web-windows-followup-shortcut ?
+❯ python3 -c 'import os,termios; fd=0; old=termios.tcgetattr(fd); new=termios.tcgetattr(fd); new[3] &= ~(termios.ICANON|termios.ECHO); termios.tcsetattr(fd,termios.TCSANOW,new); data=os.read(fd,2); termios.tcsetattr(fd,termios.TCSANOW,old); print("FOLLOWUP_BYTES=" + data.hex(), flush=True)'
+FOLLOWUP_BYTES=1b5b
+
+desktop herdr-web fm/fix-herdr-web-windows-followup-shortcut ?
+❯ 27;5;13~^C
+python3 -c 'import os,termios; fd=0; old=termios.tcgetattr(fd); new=termios.tcgetattr(fd); new[3] &= ~(termios.ICANON|termios.ECHO); termios.tcsetattr(fd,termios.TCSANOW,new); data=os.read(fd,2); termios.tcsetattr(fd,termios.TCSANOW,old); print("ALT_FOLLOWUP_BYTES=" + data.hex(), flush=True)'
+
+desktop herdr-web fm/fix-herdr-web-windows-followup-shortcut ?
+✗ python3 -c 'import os,termios; fd=0; old=termios.tcgetattr(fd); new=termios.tcgetattr(fd); new[3] &= ~(termios.ICANON|termios.ECHO); termios.tcsetattr(fd,termios.TCSANOW,new); data=os.read(fd,2); termios.tcsetattr(fd,termios.TCSANOW,old); print("ALT_FOLLOWUP_BYTES=" + data.hex(), flush=True)'
+ALT_FOLLOWUP_BYTES=1b0a
+
+desktop herdr-web fm/fix-herdr-web-windows-followup-shortcut ?
+❯

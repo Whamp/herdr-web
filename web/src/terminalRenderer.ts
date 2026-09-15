@@ -1685,7 +1685,22 @@ function cleanupEditableArtifacts(container: HTMLElement | null) {
   }
 }
 
-function customKeyboardEventOutput(event: KeyboardEvent) {
+function customKeyboardEventOutput(
+  event: KeyboardEvent,
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+) {
+  if (
+    platform.startsWith("Win") &&
+    event.key === "Enter" &&
+    event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey
+  ) {
+    // Ghostty encodes Ctrl+Enter as CSI-u. Send the legacy Alt+Enter bytes so
+    // terminal agents receive the same follow-up action when browsers reserve Alt+Enter.
+    return "\x1B\r";
+  }
   if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
     return "\x1B[Z";
   }
@@ -1704,7 +1719,7 @@ export function handleTerminalCustomKeyEvent(
   // desktop copy shortcut here so its input handler cannot also emit ^C.
   const consumesSelectionCopy =
     isTerminalSelectionCopyShortcut(event, platform) && terminal.getSelection().length > 0;
-  const output = customKeyboardEventOutput(event);
+  const output = customKeyboardEventOutput(event, platform);
   if (!consumesSelectionCopy && !output) {
     return false;
   }
