@@ -1,0 +1,7 @@
+name                 status   directory                                        socket
+default              running  /home/will/.config/herdr                         /home/will/.config/herdr/herdr.sock
+fmtest               running  /home/will/.config/herdr/sessions/fmtest         /home/will/.config/herdr/sessions/fmtest/herdr.sock
+herdr-port-forward   stopped  /home/will/.config/herdr/sessions/herdr-port-forward /home/will/.config/herdr/sessions/herdr-port-forward/herdr.sock
+list                 stopped  /home/will/.config/herdr/sessions/list           /home/will/.config/herdr/sessions/list/herdr.sock
+port-forward-test    stopped  /home/will/.config/herdr/sessions/port-forward-test /home/will/.config/herdr/sessions/port-forward-test/herdr.sock
+previous-default     stopped  /home/will/.config/herdr/sessions/previous-default /home/will/.config/herdr/sessions/previous-default/herdr.sock

@@ -158,6 +158,48 @@ function terminalInput(selection: string) {
   };
 }
 
+describe("terminal follow-up shortcut", () => {
+  it("sends the Alt+Enter terminal sequence for Ctrl+Enter", () => {
+    const terminal = terminalInput("");
+
+    expect(
+      handleTerminalCustomKeyEvent(
+        keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" }),
+        terminal,
+        "Win32",
+      ),
+    ).toBe(true);
+    expect(terminal.input).toHaveBeenCalledExactlyOnceWith("\x1B\r", true);
+  });
+
+  it.each([
+    ["plain Enter", { code: "Enter", key: "Enter" }],
+    ["Alt+Enter", { altKey: true, code: "Enter", key: "Enter" }],
+    ["Shift+Enter", { code: "Enter", key: "Enter", shiftKey: true }],
+    ["Ctrl+Shift+Enter", { code: "Enter", ctrlKey: true, key: "Enter", shiftKey: true }],
+    ["Ctrl+Alt+Enter", { altKey: true, code: "Enter", ctrlKey: true, key: "Enter" }],
+    ["Meta+Enter", { code: "Enter", key: "Enter", metaKey: true }],
+  ])("leaves %s to Ghostty", (_, overrides) => {
+    const terminal = terminalInput("");
+
+    expect(handleTerminalCustomKeyEvent(keyEvent(overrides), terminal, "Win32")).toBe(false);
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
+
+  it("ignores Ctrl+Enter during IME composition", () => {
+    const terminal = terminalInput("");
+
+    expect(
+      handleTerminalCustomKeyEvent(
+        keyEvent({ code: "Enter", ctrlKey: true, isComposing: true, key: "Enter" }),
+        terminal,
+        "Win32",
+      ),
+    ).toBe(false);
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
+});
+
 describe("terminalCursorBlinkEnabled", () => {
   it("keeps the desktop cursor blinking", () => {
     expect(terminalCursorBlinkEnabled(false, false)).toBe(true);

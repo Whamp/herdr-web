@@ -1,0 +1,44 @@
+page:
+  title: herdr-web
+  refs: 35
+snapshot:
+uid=g8:5_0 RootWebArea "herdr-web" url="http://127.0.0.1:15179/"
+  uid=g8:5_1 generic atomic live="polite" relevant="additions text"
+  uid=g8:5_2 complementary "Switcher"
+    uid=g8:5_3 StaticText "herdr-web"
+    uid=g8:5_4 button "Settings" description="Settings; bridge: Same origin"
+    uid=g8:5_5 button "Refresh" description="Refresh"
+    uid=g8:5_6 button "Same origin" pressed
+    uid=g8:5_7 button "Agents"
+    uid=g8:5_8 button "Tabs" pressed
+    uid=g8:5_9 button "Notes"
+    uid=g8:5_10 button "Space" pressed
+    uid=g8:5_11 button "All"
+    uid=g8:5_12 StaticText "SPACES"
+    uid=g8:5_13 StaticText "1"
+    uid=g8:5_14 button "New space" description="New space"
+    uid=g8:5_15 button "Windows shortcut lab 1 tab · 1 pane"
+    uid=g8:5_16 StaticText "WINDOWS SHORTCUT LAB"
+    uid=g8:5_17 button "New tab" description="New tab"
+    uid=g8:5_18 button "Show pinned panes only" description="Pinned only"
+    uid=g8:5_19 button "Show active agents only" description="Active agents only"
+    uid=g8:5_20 button "Tab list options" description="Tab list options" expandable haspopup="dialog"
+    uid=g8:5_21 button "herdr-web Windows shortcut lab"
+  uid=g8:5_22 region "Terminal"
+    uid=g8:5_23 tab "herdr-web" selectable selected
+    uid=g8:5_24 button "New tab" description="New tab"
+    uid=g8:5_25 button "Back to switcher" description="Back"
+    uid=g8:5_26 button "Selected pane actions" expandable haspopup="menu"
+    uid=g8:5_27 button "Notes" description="Notes"
+    uid=g8:5_28 button "Pin pane" description="Pin pane"
+    uid=g8:5_29 button "Refit terminal" description="Refit terminal"
+    uid=g8:5_30 StaticText "idle"
+    uid=g8:6_0 region "Selected pane terminal: herdr-web"
+      uid=g8:6_1 textbox "Terminal input" multiline
+      uid=g8:6_2 button "Choose Files" value="No file chosen"
+      uid=g8:6_3 button "Upload file" description="Upload file"
+help[4]:
+  Run `chrome-devtools-axi fill @g8:6_1 "text"` to fill the "Terminal input" field
+  Run `chrome-devtools-axi click @g8:5_4` to click the "Settings" button
+  Run `chrome-devtools-axi scroll down` to scroll down
+  Use `chrome-devtools-axi eval <expr>` for JS expressions. For multi-statement code, pass a function: `eval "() => { ...; return result }"`

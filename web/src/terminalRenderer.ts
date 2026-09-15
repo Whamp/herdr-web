@@ -1686,6 +1686,11 @@ function cleanupEditableArtifacts(container: HTMLElement | null) {
 }
 
 function customKeyboardEventOutput(event: KeyboardEvent) {
+  if (event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+    // Ghostty encodes Ctrl+Enter as CSI-u. Send the legacy Alt+Enter bytes so
+    // terminal agents receive the same follow-up action when browsers reserve Alt+Enter.
+    return "\x1B\r";
+  }
   if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
     return "\x1B[Z";
   }
