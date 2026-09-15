@@ -365,7 +365,7 @@ work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts 
 
 | Action | macOS | Windows/Linux |
 | --- | --- | --- |
-| Send a follow-up prompt in direct terminal input | `Option+Enter` or `Ctrl+Enter` | `Alt+Enter` or `Ctrl+Enter` |
+| Send a follow-up prompt in direct terminal input | `Option+Enter` | `Alt+Enter` (Windows also supports `Ctrl+Enter`) |
 | Select previous/next agent pane | `Cmd/Option+Shift+Up/Down` | `Meta/Alt+Shift+Up/Down` |
 | Select previous/next tab in the active space | `Cmd/Option+Shift+Left/Right` | `Meta/Alt+Shift+Left/Right` |
 | Focus split left/down/up/right | `Cmd/Option(+Shift)+H/J/K/L` | `Meta/Alt(+Shift)+H/J/K/L` |
@@ -376,8 +376,8 @@ work when the terminal's hidden keyboard input has focus. OS-reserved shortcuts 
 | Open the new-tab launch modal | `Cmd/Option+Shift+T` | `Meta/Alt+Shift+T` |
 | Confirm close for the focused split, or tab when only one split exists | `Cmd/Option+Shift+X` | `Meta/Alt+Shift+X` |
 
-With direct terminal input focused, `Ctrl+Enter` sends the same `ESC` + carriage-return bytes as
-`Alt/Option+Enter`. Use it when a Windows browser reserves `Alt+Enter` instead of delivering it to
+With direct terminal input focused on Windows, `Ctrl+Enter` sends the same `ESC` + carriage-return
+bytes as `Alt+Enter`. Use it when a Windows browser reserves `Alt+Enter` instead of delivering it to
 the page. Command composer behavior is unchanged: `Ctrl+Enter` sends its textarea on Windows/Linux,
 and `Cmd+Enter` sends it on macOS.
 

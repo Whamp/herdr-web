@@ -159,7 +159,7 @@ function terminalInput(selection: string) {
 }
 
 describe("terminal follow-up shortcut", () => {
-  it("sends the Alt+Enter terminal sequence for Ctrl+Enter", () => {
+  it("sends the Alt+Enter terminal sequence for Windows Ctrl+Enter", () => {
     const terminal = terminalInput("");
 
     expect(
@@ -172,9 +172,40 @@ describe("terminal follow-up shortcut", () => {
     expect(terminal.input).toHaveBeenCalledExactlyOnceWith("\x1B\r", true);
   });
 
+  it.each(["MacIntel", "Linux x86_64"])(
+    "leaves Ctrl+Enter to Ghostty on %s",
+    (platform) => {
+      const terminal = terminalInput("");
+
+      expect(
+        handleTerminalCustomKeyEvent(
+          keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" }),
+          terminal,
+          platform,
+        ),
+      ).toBe(false);
+      expect(terminal.input).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["Win32", "MacIntel", "Linux x86_64"])(
+    "leaves Alt+Enter to Ghostty on %s",
+    (platform) => {
+      const terminal = terminalInput("");
+
+      expect(
+        handleTerminalCustomKeyEvent(
+          keyEvent({ altKey: true, code: "Enter", key: "Enter" }),
+          terminal,
+          platform,
+        ),
+      ).toBe(false);
+      expect(terminal.input).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["plain Enter", { code: "Enter", key: "Enter" }],
-    ["Alt+Enter", { altKey: true, code: "Enter", key: "Enter" }],
     ["Shift+Enter", { code: "Enter", key: "Enter", shiftKey: true }],
     ["Ctrl+Shift+Enter", { code: "Enter", ctrlKey: true, key: "Enter", shiftKey: true }],
     ["Ctrl+Alt+Enter", { altKey: true, code: "Enter", ctrlKey: true, key: "Enter" }],
