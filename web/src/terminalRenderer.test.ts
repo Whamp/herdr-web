@@ -158,77 +158,30 @@ function terminalInput(selection: string) {
   };
 }
 
-describe("terminal follow-up shortcut", () => {
-  it("sends the Alt+Enter terminal sequence for Windows Ctrl+Enter", () => {
-    const terminal = terminalInput("");
-
-    expect(
-      handleTerminalCustomKeyEvent(
-        keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" }),
-        terminal,
-        "Win32",
-      ),
-    ).toBe(true);
-    expect(terminal.input).toHaveBeenCalledExactlyOnceWith("\x1B\r", true);
-  });
-
-  it.each(["MacIntel", "Linux x86_64"])(
-    "leaves Ctrl+Enter to Ghostty on %s",
+describe("terminal follow-up shortcut handling", () => {
+  it.each(["Win32", "MacIntel", "Linux x86_64"])(
+    "delegates Ctrl+Enter to Ghostty on %s",
     (platform) => {
+      const event = keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" });
       const terminal = terminalInput("");
 
-      expect(
-        handleTerminalCustomKeyEvent(
-          keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" }),
-          terminal,
-          platform,
-        ),
-      ).toBe(false);
+      expect(handleTerminalCustomKeyEvent(event, terminal, platform)).toBe(false);
       expect(terminal.input).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
     },
   );
 
   it.each(["Win32", "MacIntel", "Linux x86_64"])(
-    "leaves Alt+Enter to Ghostty on %s",
+    "delegates Alt+Enter to Ghostty on %s",
     (platform) => {
+      const event = keyEvent({ altKey: true, code: "Enter", key: "Enter" });
       const terminal = terminalInput("");
 
-      expect(
-        handleTerminalCustomKeyEvent(
-          keyEvent({ altKey: true, code: "Enter", key: "Enter" }),
-          terminal,
-          platform,
-        ),
-      ).toBe(false);
+      expect(handleTerminalCustomKeyEvent(event, terminal, platform)).toBe(false);
       expect(terminal.input).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
     },
   );
-
-  it.each([
-    ["plain Enter", { code: "Enter", key: "Enter" }],
-    ["Shift+Enter", { code: "Enter", key: "Enter", shiftKey: true }],
-    ["Ctrl+Shift+Enter", { code: "Enter", ctrlKey: true, key: "Enter", shiftKey: true }],
-    ["Ctrl+Alt+Enter", { altKey: true, code: "Enter", ctrlKey: true, key: "Enter" }],
-    ["Meta+Enter", { code: "Enter", key: "Enter", metaKey: true }],
-  ])("leaves %s to Ghostty", (_, overrides) => {
-    const terminal = terminalInput("");
-
-    expect(handleTerminalCustomKeyEvent(keyEvent(overrides), terminal, "Win32")).toBe(false);
-    expect(terminal.input).not.toHaveBeenCalled();
-  });
-
-  it("ignores Ctrl+Enter during IME composition", () => {
-    const terminal = terminalInput("");
-
-    expect(
-      handleTerminalCustomKeyEvent(
-        keyEvent({ code: "Enter", ctrlKey: true, isComposing: true, key: "Enter" }),
-        terminal,
-        "Win32",
-      ),
-    ).toBe(false);
-    expect(terminal.input).not.toHaveBeenCalled();
-  });
 });
 
 describe("terminalCursorBlinkEnabled", () => {

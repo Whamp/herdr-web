@@ -52,9 +52,6 @@
 
 ### Fixed
 
-- Added `Ctrl+Enter` as a direct-terminal fallback for follow-up prompts when Windows browsers do
-  not deliver `Alt+Enter`. Both shortcuts send the same terminal byte sequence; ordinary Enter and
-  command composer shortcuts are unchanged.
 - Labelled terminal links now expose their hidden destination on mobile. Tap a label to show
   Open/Copy URL, or select its text to also copy the label. Hyperlinks in scrollback work too;
   plain-text URL gestures and HTTP/HTTPS-only opening are unchanged. Pinned Ghostty Web to
