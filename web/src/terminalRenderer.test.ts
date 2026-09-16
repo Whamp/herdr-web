@@ -158,6 +158,32 @@ function terminalInput(selection: string) {
   };
 }
 
+describe("terminal follow-up shortcut handling", () => {
+  it.each(["Win32", "MacIntel", "Linux x86_64"])(
+    "delegates Ctrl+Enter to Ghostty on %s",
+    (platform) => {
+      const event = keyEvent({ code: "Enter", ctrlKey: true, key: "Enter" });
+      const terminal = terminalInput("");
+
+      expect(handleTerminalCustomKeyEvent(event, terminal, platform)).toBe(false);
+      expect(terminal.input).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["Win32", "MacIntel", "Linux x86_64"])(
+    "delegates Alt+Enter to Ghostty on %s",
+    (platform) => {
+      const event = keyEvent({ altKey: true, code: "Enter", key: "Enter" });
+      const terminal = terminalInput("");
+
+      expect(handleTerminalCustomKeyEvent(event, terminal, platform)).toBe(false);
+      expect(terminal.input).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("terminalCursorBlinkEnabled", () => {
   it("keeps the desktop cursor blinking", () => {
     expect(terminalCursorBlinkEnabled(false, false)).toBe(true);
