@@ -6,6 +6,9 @@
 
 ### Added
 
+- Allow configured bridge URLs to include a reverse-proxy path prefix for same-origin multi-bridge
+  deployments.
+
 ### Changed
 
 - Automatically increment Android `versionCode` and stamp `versionName` in the tagged release
